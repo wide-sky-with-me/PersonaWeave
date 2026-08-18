@@ -1,0 +1,38 @@
+version: 1
+candidates:
+  - id: yunwu/gpt-image-1
+    role: masked_candidate_generation
+    execution: remote_api
+    model_license: provider_terms
+    status: masked_edit_contract_qualified
+    notes: A billable synthetic /v1/images/edits probe returned a 1024 PNG with 0 protected pixels changed; face identity quality is not yet qualified.
+  - id: yunwu/gpt-image-2
+    role: masked_candidate_generation
+    execution: remote_api
+    model_license: provider_terms
+    status: real_photo_contract_qualified_quality_tuning_required
+    notes: A consented two-face prompt-mode edit returned a full-resolution PNG and passed the zero-change outside-mask guard. Both faces had a consistent new identity, but hair, glasses, and expression preservation did not meet final visual acceptance.
+  - id: yunwu/qwen-image-edit-2509
+    role: masked_candidate_generation
+    execution: remote_api
+    model_license: provider_terms
+    status: endpoint_contract_unknown
+    notes: Listed for the configured account; do not call until request format is verified.
+  - id: facefusion/ghost_256
+    role: local_face_swap
+    execution: onnx
+    model_license: Apache-2.0
+    status: dependency_license_audit_required
+    notes: Swapper license is permissive, but detector and identity encoder weights also need approval.
+  - id: facefusion/hyperswap_256
+    role: local_face_swap
+    execution: onnx
+    model_license: ResearchRAIL
+    status: blocked_for_production
+    notes: Research license is not assumed to cover activity or advertising workloads.
+  - id: insightface/inswapper_128
+    role: local_face_swap
+    execution: onnx
+    model_license: non-commercial
+    status: blocked_for_production
+    notes: May only be used in an explicitly non-commercial evaluation or after separate licensing.

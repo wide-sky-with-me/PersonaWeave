@@ -1,0 +1,19 @@
+{
+  "name": "example-face-analysis-v1",
+  "version": 1,
+  "model": "replace-with-deployed-model",
+  "prompt": {
+    "10": {
+      "class_type": "PersonaWeaveFaceAnalysis",
+      "inputs": {
+        "image": "{{source_image}}",
+        "request_json": "{{request_json}}"
+      }
+    }
+  },
+  "output": {
+    "node_id": "10",
+    "field": "text",
+    "kind": "json"
+  }
+}

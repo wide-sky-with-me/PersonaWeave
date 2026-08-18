@@ -1,0 +1,10 @@
+{
+  "name": "execute_swap",
+  "version": 1,
+  "input": "SwapRequest",
+  "provider_operation": "POST /v1/swap-face",
+  "precondition": "all person mappings confirmed",
+  "output": "SwapResult",
+  "next": "validate_result"
+}
+

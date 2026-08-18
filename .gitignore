@@ -1,0 +1,16 @@
+.env
+.venv/
+.uv-cache/
+.runtime/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.sqlite3
+data/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+.slim/deepwork/
+# BEGIN oh-my-opencode-slim worktrees
+.slim/worktrees/
+.slim/worktrees.json
+# END oh-my-opencode-slim worktrees

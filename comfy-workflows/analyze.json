@@ -1,0 +1,111 @@
+{
+  "name": "mediapipe-multiscale-face-analysis-v3",
+  "version": 3,
+  "model": "Comfy-Org/mediapipe:mediapipe_face_fp32",
+  "prompt": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "{{source_image}}"
+      }
+    },
+    "2": {
+      "class_type": "PersonaWeaveOverlappingImageTiles",
+      "inputs": {
+        "image": [
+          "1",
+          0
+        ],
+        "tile_size": 1024,
+        "overlap": 0.25
+      }
+    },
+    "3": {
+      "class_type": "LoadMediaPipeFaceLandmarker",
+      "inputs": {
+        "model_name": "mediapipe_face_fp32.safetensors"
+      }
+    },
+    "4": {
+      "class_type": "MediaPipeFaceLandmarker",
+      "inputs": {
+        "face_detection_model": [
+          "3",
+          0
+        ],
+        "image": [
+          "2",
+          0
+        ],
+        "detector_variant": "both",
+        "num_faces": 0,
+        "min_confidence": 0.65,
+        "missing_frame_fallback": "empty"
+      }
+    },
+    "7": {
+      "class_type": "PersonaWeaveOverlappingImageTiles",
+      "inputs": {
+        "image": [
+          "1",
+          0
+        ],
+        "tile_size": 768,
+        "overlap": 0.25
+      }
+    },
+    "8": {
+      "class_type": "MediaPipeFaceLandmarker",
+      "inputs": {
+        "face_detection_model": [
+          "3",
+          0
+        ],
+        "image": [
+          "7",
+          0
+        ],
+        "detector_variant": "both",
+        "num_faces": 0,
+        "min_confidence": 0.65,
+        "missing_frame_fallback": "empty"
+      }
+    },
+    "5": {
+      "class_type": "PersonaWeaveMultiScaleFaceAnalysisJson",
+      "inputs": {
+        "primary_bboxes": [
+          "4",
+          1
+        ],
+        "primary_tiles_json": [
+          "2",
+          1
+        ],
+        "secondary_bboxes": [
+          "8",
+          1
+        ],
+        "secondary_tiles_json": [
+          "7",
+          1
+        ],
+        "request_json": "{{request_json}}"
+      }
+    },
+    "6": {
+      "class_type": "PersonaWeaveJsonOutput",
+      "inputs": {
+        "text": [
+          "5",
+          0
+        ]
+      }
+    }
+  },
+  "output": {
+    "node_id": "6",
+    "field": "text",
+    "kind": "json"
+  }
+}

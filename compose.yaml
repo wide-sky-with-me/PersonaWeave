@@ -1,0 +1,43 @@
+services:
+  control-plane:
+    build: .
+    command: ["uv", "run", "uvicorn", "personaweave.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PERSONAWEAVE_DATABASE_PATH: /app/data/personaweave.sqlite3
+      PERSONAWEAVE_ASSET_ROOT: /app/data/assets
+      PERSONAWEAVE_INFERENCE_BASE_URL: http://comfy-gateway:8010
+      PERSONAWEAVE_INFERENCE_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:?set PERSONAWEAVE_GATEWAY_SHARED_KEY}
+      PERSONAWEAVE_YUNWU_API_KEY: ${PERSONAWEAVE_YUNWU_API_KEY:-}
+      PERSONAWEAVE_YUNWU_BASE_URL: ${PERSONAWEAVE_YUNWU_BASE_URL:-https://yunwu.ai/v1}
+      PERSONAWEAVE_YUNWU_VISION_MODEL: ${PERSONAWEAVE_YUNWU_VISION_MODEL:-gpt-5.6-sol}
+    ports:
+      - "8000:8000"
+    volumes:
+      - control-data:/app/data
+    depends_on:
+      comfy-gateway:
+        condition: service_healthy
+
+  comfy-gateway:
+    build: .
+    command: ["uv", "run", "uvicorn", "personaweave.comfy_gateway:app", "--host", "0.0.0.0", "--port", "8010"]
+    environment:
+      PERSONAWEAVE_COMFY_BACKEND_URL: ${PERSONAWEAVE_COMFY_BACKEND_URL:?set PERSONAWEAVE_COMFY_BACKEND_URL}
+      PERSONAWEAVE_COMFY_BACKEND_API_PREFIX: ${PERSONAWEAVE_COMFY_BACKEND_API_PREFIX:-/api}
+      PERSONAWEAVE_COMFY_BACKEND_API_KEY: ${PERSONAWEAVE_COMFY_BACKEND_API_KEY:-}
+      PERSONAWEAVE_COMFY_GATEWAY_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:?set PERSONAWEAVE_GATEWAY_SHARED_KEY}
+      PERSONAWEAVE_COMFY_WORKFLOW_DIR: /app/comfy-workflows
+      PERSONAWEAVE_COMFY_DATABASE_PATH: /app/data/comfy-gateway.sqlite3
+      PERSONAWEAVE_COMFY_ALLOWED_ASSET_HOSTS: ${PERSONAWEAVE_COMFY_ALLOWED_ASSET_HOSTS:-}
+    volumes:
+      - gateway-data:/app/data
+      - ${PERSONAWEAVE_COMFY_WORKFLOW_DIR:-./comfy-workflows}:/app/comfy-workflows:ro
+    healthcheck:
+      test: ["CMD", "uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  control-data:
+  gateway-data:

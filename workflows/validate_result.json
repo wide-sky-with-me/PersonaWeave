@@ -1,0 +1,10 @@
+{
+  "name": "validate_result",
+  "version": 1,
+  "input": "ValidationRequest",
+  "provider_operation": "POST /v1/validate-result",
+  "output": "ValidationResult",
+  "on_pass": "review",
+  "on_failure": "needs_review"
+}
+

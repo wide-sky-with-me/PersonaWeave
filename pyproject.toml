@@ -1,0 +1,35 @@
+[project]
+name = "personaweave"
+version = "0.1.0"
+description = "Portable, human-in-the-loop batch face-swap orchestration service."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.116,<1",
+    "httpx>=0.28,<1",
+    "pillow>=11.3,<13",
+    "pydantic-settings>=2.10,<3",
+    "python-multipart>=0.0.20,<1",
+    "uvicorn[standard]>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2,<3",
+    "pytest>=8.4,<9",
+]
+
+[project.scripts]
+personaweave = "personaweave.main:run"
+personaweave-comfy-gateway = "personaweave.comfy_gateway:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/personaweave"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

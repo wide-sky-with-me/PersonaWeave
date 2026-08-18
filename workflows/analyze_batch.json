@@ -1,0 +1,10 @@
+{
+  "name": "analyze_batch",
+  "version": 1,
+  "input": "AnalysisRequest",
+  "provider_operation": "POST /v1/analyze-faces",
+  "output": "AnalysisResult",
+  "requires_human_confirmation": true,
+  "next": "confirm_identity_mapping"
+}
+

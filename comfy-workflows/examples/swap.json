@@ -1,0 +1,28 @@
+{
+  "name": "example-atomic-face-swap-v1",
+  "version": 1,
+  "model": "replace-with-deployed-model",
+  "prompt": {
+    "20": {
+      "class_type": "PersonaWeaveFaceSwap",
+      "inputs": {
+        "image": "{{source_image}}",
+        "reference_images_json": "{{reference_images_json}}",
+        "request_json": "{{request_json}}",
+        "preserve_outside_mask": true
+      }
+    },
+    "21": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": ["20", 0],
+        "filename_prefix": "PersonaWeave"
+      }
+    }
+  },
+  "output": {
+    "node_id": "21",
+    "field": "images",
+    "kind": "image"
+  }
+}

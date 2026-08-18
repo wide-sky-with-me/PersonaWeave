@@ -1,0 +1,4 @@
+# Keep uv's cache inside the writable project filesystem. This also lets uv use
+# fast filesystem links between the cache and .venv in sandboxed environments.
+cache-dir = "./.uv-cache"
+
