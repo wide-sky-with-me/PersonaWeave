@@ -226,20 +226,12 @@ class SourceAssetEvidence(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     faces: list[CompiledFaceEvidence] = Field(max_length=128)
     editable_face_instance_ids: list[str] = Field(default_factory=list, max_length=128)
-    authorization_mask: CanonicalMaskEvidence | None = None
+    authorization_mask: "CanonicalMaskEvidence | None" = None
 
     @computed_field
     @property
     def requires_authorization_mask(self) -> bool:
         return bool(self.editable_face_instance_ids)
-
-    @model_validator(mode="before")
-    @classmethod
-    def discard_mask_requirement_projection(cls, value: object) -> object:
-        if isinstance(value, dict) and "requires_authorization_mask" in value:
-            value = {**value}
-            value.pop("requires_authorization_mask")
-        return value
 
     @model_validator(mode="after")
     def validate_editable_projection(self) -> "SourceAssetEvidence":
@@ -252,16 +244,6 @@ class SourceAssetEvidence(BaseModel):
             raise ValueError("editable face instance IDs cannot be empty")
         if not set(self.editable_face_instance_ids).issubset(face_ids):
             raise ValueError("every editable face instance ID must resolve to compiled face evidence")
-        if (self.authorization_mask is not None) != self.requires_authorization_mask:
-            raise ValueError(
-                "canonical authorization mask evidence must exist exactly when "
-                "editable face instances exist"
-            )
-        if self.authorization_mask is not None and (
-            self.authorization_mask.source_asset_id != self.asset_id
-            or self.authorization_mask.source_asset_code != self.code
-        ):
-            raise ValueError("canonical authorization mask source lineage is stale")
         return self
 
 
@@ -389,66 +371,6 @@ class AttributePermission(BaseModel):
             raise ValueError("attribute permissions must partition every supported head attribute")
         return self
 
-class SemanticMaskContour(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    operation: Literal["include", "exclude"]
-    face_instance_id: str = Field(min_length=1, max_length=128)
-    person_id: str = Field(min_length=1, max_length=128)
-    person_code: str = Field(pattern=r"^P\d+$", max_length=40)
-    permissions: AttributePermission
-    points: list[NormalizedPoint] = Field(min_length=3, max_length=64)
-    confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    evidence: str = Field(default="", max_length=300)
-
-
-class SemanticMaskProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source_asset_id: str = Field(min_length=1, max_length=128)
-    source_asset_code: str = Field(pattern=r"^I\d+$", max_length=40)
-    contours: list[SemanticMaskContour] = Field(default_factory=list, max_length=64)
-    confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
-    summary: str = Field(default="", max_length=500)
-
-
-class CanonicalMaskEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source_asset_id: str = Field(min_length=1, max_length=128)
-    source_asset_code: str = Field(pattern=r"^I\d+$", max_length=40)
-    width: Annotated[int, Field(gt=0, le=32768)]
-    height: Annotated[int, Field(gt=0, le=32768)]
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    proposal: SemanticMaskProposal
-    review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
-    status: Literal["validated"] = "validated"
-
-    @computed_field
-    @property
-    def requires_manual_review(self) -> bool:
-        return bool(self.review_reasons)
-
-    @model_validator(mode="before")
-    @classmethod
-    def discard_manual_review_projection(cls, value: object) -> object:
-        if isinstance(value, dict) and "requires_manual_review" in value:
-            value = {**value}
-            value.pop("requires_manual_review")
-        return value
-
-    @model_validator(mode="after")
-    def validate_source_identity(self) -> CanonicalMaskEvidence:
-        if (
-            self.proposal.source_asset_id != self.source_asset_id
-            or self.proposal.source_asset_code != self.source_asset_code
-        ):
-            raise ValueError("canonical mask proposal source identity is stale")
-        unsupported = self.review_reasons - {ReviewReason.MASK_UNCERTAIN}
-        if unsupported:
-            raise ValueError("canonical mask carries an unsupported review reason")
-        return self
-
 
 class CompiledIdentityEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -564,11 +486,6 @@ class CompiledBatchContract(BaseModel):
                 for coverage in operation.source_reference_coverage
             )
             else set()
-        ) | frozenset(
-            reason
-            for source in self.source_assets
-            if source.authorization_mask is not None
-            for reason in source.authorization_mask.review_reasons
         )
 
     @computed_field
@@ -699,9 +616,7 @@ class SwapOperation(BaseModel):
             and self.source_reference_coverage.requires_manual_review
             else frozenset()
         )
-        if (
-            self.review_reasons - {ReviewReason.MASK_UNCERTAIN}
-        ) != expected_reference:
+        if self.review_reasons != expected_reference:
             raise ValueError("swap operation review reasons do not match source evidence")
         return self
 
@@ -731,9 +646,6 @@ def project_formal_swap_operations(
     source: SourceAssetEvidence,
 ) -> list[SwapOperation]:
     """Project immutable per-face operations, deliberately excluding runtime URIs."""
-    mask = source.authorization_mask
-    if mask is None:
-        raise ValueError("formal swap operation projection requires mask evidence")
     contract_hash = contract.sha256()
     operations_by_person = {
         operation.person_id: operation for operation in contract.operations
@@ -752,7 +664,7 @@ def project_formal_swap_operations(
             ),
             None,
         )
-        review_reasons = mask.review_reasons | (
+        review_reasons = (
             frozenset({ReviewReason.REFERENCE_INSUFFICIENCY})
             if coverage is not None and coverage.requires_manual_review
             else frozenset()
@@ -882,17 +794,15 @@ class SwapRequest(BaseModel):
     image_api_path: str = "/images/edits"
     image_output_size: str = "1024x1024"
     image_response_format: Literal["url", "b64_json"] = "url"
-    # Model-native mode returns the provider's complete edited canvas. This flag
-    # is reserved for an explicitly selected strict local-composite mode.
-    preserve_outside_mask: bool = False
     operation: Literal["swap_face"] = "swap_face"
     compiled_contract: CompiledBatchContract | None = None
     contract_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    authorization_mask_uri: str = ""
-    authorization_mask_sha256: str = ""
-    authorization_mask_width: Annotated[int, Field(ge=0)] = 0
-    authorization_mask_height: Annotated[int, Field(ge=0)] = 0
     review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
+    authorization_mask_uri: str | None = None
+    authorization_mask_sha256: str | None = None
+    authorization_mask_width: int | None = None
+    authorization_mask_height: int | None = None
+    preserve_outside_mask: bool = False
 
     @computed_field
     @property
@@ -920,13 +830,6 @@ class SwapRequest(BaseModel):
             raise ValueError("contract_hash does not match compiled_contract")
         if self.image_api_mode != "multipart_edits":
             raise ValueError("formal generation requires multipart_edits")
-        if (
-            not self.authorization_mask_uri
-            or len(self.authorization_mask_sha256) != 64
-            or self.authorization_mask_width <= 0
-            or self.authorization_mask_height <= 0
-        ):
-            raise ValueError("formal generation requires persisted authorization mask evidence")
         source_evidence = next(
             (
                 source
@@ -935,15 +838,8 @@ class SwapRequest(BaseModel):
             ),
             None,
         )
-        if source_evidence is None or not source_evidence.requires_authorization_mask:
+        if source_evidence is None or not source_evidence.editable_face_instance_ids:
             raise ValueError("formal generation source is not editable")
-        mask = source_evidence.authorization_mask
-        if mask is None or (
-            mask.sha256 != self.authorization_mask_sha256
-            or mask.width != self.authorization_mask_width
-            or mask.height != self.authorization_mask_height
-        ):
-            raise ValueError("authorization mask evidence does not match compiled contract")
         if self.source_image_code != source_evidence.code:
             raise ValueError("source image code does not match compiled source evidence")
         if self.task_instruction != contract.task_instruction:
@@ -1015,11 +911,6 @@ class SwapResult(BaseModel):
     completed_iterations: int = 1
     generation_plan: dict[str, object] = Field(default_factory=dict)
     generation_review: dict[str, object] = Field(default_factory=dict)
-    authorization_mask_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    authorization_mask_width: int | None = Field(default=None, gt=0)
-    authorization_mask_height: int | None = Field(default=None, gt=0)
     review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
 
     @computed_field
@@ -1070,9 +961,7 @@ class ValidationSubject(BaseModel):
             and self.source_reference_coverage.requires_manual_review
             else frozenset()
         )
-        if (
-            self.review_reasons - {ReviewReason.MASK_UNCERTAIN}
-        ) != expected_reference:
+        if self.review_reasons != expected_reference:
             raise ValueError("validation subject reasons do not match source evidence")
         return self
 
@@ -1162,3 +1051,46 @@ class ValidationResult(BaseModel):
             value = {**value}
             value.pop("requires_manual_review")
         return value
+
+
+class SemanticMaskContour(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["include", "exclude"]
+    face_instance_id: str = Field(min_length=1, max_length=128)
+    person_id: str = Field(min_length=1, max_length=128)
+    person_code: str = Field(pattern=r"^P\d+$", max_length=40)
+    permissions: AttributePermission
+    points: list[NormalizedPoint] = Field(min_length=3, max_length=256)
+    confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 1.0
+    evidence: str = Field(default="", max_length=2000)
+
+
+class SemanticMaskProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    source_asset_code: str = Field(pattern=r"^I\d+$", max_length=40)
+    contours: list[SemanticMaskContour] = Field(default_factory=list, max_length=128)
+    confidence: Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)] = 1.0
+    summary: str = Field(default="", max_length=2000)
+    evidence: str = Field(default="", max_length=2000)
+    review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
+
+
+class CanonicalMaskEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    source_asset_code: str = Field(pattern=r"^I\d+$", max_length=40)
+    width: Annotated[int, Field(ge=1, le=65535)]
+    height: Annotated[int, Field(ge=1, le=65535)]
+    sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    proposal: SemanticMaskProposal
+    status: Literal["proposed", "confirmed", "validated"] = "proposed"
+    review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
+
+    @computed_field
+    @property
+    def requires_manual_review(self) -> bool:
+        return bool(self.review_reasons)

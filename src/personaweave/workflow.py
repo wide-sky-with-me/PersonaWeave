@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from personaweave.assets import AssetResolver
 from personaweave.domain import (
@@ -31,7 +32,6 @@ from personaweave.formal import (
     FormalSwapRequestFactory,
     FormalSwapRequestSnapshot,
     GenerationProfile,
-    SemanticMaskProposalCompiler,
     TaskContractCompiler,
     explicit_instruction_mappings,
     instruction_requests_all_people_edit,
@@ -56,7 +56,7 @@ class WorkflowService:
         image_response_format: str = "url",
         *,
         contract_compiler: TaskContractCompiler | None = None,
-        semantic_mask_compiler: SemanticMaskProposalCompiler | None = None,
+        semantic_mask_compiler: Any | None = None,
         asset_resolver: AssetResolver | None = None,
     ):
         self.repository = repository
@@ -70,6 +70,39 @@ class WorkflowService:
         self.asset_resolver = asset_resolver
         self.formal_contract_compiler = FormalContractCompiler()
         self.swap_request_factory = FormalSwapRequestFactory()
+
+    def _build_formal_sources(self, batch_id: str) -> tuple[FormalSourceSnapshot, ...]:
+        source_records = self.repository.list_assets(batch_id, AssetKind.SOURCE)
+        mask_records = self.repository.list_formal_masks(batch_id)
+        masks_by_source: dict[str, dict[str, Any]] = {}
+        for mask in mask_records:
+            if mask.get("status") == "confirmed":
+                masks_by_source[mask["source_asset_id"]] = mask
+        return tuple(
+            FormalSourceSnapshot(
+                id=source["id"],
+                code=source["display_code"],
+                storage_uri=source["storage_uri"],
+                media_type=source["media_type"],
+                sha256=source["sha256"],
+                faces=tuple(
+                    FormalFaceSnapshot(
+                        id=face["id"],
+                        person_id=face["person_id"],
+                        bbox=BoundingBox.model_validate(face["bbox"]),
+                        appearance=PersonAppearance.model_validate(
+                            face.get("appearance") or {}
+                        ),
+                    )
+                    for face in self.repository.list_faces_for_asset(source["id"])
+                ),
+                persisted_authorization_mask_uri=masks_by_source.get(source["id"], {}).get("storage_uri"),
+                persisted_authorization_mask_sha256=masks_by_source.get(source["id"], {}).get("sha256"),
+                persisted_authorization_mask_width=masks_by_source.get(source["id"], {}).get("width"),
+                persisted_authorization_mask_height=masks_by_source.get(source["id"], {}).get("height"),
+            )
+            for source in source_records
+        )
 
     def start_analysis(self, batch_id: str) -> list[dict]:
         batch = self.repository.get_batch(batch_id)
@@ -239,33 +272,9 @@ class WorkflowService:
         compiler = self.contract_compiler
         if compiler is None:
             raise ValueError("task contract compiler is not configured")
-        mask_compiler = self.semantic_mask_compiler
-        if mask_compiler is None:
-            raise ValueError("semantic mask proposal compiler is not configured")
         people = self.repository.list_persons(batch_id)
         identities = self.repository.list_identities(batch_id)
-        source_records = self.repository.list_assets(batch_id, AssetKind.SOURCE)
-        sources = tuple(
-            FormalSourceSnapshot(
-                id=source["id"],
-                code=source["display_code"],
-                storage_uri=source["storage_uri"],
-                media_type=source["media_type"],
-                sha256=source["sha256"],
-                faces=tuple(
-                    FormalFaceSnapshot(
-                        id=face["id"],
-                        person_id=face["person_id"],
-                        bbox=BoundingBox.model_validate(face["bbox"]),
-                        appearance=PersonAppearance.model_validate(
-                            face.get("appearance") or {}
-                        ),
-                    )
-                    for face in self.repository.list_faces_for_asset(source["id"])
-                ),
-            )
-            for source in source_records
-        )
+        sources = self._build_formal_sources(batch_id)
         snapshot = FormalCompilationSnapshot(
             batch_id=batch_id,
             task_instruction=batch["task_instruction"],
@@ -304,7 +313,6 @@ class WorkflowService:
         compilation = await self.formal_contract_compiler.compile(
             snapshot,
             compiler,
-            mask_compiler,
             self.asset_resolver,
         )
         return self.repository.store_compiled_contract(batch_id, compilation)
@@ -330,30 +338,8 @@ class WorkflowService:
         if not batch["compiled_contract"] or not batch["contract_hash"] or not batch["confirmed_at"]:
             raise InvalidTransition("batch has no confirmed task contract")
         contract = CompiledBatchContract.model_validate(batch["compiled_contract"])
-        persisted_masks = {
-            mask["source_asset_id"]: mask
-            for mask in self.repository.list_formal_masks(batch_id)
-        }
-        contract_masks = {
-            source.asset_id: source.authorization_mask
-            for source in contract.source_assets
-            if source.requires_authorization_mask
-        }
-        if set(persisted_masks) != set(contract_masks) or any(
-            evidence is None
-            or persisted_masks[source_id]["sha256"] != evidence.sha256
-            or persisted_masks[source_id]["width"] != evidence.width
-            or persisted_masks[source_id]["height"] != evidence.height
-            or persisted_masks[source_id]["status"] != "confirmed"
-            for source_id, evidence in contract_masks.items()
-        ):
-            raise InvalidTransition(
-                "confirmed contract does not have one persisted canonical mask "
-                "per editable source"
-            )
         people_records = self.repository.list_persons(batch_id)
         identity_records = self.repository.list_identities(batch_id)
-        source_records = self.repository.list_assets(batch_id, AssetKind.SOURCE)
         people = tuple(
             FormalPersonSnapshot(id=person["id"], code=person["display_code"])
             for person in people_records
@@ -374,32 +360,7 @@ class WorkflowService:
             )
             for identity in identity_records
         )
-        sources = tuple(
-            FormalSourceSnapshot(
-                id=source["id"],
-                code=source["display_code"],
-                storage_uri=source["storage_uri"],
-                media_type=source["media_type"],
-                sha256=source["sha256"],
-                faces=tuple(
-                    FormalFaceSnapshot(
-                        id=face["id"],
-                        person_id=face["person_id"],
-                        bbox=BoundingBox.model_validate(face["bbox"]),
-                        appearance=PersonAppearance.model_validate(
-                            face.get("appearance") or {}
-                        ),
-                    )
-                    for face in self.repository.list_faces_for_asset(source["id"])
-                ),
-                persisted_authorization_mask_uri=(
-                    persisted_masks[source["id"]]["storage_uri"]
-                    if source["id"] in persisted_masks
-                    else None
-                ),
-            )
-            for source in source_records
-        )
+        sources = self._build_formal_sources(batch_id)
         try:
             mappings = tuple(
                 FormalMappingSnapshot(
@@ -429,7 +390,7 @@ class WorkflowService:
             job_inputs = []
             sources_by_id = {source.id: source for source in sources}
             for source_evidence in contract.source_assets:
-                if not source_evidence.requires_authorization_mask:
+                if not source_evidence.editable_face_instance_ids:
                     continue
                 source = sources_by_id[source_evidence.asset_id]
                 request = self.swap_request_factory.create(
@@ -484,15 +445,6 @@ class WorkflowService:
             swap_job = swap_jobs_by_item[result.source_asset_id]
             result = result.model_copy(
                 update={
-                    "authorization_mask_sha256": swap_job["input"][
-                        "authorization_mask_sha256"
-                    ],
-                    "authorization_mask_width": swap_job["input"][
-                        "authorization_mask_width"
-                    ],
-                    "authorization_mask_height": swap_job["input"][
-                        "authorization_mask_height"
-                    ],
                     "review_reasons": frozenset(
                         swap_job["input"].get("review_reasons", [])
                     ),

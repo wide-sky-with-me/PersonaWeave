@@ -1,19 +1,13 @@
-import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, Protocol
-
-from PIL import Image
 
 from personaweave.assets import AssetResolver
 from personaweave.domain import (
     AttributePermission,
     BoundingBox,
-    CanonicalMaskEvidence,
     CompiledBatchContract,
     CompiledFaceEvidence,
     CompiledIdentityEvidence,
@@ -23,7 +17,6 @@ from personaweave.domain import (
     ReferenceAssetEvidence,
     ReferenceSufficiency,
     ReviewReasonSet,
-    SemanticMaskProposal,
     SourceAssetEvidence,
     SourceOccurrenceEvidence,
     SourceOccurrenceReferenceAssessment,
@@ -36,12 +29,6 @@ from personaweave.domain import (
     instruction_requests_all_people_edit,
     project_formal_swap_operations,
 )
-from personaweave.formal_masks import (
-    CompiledMaskArtifact,
-    FormalCompilationResult,
-    FormalMaskFaceScope,
-    validate_and_rasterize_semantic_mask,
-)
 
 
 class TaskContractCompiler(Protocol):
@@ -53,13 +40,6 @@ class TaskContractCompiler(Protocol):
         target_profile: TargetIdentityProfile, reference_assessment: ReferenceSufficiency,
         references: list[dict[str, str]],
     ) -> SourceOperationReferenceCoverage: ...
-
-class SemanticMaskProposalCompiler(Protocol):
-    async def compile_semantic_mask_proposal(
-        self, *, source_asset_id: str, source_asset_code: str, source_uri: str,
-        faces: list[dict[str, object]], protected_people: list[dict[str, str]],
-        identity_evidence: list[dict[str, object]],
-    ) -> SemanticMaskProposal: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +67,9 @@ class FormalSourceSnapshot:
     sha256: str
     faces: tuple[FormalFaceSnapshot, ...]
     persisted_authorization_mask_uri: str | None = None
+    persisted_authorization_mask_sha256: str | None = None
+    persisted_authorization_mask_width: int | None = None
+    persisted_authorization_mask_height: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,13 +262,8 @@ class FormalSwapRequestFactory:
         except KeyError as error:
             raise ValueError("requested source is outside the confirmed snapshot") from error
         source_evidence = source_evidence_by_id[source.id]
-        if not source_evidence.requires_authorization_mask:
+        if not source_evidence.editable_face_instance_ids:
             raise ValueError("confirmed source is not eligible for formal generation")
-        authorization_mask = source_evidence.authorization_mask
-        if authorization_mask is None:
-            raise ValueError("editable source has no canonical authorization mask evidence")
-        if not source.persisted_authorization_mask_uri:
-            raise ValueError("editable source has no persisted canonical authorization mask")
         face_ids = [face.id for face in source.faces]
         if len(face_ids) != len(set(face_ids)):
             raise ValueError("confirmed source face instances are not unique")
@@ -342,14 +320,14 @@ class FormalSwapRequestFactory:
             image_api_path=profile.image_api_path,
             image_output_size=profile.image_output_size,
             image_response_format=profile.image_response_format,
-            preserve_outside_mask=True,
             compiled_contract=contract,
             contract_hash=batch.contract_hash,
-            authorization_mask_uri=source.persisted_authorization_mask_uri,
-            authorization_mask_sha256=authorization_mask.sha256,
-            authorization_mask_width=authorization_mask.width,
-            authorization_mask_height=authorization_mask.height,
             review_reasons=review_reasons,
+            authorization_mask_uri=source.persisted_authorization_mask_uri,
+            authorization_mask_sha256=source.persisted_authorization_mask_sha256,
+            authorization_mask_width=source.persisted_authorization_mask_width,
+            authorization_mask_height=source.persisted_authorization_mask_height,
+            preserve_outside_mask=True,
         )
         validate_swap_request_scope(request)
         return request
@@ -362,9 +340,8 @@ class FormalContractCompiler:
         self,
         snapshot: FormalCompilationSnapshot,
         compiler: TaskContractCompiler,
-        mask_compiler: SemanticMaskProposalCompiler,
         resolver: AssetResolver | None,
-    ) -> FormalCompilationResult:
+    ) -> CompiledBatchContract:
         people = {person.id: person for person in snapshot.people}
         mappings = {mapping.person_id: mapping for mapping in snapshot.mappings}
         if len(mappings) != len(snapshot.mappings) or set(mappings) != set(people):
@@ -462,191 +439,29 @@ class FormalContractCompiler:
                 source_reference_coverage=coverages,
                 review_reasons=operation_review_reasons,
             ))
-        if resolver is None:
-            raise ValueError("formal semantic masks require a configured local asset resolver")
         operations_by_person = {operation.person_id: operation for operation in operations}
-        source_assets: list[SourceAssetEvidence | None] = [None] * len(snapshot.sources)
-        compiled_masks: list[CompiledMaskArtifact] = []
-        mask_compile_semaphore = asyncio.Semaphore(4)
-
-        async def compile_masked_source(
-            *,
-            source_index: int,
-            source: FormalSourceSnapshot,
-            source_path: Path,
-            compiled_faces: list[CompiledFaceEvidence],
-            editable_scopes: list[FormalMaskFaceScope],
-            protected_faces: list[BoundingBox],
-            editable_face_instance_ids: list[str],
-            face_payloads: list[dict[str, object]],
-            protected_people: list[dict[str, str]],
-            identity_payloads: list[dict[str, object]],
-        ) -> tuple[int, SourceAssetEvidence, CompiledMaskArtifact]:
-            async with mask_compile_semaphore:
-                proposal = await mask_compiler.compile_semantic_mask_proposal(
-                    source_asset_id=source.id,
-                    source_asset_code=source.code,
-                    source_uri=resolver.for_remote(source.storage_uri, source.media_type),
-                    faces=face_payloads,
-                    protected_people=protected_people,
-                    identity_evidence=identity_payloads,
-                )
-            rasterized = validate_and_rasterize_semantic_mask(
-                source_path=source_path,
-                proposal=proposal,
-                source_asset_id=source.id,
-                source_asset_code=source.code,
-                editable_faces=editable_scopes,
-                protected_faces=protected_faces,
-            )
-            mask_evidence = CanonicalMaskEvidence(
-                source_asset_id=source.id,
-                source_asset_code=source.code,
-                width=rasterized.width,
-                height=rasterized.height,
-                sha256=rasterized.sha256,
-                proposal=rasterized.proposal,
-                review_reasons=rasterized.review_reasons,
-            )
-            return (
-                source_index,
+        source_assets: list[SourceAssetEvidence] = []
+        for source in snapshot.sources:
+            compiled_faces = _compiled_face_evidence(source, people)
+            editable_face_instance_ids = [
+                face.id
+                for face in source.faces
+                if operations_by_person[face.person_id].action is not MappingAction.KEEP
+            ]
+            source_assets.append(
                 SourceAssetEvidence(
                     asset_id=source.id,
                     code=source.code,
                     sha256=source.sha256,
                     faces=compiled_faces,
                     editable_face_instance_ids=editable_face_instance_ids,
-                    authorization_mask=mask_evidence,
-                ),
-                CompiledMaskArtifact(
-                    evidence=mask_evidence,
-                    png_bytes=rasterized.png_bytes,
-                ),
-            )
-
-        mask_jobs: list[
-            Awaitable[tuple[int, SourceAssetEvidence, CompiledMaskArtifact]]
-        ] = []
-        for source_index, source in enumerate(snapshot.sources):
-            source_path = resolver.local_path(source.storage_uri)
-            if source_path is None or not source_path.is_file():
-                raise ValueError("formal semantic mask source must be locally available")
-            with Image.open(source_path) as source_image:
-                source_width, source_height = source_image.size
-            compiled_faces = _compiled_face_evidence(source, people)
-            editable_scopes: list[FormalMaskFaceScope] = []
-            protected_faces: list[BoundingBox] = []
-            face_payloads: list[dict[str, object]] = []
-            for face in source.faces:
-                person = people[face.person_id]
-                operation = operations_by_person[person.id]
-                editable = operation.action is not MappingAction.KEEP
-                face_payloads.append(
-                    {
-                        "face_instance_id": face.id,
-                        "person_id": person.id,
-                        "person_code": person.code,
-                        "bbox": face.bbox.model_dump(mode="json"),
-                        "normalized_bbox": {
-                            "x": face.bbox.x / source_width,
-                            "y": face.bbox.y / source_height,
-                            "width": face.bbox.width / source_width,
-                            "height": face.bbox.height / source_height,
-                        },
-                        "source_dimensions": {
-                            "width": source_width,
-                            "height": source_height,
-                        },
-                        "action": operation.action.value,
-                        "editable_attributes": list(operation.permissions.editable),
-                        "protected_attributes": list(operation.permissions.protected),
-                    }
-                )
-                if editable:
-                    editable_scopes.append(
-                        FormalMaskFaceScope(
-                            face_instance_id=face.id,
-                            person_id=person.id,
-                            person_code=person.code,
-                            bbox=face.bbox,
-                            permissions=operation.permissions,
-                        )
-                    )
-                else:
-                    protected_faces.append(face.bbox)
-            editable_face_instance_ids = [
-                scope.face_instance_id for scope in editable_scopes
-            ]
-            if not editable_scopes:
-                source_assets[source_index] = SourceAssetEvidence(
-                    asset_id=source.id,
-                    code=source.code,
-                    sha256=source.sha256,
-                    faces=compiled_faces,
-                    editable_face_instance_ids=[],
-                )
-                continue
-            protected_people = [
-                {
-                    "person_id": operation.person_id,
-                    "person_code": operation.person_code,
-                }
-                for operation in operations
-                if operation.action is MappingAction.KEEP
-            ]
-            identity_payloads: list[dict[str, object]] = []
-            for scope in editable_scopes:
-                operation = operations_by_person[scope.person_id]
-                target_profile = operation.target_profile
-                reference_assessment = operation.reference_assessment
-                identity_payloads.append(
-                    {
-                        "person_id": scope.person_id,
-                        "person_code": scope.person_code,
-                        "target_profile": (
-                            target_profile.model_dump(mode="json")
-                            if target_profile is not None
-                            else None
-                        ),
-                        "reference_assessment": (
-                            reference_assessment.model_dump(mode="json")
-                            if reference_assessment is not None
-                            else None
-                        ),
-                        "source_reference_coverage": [
-                            coverage.model_dump(mode="json")
-                            for coverage in operation.source_reference_coverage
-                            if coverage.source_asset_id == source.id
-                        ],
-                    }
-                )
-            mask_jobs.append(
-                compile_masked_source(
-                    source_index=source_index,
-                    source=source,
-                    source_path=source_path,
-                    compiled_faces=compiled_faces,
-                    editable_scopes=editable_scopes,
-                    protected_faces=protected_faces,
-                    editable_face_instance_ids=editable_face_instance_ids,
-                    face_payloads=face_payloads,
-                    protected_people=protected_people,
-                    identity_payloads=identity_payloads,
                 )
             )
-        for source_index, source_evidence, mask_artifact in await asyncio.gather(*mask_jobs):
-            source_assets[source_index] = source_evidence
-            compiled_masks.append(mask_artifact)
-        if any(source is None for source in source_assets):
-            raise RuntimeError("formal source compilation returned incomplete evidence")
-        compiled_source_assets = [
-            source for source in source_assets if source is not None
-        ]
         contract = CompiledBatchContract(
             task_instruction=snapshot.task_instruction,
             max_iterations=snapshot.max_iterations,
             operations=operations,
             identities=list(evidence_by_id.values()),
-            source_assets=compiled_source_assets,
+            source_assets=source_assets,
         )
-        return FormalCompilationResult(contract=contract, masks=tuple(compiled_masks))
+        return contract

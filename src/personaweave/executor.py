@@ -412,10 +412,6 @@ class PipelineExecutor:
             validate_swap_request_scope(request)
             source = self.repository.get_asset(request.asset_id)
             request.asset_uri = self.assets.for_remote(request.asset_uri, source["media_type"])
-            request.authorization_mask_uri = self.assets.for_remote(
-                request.authorization_mask_uri,
-                "image/png",
-            )
             for operation in request.replacements:
                 operation.reference_uris = [
                     self.assets.for_remote(reference_uri) for reference_uri in operation.reference_uris
@@ -547,9 +543,6 @@ class PipelineExecutor:
             result.completed_iterations = completed_iterations
             result.generation_plan = plan.model_dump(mode="json")
             result.generation_review = final_review
-            result.authorization_mask_sha256 = request.authorization_mask_sha256
-            result.authorization_mask_width = request.authorization_mask_width
-            result.authorization_mask_height = request.authorization_mask_height
             result.review_reasons = request.review_reasons
             return result.model_dump(mode="json")
 

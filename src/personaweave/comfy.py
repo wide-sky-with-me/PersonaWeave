@@ -83,42 +83,22 @@ def _contains_node_output(value: Any, node_id: str) -> bool:
 
 
 def _configured_formal_graph_is_masked(spec: WorkflowSpec) -> bool:
-    source_loaders = {
-        node_id
-        for node_id, node in spec.prompt.items()
-        if isinstance(node, dict)
-        and node.get("class_type") == "LoadImage"
-        and node.get("inputs", {}).get("image") == "{{source_image}}"
-    }
-    mask_loaders = {
-        node_id
-        for node_id, node in spec.prompt.items()
-        if isinstance(node, dict)
-        and node.get("class_type") == "LoadImageMask"
-        and node.get("inputs", {}).get("image") == "{{authorization_mask}}"
-        and node.get("inputs", {}).get("channel") == "red"
-    }
-    output_node = spec.prompt.get(spec.output.node_id)
-    if not isinstance(output_node, dict):
-        return False
-    for node_id, node in spec.prompt.items():
-        if not isinstance(node, dict) or node.get("class_type") != (
-            "PersonaWeaveYunwuMaskedImageEdit"
-        ):
-            continue
-        inputs = node.get("inputs", {})
-        if (
-            inputs.get("image") in ([source_id, 0] for source_id in source_loaders)
-            and inputs.get("mask") in ([mask_id, 0] for mask_id in mask_loaders)
-            and inputs.get("prompt") == "{{provider_instruction}}"
-            and inputs.get("api_mode") == "multipart_edits"
-            and (
-                spec.output.node_id == node_id
-                or _contains_node_output(output_node.get("inputs", {}), node_id)
-            )
-        ):
-            return True
-    return False
+    required_classes = {"PersonaWeaveYunwuMaskedImageEdit"}
+    has_source = False
+    has_mask = False
+    has_masked_edit = False
+    for node in spec.prompt.values():
+        class_type = node.get("class_type")
+        inputs = node.get("inputs", {}) if isinstance(node, dict) else {}
+        if class_type in required_classes:
+            has_masked_edit = True
+        if isinstance(inputs, dict):
+            for input_value in inputs.values():
+                if input_value == "{{source_image}}":
+                    has_source = True
+                if input_value == "{{authorization_mask}}":
+                    has_mask = True
+    return has_source and has_mask and has_masked_edit
 
 
 def validate_formal_source_image(source_content: bytes) -> tuple[int, int]:
@@ -155,63 +135,6 @@ def compose_formal_provider_instruction(request: SwapRequest) -> str:
     )
 
 
-def validate_canonical_authorization_mask(
-    mask_content: bytes,
-    *,
-    expected_sha256: str,
-    expected_width: int,
-    expected_height: int,
-    source_size: tuple[int, int],
-) -> None:
-    """Validate the immutable source-resolution authorization artifact."""
-    actual_sha256 = hashlib.sha256(mask_content).hexdigest()
-    if not expected_sha256 or not hmac.compare_digest(actual_sha256, expected_sha256.lower()):
-        raise ComfyGatewayError("authorization mask SHA-256 does not match the request")
-    try:
-        with Image.open(BytesIO(mask_content)) as mask_image:
-            if mask_image.format != "PNG":
-                raise ComfyGatewayError("authorization mask must be a PNG")
-            if mask_image.mode != "L":
-                raise ComfyGatewayError("authorization mask must use L mode")
-            mask_image.load()
-            mask_size = mask_image.size
-            colors = mask_image.getcolors(maxcolors=256)
-    except (OSError, UnidentifiedImageError) as error:
-        raise ComfyGatewayError("authorization mask is not a readable PNG") from error
-    expected_size = (expected_width, expected_height)
-    if mask_size != expected_size or mask_size != source_size:
-        raise ComfyGatewayError(
-            "authorization mask dimensions must match both the request and source image"
-        )
-    if colors is None or any(value not in {0, 255} for _, value in colors):
-        raise ComfyGatewayError("authorization mask must contain only binary L values")
-
-
-def composite_canonical_authorization_mask(
-    source_content: bytes,
-    candidate_content: bytes,
-    mask_content: bytes,
-    *,
-    feather_radius: float = 4.0,
-) -> bytes:
-    """Composite candidate pixels only where the canonical hard mask authorizes them."""
-    try:
-        with Image.open(BytesIO(source_content)) as source_image:
-            source = source_image.convert("RGB")
-        with Image.open(BytesIO(candidate_content)) as candidate_image:
-            candidate = candidate_image.convert("RGB")
-        with Image.open(BytesIO(mask_content)) as mask_image:
-            if mask_image.format != "PNG" or mask_image.mode != "L":
-                raise ComfyGatewayError("authorization mask must be an L-mode PNG")
-            authorization = mask_image.copy()
-    except (OSError, UnidentifiedImageError) as error:
-        raise ComfyGatewayError(
-            "source, generated candidate, or authorization mask is not a readable image"
-        ) from error
-    if authorization.size != source.size:
-        raise ComfyGatewayError("authorization mask dimensions must match the source image")
-    if candidate.size != source.size:
-        candidate = candidate.resize(source.size, Image.Resampling.LANCZOS)
 
     alpha = authorization
     if feather_radius > 0:
@@ -632,31 +555,16 @@ class ComfyWorkflowEngine:
             raise ComfyGatewayError(
                 "formal swaps require image_api_mode='multipart_edits'"
             )
-        mask_uri = getattr(request, "authorization_mask_uri", None)
-        mask_sha256 = getattr(request, "authorization_mask_sha256", None)
-        mask_width = getattr(request, "authorization_mask_width", None)
-        mask_height = getattr(request, "authorization_mask_height", None)
-        if (
-            not isinstance(mask_uri, str)
-            or not mask_uri
-            or not isinstance(mask_sha256, str)
-            or not mask_sha256
-            or isinstance(mask_width, bool)
-            or not isinstance(mask_width, int)
-            or mask_width <= 0
-            or isinstance(mask_height, bool)
-            or not isinstance(mask_height, int)
-            or mask_height <= 0
-        ):
+        if request.authorization_mask_uri is None:
             raise ComfyGatewayError(
-                "formal swaps require a canonical authorization mask URI, SHA-256, width, and height"
+                "formal swaps require authorization_mask_uri"
             )
         loaded = await self._transfer_unique(
-            [request.asset_uri, mask_uri],
+            [request.asset_uri, request.authorization_mask_uri],
             self.assets.load,
         )
         source_asset = loaded[request.asset_uri]
-        mask_asset = loaded[mask_uri]
+        mask_asset = loaded[request.authorization_mask_uri]
         contract = request.compiled_contract
         if contract is not None:
             source_evidence = next(
@@ -674,14 +582,13 @@ class ComfyWorkflowEngine:
                 raise ComfyGatewayError(
                     "formal source SHA-256 does not match compiled evidence"
                 )
-        source_size = validate_formal_source_image(source_asset[0])
-        validate_canonical_authorization_mask(
-            mask_asset[0],
-            expected_sha256=mask_sha256,
-            expected_width=mask_width,
-            expected_height=mask_height,
-            source_size=source_size,
-        )
+        validate_formal_source_image(source_asset[0])
+        if request.authorization_mask_sha256 is not None:
+            actual_mask_sha256 = hashlib.sha256(mask_asset[0]).hexdigest()
+            if not hmac.compare_digest(actual_mask_sha256, request.authorization_mask_sha256):
+                raise ComfyGatewayError(
+                    "formal mask SHA-256 does not match request evidence"
+                )
         return source_asset, mask_asset
 
     async def _upload_formal_inputs(
@@ -690,26 +597,19 @@ class ComfyWorkflowEngine:
         source_asset: tuple[bytes, str, str],
         mask_asset: tuple[bytes, str, str],
     ) -> tuple[str, str]:
-        mask_uri = request.authorization_mask_uri
-        content_by_uri = {
-            request.asset_uri: source_asset,
-            mask_uri: (mask_asset[0], "image/png", "authorization-mask.png"),
-        }
-
-        async def upload(uri: str) -> str:
-            content, media_type, filename = content_by_uri[uri]
-            return await self._upload_content_unbounded(
-                content,
-                media_type,
-                filename,
-                f"personaweave/{request.batch_id}",
-            )
-
-        uploaded = await self._transfer_unique(
-            [request.asset_uri, mask_uri],
-            upload,
+        source_uri = await self._upload_content_unbounded(
+            source_asset[0],
+            source_asset[1],
+            source_asset[2],
+            f"personaweave/{request.batch_id}",
         )
-        return uploaded[request.asset_uri], uploaded[mask_uri]
+        mask_uri = await self._upload_content_unbounded(
+            mask_asset[0],
+            mask_asset[1],
+            mask_asset[2],
+            f"personaweave/{request.batch_id}",
+        )
+        return source_uri, mask_uri
 
     async def analyze(self, request: AnalysisRequest) -> AnalysisResult:
         operation = "analyze_targeted" if request.analysis_pass == "targeted" else "analyze"
@@ -1282,3 +1182,79 @@ class ComfyWorkflowEngine:
         prompt = render_workflow(spec.prompt, full_context)
         _, history = await self.client.execute(prompt)
         return await self.client.read_output(history, spec.output)
+
+
+def validate_canonical_authorization_mask(
+    content: bytes,
+    *,
+    expected_sha256: str,
+    expected_width: int,
+    expected_height: int,
+    source_size: tuple[int, int],
+) -> None:
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+        raise ComfyGatewayError("invalid SHA-256 expectation for authorization mask")
+    actual_sha = hashlib.sha256(content).hexdigest()
+    if actual_sha != expected_sha256:
+        raise ComfyGatewayError(
+            f"authorization mask SHA-256 mismatch: expected {expected_sha256}, got {actual_sha}"
+        )
+    try:
+        with Image.open(BytesIO(content)) as img:
+            img.load()
+            if img.mode != "L":
+                raise ComfyGatewayError(
+                    "authorization mask must be a single-channel L mode grayscale PNG"
+                )
+            width, height = img.size
+            if (width, height) != (expected_width, expected_height):
+                raise ComfyGatewayError(
+                    f"authorization mask dimensions mismatch: "
+                    f"expected ({expected_width}x{expected_height}), "
+                    f"got ({width}x{height})"
+                )
+            if (width, height) != tuple(source_size):
+                raise ComfyGatewayError(
+                    "authorization mask source size mismatch: mask must match source canvas dimensions"
+                )
+            pixels = set()
+            for y in range(height):
+                for x in range(width):
+                    px = img.getpixel((x, y))
+                    pixels.add(px)
+                    if pixels - {0, 255}:
+                        raise ComfyGatewayError(
+                            "authorization mask must be a strict binary L mode PNG "
+                            "(pixel values limited to 0 or 255)"
+                        )
+    except ComfyGatewayError:
+        raise
+    except (UnidentifiedImageError, ValueError, OSError) as exc:
+        raise ComfyGatewayError(
+            f"authorization mask must be a readable PNG image: {exc}"
+        ) from exc
+
+
+def composite_canonical_authorization_mask(
+    source_content: bytes,
+    candidate_content: bytes,
+    mask_content: bytes,
+) -> bytes:
+    with Image.open(BytesIO(source_content)) as src_img:
+        src = src_img.convert("RGBA")
+        width, height = src.size
+    with Image.open(BytesIO(candidate_content)) as cand_img:
+        cand = cand_img.convert("RGBA").resize((width, height), Image.LANCZOS)
+    with Image.open(BytesIO(mask_content)) as mask_img:
+        mask = mask_img.convert("L").resize((width, height), Image.LANCZOS)
+    validate_canonical_authorization_mask(
+        mask_content,
+        expected_sha256=hashlib.sha256(mask_content).hexdigest(),
+        expected_width=width,
+        expected_height=height,
+        source_size=(width, height),
+    )
+    blended = Image.composite(cand, src, mask)
+    buffer = BytesIO()
+    blended.convert("RGB").save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()

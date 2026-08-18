@@ -22,7 +22,6 @@ from personaweave.domain import (
     SourceOccurrenceEvidence,
     SourceOccurrenceReferenceAssessment,
     SourceOperationReferenceCoverage,
-    SemanticMaskProposal,
     SwapRequest,
     TargetIdentityProfile,
     ValidationRequest,
@@ -626,76 +625,6 @@ class YunwuMultimodalProvider:
             if action == "replace" and "face_identity" not in permissions.editable:
                 raise ValueError("replace permissions must authorize face_identity")
         return result
-
-    async def compile_semantic_mask_proposal(
-        self,
-        *,
-        source_asset_id: str,
-        source_asset_code: str,
-        source_uri: str,
-        faces: list[dict[str, object]],
-        protected_people: list[dict[str, str]],
-        identity_evidence: list[dict[str, object]],
-    ) -> SemanticMaskProposal:
-        """Propose geometry only; local code remains the authorization authority."""
-        if len(faces) > 128 or len(identity_evidence) > 128:
-            raise ValueError("semantic mask proposal context exceeds bounded limits")
-        schema_hint = {
-            "source_asset_id": source_asset_id,
-            "source_asset_code": source_asset_code,
-            "contours": [{
-                "operation": "include",
-                "face_instance_id": "exact supplied face_instance_id",
-                "person_id": "exact supplied person_id",
-                "person_code": "exact supplied person_code",
-                "permissions": {
-                    "editable": ["exact supplied editable attributes"],
-                    "protected": ["exact supplied protected attributes"],
-                },
-                "points": [{"x": 0.0, "y": 0.0}],
-                "confidence": 0.0,
-                "evidence": "short visible-only reason",
-            }],
-            "confidence": 0.0,
-            "summary": "short geometry assessment",
-        }
-        prompt = (
-            "Propose the authorization mask for this exact source image. Return arbitrary normalized "
-            "polygon contours, not ellipses or bounding boxes. Coordinates must be finite and inside "
-            "[0,1]. Use include contours for only the visible head pixels needed by each editable "
-            "confirmed face. Use exclude contours as holes for protected attributes, occluders, or "
-            "nearby people inside an include. Every contour must repeat one supplied editable "
-            "face_instance_id, person_id, person_code, and its exact complete permission partition. "
-            "Never add a face/person, change a mapping, authorize a protected person, authorize a "
-            "protected attribute, bridge neighboring heads, or expand ambiguous scope. Include every "
-            "editable face center and meaningful face area while keeping body/background/protected "
-            "pixels excluded. Low visual certainty is allowed: lower confidence rather than widening. "
-            "Return JSON only, at most 64 contours and 64 points per contour. Empty editable scope "
-            "requires an empty contours list.\n"
-            "The bbox field uses exact source pixels; normalized_bbox is the same exact geometry in "
-            "[0,1] contour coordinates and source_dimensions defines that conversion. "
-            f"EXACT FACE BBOXES/CODES/AUTHORIZATION: {json.dumps(faces, ensure_ascii=False)}\n"
-            f"PROTECTED PEOPLE: {json.dumps(protected_people, ensure_ascii=False)}\n"
-            "IDENTITY PROFILE/REFERENCE COVERAGE: "
-            f"{json.dumps(identity_evidence, ensure_ascii=False)}\n"
-            f"RETURN SHAPE: {json.dumps(schema_hint, ensure_ascii=False)}"
-        )
-        compiled = SemanticMaskProposal.model_validate(
-            await self._json_completion([
-                {"type": "text", "text": prompt},
-                {"type": "text", "text": f"SOURCE IMAGE {source_asset_code}"},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": source_uri, "detail": "high"},
-                },
-            ])
-        )
-        if (
-            compiled.source_asset_id != source_asset_id
-            or compiled.source_asset_code != source_asset_code
-        ):
-            raise ValueError("semantic mask compiler returned mismatched source identity")
-        return compiled
 
     async def audit_person_detection(
         self,

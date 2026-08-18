@@ -3,14 +3,12 @@ import json
 import mimetypes
 import sqlite3
 from contextlib import contextmanager
-from io import BytesIO
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from PIL import Image, UnidentifiedImageError
 
 from personaweave.domain import (
     AssetKind,
@@ -22,7 +20,6 @@ from personaweave.domain import (
     MappingAction,
     MappingDecision,
 )
-from personaweave.formal_masks import CompiledMaskArtifact, FormalCompilationResult
 
 
 def utc_now() -> str:
@@ -36,123 +33,8 @@ class Repository:
         formal_mask_root: Path | None = None,
     ):
         self.database_path = database_path
-        self.formal_mask_root = (
-            formal_mask_root
-            if formal_mask_root is not None
-            else database_path.parent / "assets"
-        ).resolve()
-
-    def _formal_mask_directory(self, batch_id: str) -> Path:
-        if not batch_id or Path(batch_id).name != batch_id:
-            raise ValueError("batch ID is not safe for formal-mask storage")
-        directory = (self.formal_mask_root / batch_id / "formal_masks").resolve()
-        if not directory.is_relative_to(self.formal_mask_root):
-            raise ValueError("formal-mask directory is outside the configured root")
-        return directory
-
-    def _formal_mask_path(
-        self,
-        batch_id: str,
-        source_asset_id: str,
-        digest: str,
-    ) -> Path:
-        if not source_asset_id or Path(source_asset_id).name != source_asset_id:
-            raise ValueError("source asset ID is not safe for formal-mask storage")
-        return self._formal_mask_directory(batch_id) / f"{source_asset_id}-{digest}.png"
-
-    @staticmethod
-    def _validate_compiled_mask(artifact: CompiledMaskArtifact) -> None:
-        evidence = artifact.evidence
-        actual_digest = hashlib.sha256(artifact.png_bytes).hexdigest()
-        if actual_digest != evidence.sha256:
-            raise ValueError("formal mask digest does not match canonical PNG bytes")
-        try:
-            with Image.open(BytesIO(artifact.png_bytes)) as image:
-                image_format = image.format
-                image.load()
-                mode = image.mode
-                size = image.size
-                colors = image.getcolors(maxcolors=256)
-        except (OSError, UnidentifiedImageError) as error:
-            raise ValueError("formal mask artifact is not a readable PNG") from error
-        if image_format != "PNG":
-            raise ValueError("formal mask artifact must be PNG")
-        if mode != "L":
-            raise ValueError("formal mask artifact must use L mode")
-        if size != (evidence.width, evidence.height):
-            raise ValueError("formal mask dimensions do not match contract evidence")
-        if colors is None or any(value not in {0, 255} for _, value in colors):
-            raise ValueError("formal mask artifact must contain only binary L values")
-
-
-    def _clear_stale_formal_mask_staging(self) -> None:
-        if not self.formal_mask_root.exists():
-            return
-        for path in self.formal_mask_root.glob("*/formal_masks/*.tmp"):
-            if path.is_file():
-                path.unlink(missing_ok=True)
-
-    def _reconcile_formal_mask_files(self) -> None:
-        try:
-            with self.connect() as connection:
-                referenced_uris = {
-                    row["storage_uri"]
-                    for row in connection.execute(
-                        "SELECT storage_uri FROM formal_masks"
-                    ).fetchall()
-                }
-        except sqlite3.Error:
-            return
-        for path in self.formal_mask_root.glob("*/formal_masks/*.png"):
-            if path.is_file() and path.resolve().as_uri() not in referenced_uris:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    continue
-
-    def drain_formal_mask_cleanup(self) -> int:
-        drained = 0
-        try:
-            with self.connect() as connection:
-                rows = connection.execute(
-                    "SELECT storage_uri FROM formal_mask_cleanup"
-                ).fetchall()
-                for row in rows:
-                    uri = row["storage_uri"]
-                    referenced = connection.execute(
-                        "SELECT 1 FROM formal_masks WHERE storage_uri = ? LIMIT 1",
-                        (uri,),
-                    ).fetchone()
-                    if referenced is None:
-                        try:
-                            self._unlink_formal_mask_uri(uri)
-                        except OSError:
-                            continue
-                    connection.execute(
-                        "DELETE FROM formal_mask_cleanup WHERE storage_uri = ?",
-                        (uri,),
-                    )
-                    drained += 1
-        except sqlite3.Error:
-            return 0
-        return drained
-    def _remove_formal_mask_paths_if_unreferenced(
-        self,
-        paths: set[Path],
-    ) -> None:
-        if not paths:
-            return
-        with self.connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            for path in paths:
-                uri = path.resolve().as_uri()
-                referenced = connection.execute(
-                    "SELECT 1 FROM formal_masks WHERE storage_uri = ? LIMIT 1",
-                    (uri,),
-                ).fetchone()
-                if referenced is None:
-                    path.unlink(missing_ok=True)
-
+        self.formal_mask_root = formal_mask_root or database_path.parent
+        self.formal_mask_root.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -168,13 +50,10 @@ class Repository:
 
     @contextmanager
     def _formal_mask_mutation(self) -> Iterator[sqlite3.Connection]:
-        """Drain mask cleanup only after the owning database write commits."""
         with self.connect() as connection:
             yield connection
-        self.drain_formal_mask_cleanup()
 
     def initialize(self) -> None:
-        self._clear_stale_formal_mask_staging()
         with self.connect() as connection:
             connection.executescript(
                 """
@@ -274,27 +153,6 @@ class Repository:
                     UNIQUE(batch_id, stage, item_key, attempt)
                 );
 
-                CREATE TABLE IF NOT EXISTS formal_masks (
-                    batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
-                    contract_hash TEXT NOT NULL,
-                    source_asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
-                    storage_uri TEXT NOT NULL,
-                    width INTEGER NOT NULL,
-                    height INTEGER NOT NULL,
-                    sha256 TEXT NOT NULL,
-                    proposal_json TEXT NOT NULL,
-                    review_reasons_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    acknowledged_at TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(batch_id, contract_hash, source_asset_id)
-                );
-
-                CREATE TABLE IF NOT EXISTS formal_mask_cleanup (
-                    storage_uri TEXT PRIMARY KEY
-                );
-
                 CREATE TABLE IF NOT EXISTS display_code_counters (
                     batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
                     prefix TEXT NOT NULL,
@@ -323,6 +181,26 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS library_code_counter (
                     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                     next_number INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS formal_masks (
+                    id TEXT PRIMARY KEY,
+                    batch_id TEXT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+                    source_asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                    storage_uri TEXT NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    width INTEGER NOT NULL,
+                    height INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    proposal_json TEXT NOT NULL,
+                    review_reasons_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    confirmed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS formal_mask_cleanup (
+                    storage_uri TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL
                 );
                 """
             )
@@ -514,8 +392,6 @@ class Repository:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_batch_display_code "
                 "ON persons(batch_id, display_code)"
             )
-        self._reconcile_formal_mask_files()
-        self.drain_formal_mask_cleanup()
 
     def recover_interrupted_jobs(self) -> int:
         """Make jobs left running by a stopped worker explicitly retryable."""
@@ -593,12 +469,12 @@ class Repository:
         )
         return identity
 
-    @staticmethod
     def _invalidate_confirmation(
+        self,
         connection: sqlite3.Connection,
         batch_id: str,
         *,
-        preserve_mask_uris: frozenset[str] = frozenset(),
+        preserve_mask_uris: set[str] | None = None,
     ) -> bool:
         """Invalidate pre-generation confirmation without disturbing active/history states."""
         if not connection.in_transaction:
@@ -636,20 +512,26 @@ class Repository:
             WHERE batch_id = ?""",
             (batch_id,),
         )
-        mask_uris = [
-            row["storage_uri"]
-            for row in connection.execute(
-                "SELECT storage_uri FROM formal_masks WHERE batch_id = ?",
-                (batch_id,),
-            ).fetchall()
-        ]
-        for uri in mask_uris:
-            if uri not in preserve_mask_uris:
+        preserve = preserve_mask_uris or set()
+        mask_rows = connection.execute(
+            "SELECT id, storage_uri FROM formal_masks WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchall()
+        mask_ids_to_delete = []
+        for row in mask_rows:
+            uri = row["storage_uri"]
+            if uri not in preserve:
                 connection.execute(
-                    "INSERT OR IGNORE INTO formal_mask_cleanup(storage_uri) VALUES (?)",
-                    (uri,),
+                    "INSERT OR IGNORE INTO formal_mask_cleanup(storage_uri, created_at) VALUES (?, ?)",
+                    (uri, utc_now()),
                 )
-        connection.execute("DELETE FROM formal_masks WHERE batch_id = ?", (batch_id,))
+                mask_ids_to_delete.append(row["id"])
+        if mask_ids_to_delete:
+            placeholders = ",".join("?" for _ in mask_ids_to_delete)
+            connection.execute(
+                f"DELETE FROM formal_masks WHERE id IN ({placeholders})",
+                tuple(mask_ids_to_delete),
+            )
         connection.execute(
             """UPDATE batches
             SET status = ?, compiled_contract_json = NULL,
@@ -660,17 +542,24 @@ class Repository:
         )
         return True
 
-    def _unlink_formal_mask_uri(self, uri: str) -> None:
-        parsed = urlparse(uri)
-        if parsed.scheme != "file":
-            return
-        path = Path(unquote(parsed.path)).resolve()
-        if (
-            path.is_relative_to(self.formal_mask_root)
-            and path.suffix.lower() == ".png"
-            and path.parent.name == "formal_masks"
-        ):
-            path.unlink(missing_ok=True)
+    def _process_mask_cleanup_queue(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            "SELECT storage_uri FROM formal_mask_cleanup ORDER BY created_at LIMIT 100"
+        ).fetchall()
+        for row in rows:
+            uri = row["storage_uri"]
+            connection.execute(
+                "DELETE FROM formal_mask_cleanup WHERE storage_uri = ?",
+                (uri,),
+            )
+            try:
+                if uri.startswith("file://"):
+                    local_path = Path(uri.removeprefix("file://"))
+                    if local_path.exists() and local_path.is_file():
+                        local_path.unlink()
+            except (OSError, ValueError):
+                pass
+
 
 
     def create_batch(
@@ -704,7 +593,7 @@ class Repository:
         task_instruction: str,
         max_iterations: int,
     ) -> dict[str, Any]:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             cursor = connection.execute(
                 """UPDATE batches
@@ -764,7 +653,7 @@ class Repository:
         return self.get_batch(batch_id)
 
     def delete_batch(self, batch_id: str) -> None:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             mask_uris = [
                 row["storage_uri"]
                 for row in connection.execute(
@@ -772,17 +661,18 @@ class Repository:
                     (batch_id,),
                 ).fetchall()
             ]
+            for uri in mask_uris:
+                connection.execute(
+                    "INSERT OR IGNORE INTO formal_mask_cleanup(storage_uri, created_at) VALUES (?, ?)",
+                    (uri, utc_now()),
+                )
             cursor = connection.execute(
                 "DELETE FROM batches WHERE id = ? AND deleted_at IS NOT NULL",
                 (batch_id,),
             )
             if cursor.rowcount != 1:
                 raise KeyError(batch_id)
-            for uri in mask_uris:
-                connection.execute(
-                    "INSERT OR IGNORE INTO formal_mask_cleanup(storage_uri) VALUES (?)",
-                    (uri,),
-                )
+            self._process_mask_cleanup_queue(connection)
 
     def create_library_item(self, label: str) -> dict[str, Any]:
         item_id = str(uuid4())
@@ -880,7 +770,7 @@ class Repository:
         return item
 
     def delete_identity(self, identity_id: str) -> None:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             identity = connection.execute(
                 "SELECT batch_id FROM identities WHERE id = ?",
                 (identity_id,),
@@ -903,7 +793,7 @@ class Repository:
 
     def create_identity(self, batch_id: str, label: str) -> dict[str, Any]:
         identity_id = str(uuid4())
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             display_code = self._next_display_code(connection, "identities", batch_id, "T")
             connection.execute(
@@ -1132,250 +1022,194 @@ class Repository:
     def store_compiled_contract(
         self,
         batch_id: str,
-        compilation: FormalCompilationResult,
+        compilation: Any,
     ) -> dict[str, Any]:
-        contract = compilation.contract
+        from personaweave.formal_masks import FormalCompilationResult
+        if isinstance(compilation, CompiledBatchContract):
+            contract = compilation
+            compiled_masks: tuple[Any, ...] = ()
+        else:
+            if not isinstance(compilation, FormalCompilationResult):
+                compilation = FormalCompilationResult.model_validate(compilation)
+            contract = compilation.contract
+            compiled_masks = compilation.masks
         contract_hash = contract.sha256()
-        artifacts_by_source = {
-            artifact.evidence.source_asset_id: artifact
-            for artifact in compilation.masks
-        }
-        if len(artifacts_by_source) != len(compilation.masks):
-            raise ValueError("compiled formal masks must be unique per source")
-        contract_masks = {
-            source.asset_id: source.authorization_mask
-            for source in contract.source_assets
-            if source.requires_authorization_mask
-        }
-        if (
-            set(artifacts_by_source) != set(contract_masks)
-            or any(
-                contract_masks[source_id] != artifact.evidence
-                for source_id, artifact in artifacts_by_source.items()
-            )
-        ):
-            raise ValueError("compiled formal masks must exactly match contract evidence")
-        for artifact in compilation.masks:
-            self._validate_compiled_mask(artifact)
-
-        staged: list[tuple[CompiledMaskArtifact, Path, Path]] = []
-        candidate_finals: set[Path] = set()
-        try:
-            for artifact in compilation.masks:
-                evidence = artifact.evidence
-                final_path = self._formal_mask_path(
-                    batch_id,
-                    evidence.source_asset_id,
-                    evidence.sha256,
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT * FROM batches WHERE id = ? AND deleted_at IS NULL",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(batch_id)
+            if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+                raise ValueError(
+                    f"cannot compile task contract from {batch['status']}"
                 )
-                final_path.parent.mkdir(parents=True, exist_ok=True)
-                stage_path = final_path.parent / (
-                    f".{evidence.source_asset_id}-{evidence.sha256}-{uuid4().hex}.tmp"
+            if (
+                contract.task_instruction != batch["task_instruction"]
+                or contract.max_iterations != batch["max_iterations"]
+            ):
+                raise ValueError(
+                    "compiled contract does not match the current task specification"
                 )
-                staged.append((artifact, stage_path, final_path))
-                candidate_finals.add(final_path)
-                stage_path.write_bytes(artifact.png_bytes)
 
-            with self._formal_mask_mutation() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                batch = connection.execute(
-                    "SELECT * FROM batches WHERE id = ? AND deleted_at IS NULL",
+            people = {
+                row["id"]: row
+                for row in connection.execute(
+                    "SELECT id, display_code FROM persons WHERE batch_id = ?",
                     (batch_id,),
-                ).fetchone()
-                if batch is None:
-                    raise KeyError(batch_id)
-                if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
-                    raise ValueError(
-                        f"cannot compile task contract from {batch['status']}"
-                    )
-                if (
-                    contract.task_instruction != batch["task_instruction"]
-                    or contract.max_iterations != batch["max_iterations"]
-                ):
-                    raise ValueError(
-                        "compiled contract does not match the current task specification"
-                    )
-
-                people = {
-                    row["id"]: row
-                    for row in connection.execute(
-                        "SELECT id, display_code FROM persons WHERE batch_id = ?",
-                        (batch_id,),
-                    ).fetchall()
-                }
-                if {
-                    operation.person_id for operation in contract.operations
-                } != set(people):
-                    raise ValueError(
-                        "compiled contract must cover every current person exactly once"
-                    )
-                for operation in contract.operations:
-                    if (
-                        people[operation.person_id]["display_code"]
-                        != operation.person_code
-                    ):
-                        raise ValueError("compiled operation person code is stale")
-
-                sources = {
-                    row["id"]: (row["display_code"], row["sha256"])
-                    for row in connection.execute(
-                        "SELECT id, display_code, sha256 FROM assets "
-                        "WHERE batch_id = ? AND kind = ?",
-                        (batch_id, AssetKind.SOURCE),
-                    ).fetchall()
-                }
-                compiled_sources = {
-                    source.asset_id: (source.code, source.sha256)
-                    for source in contract.source_assets
-                }
-                if compiled_sources != sources:
-                    raise ValueError("compiled source asset evidence is stale")
-
-                identities = {
-                    row["id"]: row["display_code"]
-                    for row in connection.execute(
-                        "SELECT id, display_code FROM identities WHERE batch_id = ?",
-                        (batch_id,),
-                    ).fetchall()
-                }
-                evidence_by_id = {
-                    evidence.profile.identity_id: evidence
-                    for evidence in contract.identities
-                }
-                referenced_identity_ids = {
-                    operation.target_identity_id
-                    for operation in contract.operations
-                    if operation.action is MappingAction.REPLACE
-                    and operation.target_identity_id
-                }
-                if set(evidence_by_id) != referenced_identity_ids:
-                    raise ValueError(
-                        "compiled contract must assess exactly the referenced target identities"
-                    )
-                if not referenced_identity_ids.issubset(identities):
-                    raise ValueError(
-                        "compiled contract references an identity outside the batch"
-                    )
-                for identity_id, evidence in evidence_by_id.items():
-                    if evidence.profile.identity_code != identities[identity_id]:
-                        raise ValueError("compiled identity code is stale")
-                    references = {
-                        row["display_code"]: row["sha256"]
-                        for row in connection.execute(
-                            "SELECT display_code, sha256 FROM assets "
-                            "WHERE identity_id = ? AND kind = ?",
-                            (identity_id, AssetKind.REFERENCE),
-                        ).fetchall()
-                    }
-                    compiled_references = {
-                        item.code: item.sha256 for item in evidence.reference_assets
-                    }
-                    if compiled_references != references:
-                        raise ValueError("compiled reference evidence is stale")
-                for operation in contract.operations:
-                    if operation.target_identity_id:
-                        evidence = evidence_by_id.get(operation.target_identity_id)
-                        if (
-                            evidence is None
-                            or operation.target_profile != evidence.profile
-                            or operation.reference_assessment
-                            != evidence.reference_assessment
-                            or operation.reference_assets != evidence.reference_assets
-                        ):
-                            raise ValueError(
-                                "compiled operation target evidence is inconsistent"
-                            )
-
-                mask_uris: dict[str, str] = {}
-                for artifact, stage_path, final_path in staged:
-                    if final_path.exists():
-                        if final_path.read_bytes() != artifact.png_bytes:
-                            raise ValueError(
-                                "existing formal mask content does not match canonical bytes"
-                            )
-                        stage_path.unlink(missing_ok=True)
-                    else:
-                        stage_path.replace(final_path)
-                    mask_uris[artifact.evidence.source_asset_id] = (
-                        final_path.resolve().as_uri()
-                    )
-                self._invalidate_confirmation(
-                    connection,
-                    batch_id,
-                    preserve_mask_uris=frozenset(mask_uris.values()),
+                ).fetchall()
+            }
+            if {
+                operation.person_id for operation in contract.operations
+            } != set(people):
+                raise ValueError(
+                    "compiled contract must cover every current person exactly once"
                 )
-                now = utc_now()
-                for artifact in compilation.masks:
-                    mask = artifact.evidence
-                    connection.execute(
-                        """INSERT INTO formal_masks(
-                            batch_id, contract_hash, source_asset_id, storage_uri,
-                            width, height, sha256, proposal_json, review_reasons_json,
-                            status, acknowledged_at, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'validated', NULL, ?, ?)
-                        ON CONFLICT(batch_id, contract_hash, source_asset_id) DO UPDATE SET
-                            storage_uri = excluded.storage_uri,
-                            width = excluded.width,
-                            height = excluded.height,
-                            sha256 = excluded.sha256,
-                            proposal_json = excluded.proposal_json,
-                            review_reasons_json = excluded.review_reasons_json,
-                            status = 'validated',
-                            acknowledged_at = NULL,
-                            updated_at = excluded.updated_at""",
-                        (
-                            batch_id,
-                            contract_hash,
-                            mask.source_asset_id,
-                            mask_uris[mask.source_asset_id],
-                            mask.width,
-                            mask.height,
-                            mask.sha256,
-                            mask.proposal.model_dump_json(),
-                            json.dumps(
-                                sorted(
-                                    reason.value for reason in mask.review_reasons
-                                ),
-                                ensure_ascii=False,
-                            ),
-                            now,
-                            now,
-                        ),
-                    )
-                for identity_id, evidence in evidence_by_id.items():
-                    connection.execute(
-                        """UPDATE identities
-                        SET target_profile_json = ?, reference_sufficiency_json = ?
-                        WHERE id = ?""",
-                        (
-                            json.dumps(
-                                evidence.profile.model_dump(mode="json"),
-                                ensure_ascii=False,
-                            ),
-                            json.dumps(
-                                evidence.reference_assessment.model_dump(mode="json"),
-                                ensure_ascii=False,
-                            ),
-                            identity_id,
-                        ),
-                    )
+            for operation in contract.operations:
+                if (
+                    people[operation.person_id]["display_code"]
+                    != operation.person_code
+                ):
+                    raise ValueError("compiled operation person code is stale")
+
+            sources = {
+                row["id"]: (row["display_code"], row["sha256"])
+                for row in connection.execute(
+                    "SELECT id, display_code, sha256 FROM assets "
+                    "WHERE batch_id = ? AND kind = ?",
+                    (batch_id, AssetKind.SOURCE),
+                ).fetchall()
+            }
+            compiled_sources = {
+                source.asset_id: (source.code, source.sha256)
+                for source in contract.source_assets
+            }
+            if compiled_sources != sources:
+                raise ValueError("compiled source asset evidence is stale")
+
+            identities = {
+                row["id"]: row["display_code"]
+                for row in connection.execute(
+                    "SELECT id, display_code FROM identities WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchall()
+            }
+            evidence_by_id = {
+                evidence.profile.identity_id: evidence
+                for evidence in contract.identities
+            }
+            referenced_identity_ids = {
+                operation.target_identity_id
+                for operation in contract.operations
+                if operation.action is MappingAction.REPLACE
+                and operation.target_identity_id
+            }
+            if set(evidence_by_id) != referenced_identity_ids:
+                raise ValueError(
+                    "compiled contract must assess exactly the referenced target identities"
+                )
+            if not referenced_identity_ids.issubset(identities):
+                raise ValueError(
+                    "compiled contract references an identity outside the batch"
+                )
+            for identity_id, evidence in evidence_by_id.items():
+                if evidence.profile.identity_code != identities[identity_id]:
+                    raise ValueError("compiled identity code is stale")
+                references = {
+                    row["display_code"]: row["sha256"]
+                    for row in connection.execute(
+                        "SELECT display_code, sha256 FROM assets "
+                        "WHERE identity_id = ? AND kind = ?",
+                        (identity_id, AssetKind.REFERENCE),
+                    ).fetchall()
+                }
+                compiled_references = {
+                    item.code: item.sha256 for item in evidence.reference_assets
+                }
+                if compiled_references != references:
+                    raise ValueError("compiled reference evidence is stale")
+            for operation in contract.operations:
+                if operation.target_identity_id:
+                    evidence = evidence_by_id.get(operation.target_identity_id)
+                    if (
+                        evidence is None
+                        or operation.target_profile != evidence.profile
+                        or operation.reference_assessment
+                        != evidence.reference_assessment
+                        or operation.reference_assets != evidence.reference_assets
+                    ):
+                        raise ValueError(
+                            "compiled operation target evidence is inconsistent"
+                        )
+
+            self._invalidate_confirmation(connection, batch_id)
+            now = utc_now()
+            for artifact in compiled_masks:
+                evidence = artifact.evidence
+                mask_sha256 = evidence.sha256
+                mask_filename = f"mask-{batch_id}-{evidence.source_asset_id}-{mask_sha256[:12]}.png"
+                mask_path = self.formal_mask_root / mask_filename
+                mask_path.write_bytes(artifact.png_bytes)
+                storage_uri = mask_path.resolve().as_uri()
+                mask_id = str(uuid4())
+                review_reasons_list = sorted(
+                    reason.value for reason in evidence.review_reasons
+                )
                 connection.execute(
-                    """UPDATE batches
-                    SET compiled_contract_json = ?, compiled_contract_hash = ?,
-                        contract_confirmed_at = NULL, updated_at = ?
-                    WHERE id = ?""",
+                    """INSERT INTO formal_masks(
+                        id, batch_id, source_asset_id, storage_uri, sha256,
+                        width, height, status, proposal_json, review_reasons_json,
+                        created_at, confirmed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
                     (
-                        contract.canonical_json(),
-                        contract_hash,
-                        utc_now(),
+                        mask_id,
                         batch_id,
+                        evidence.source_asset_id,
+                        storage_uri,
+                        mask_sha256,
+                        evidence.width,
+                        evidence.height,
+                        "proposed",
+                        json.dumps(
+                            evidence.proposal.model_dump(mode="json"),
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(review_reasons_list, ensure_ascii=False),
+                        now,
                     ),
                 )
-        except Exception:
-            for _, stage_path, _ in staged:
-                stage_path.unlink(missing_ok=True)
-            self._remove_formal_mask_paths_if_unreferenced(candidate_finals)
-            raise
+            for identity_id, evidence in evidence_by_id.items():
+                connection.execute(
+                    """UPDATE identities
+                    SET target_profile_json = ?, reference_sufficiency_json = ?
+                    WHERE id = ?""",
+                    (
+                        json.dumps(
+                            evidence.profile.model_dump(mode="json"),
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            evidence.reference_assessment.model_dump(mode="json"),
+                            ensure_ascii=False,
+                        ),
+                        identity_id,
+                    ),
+                )
+            connection.execute(
+                """UPDATE batches
+                SET compiled_contract_json = ?, compiled_contract_hash = ?,
+                    contract_confirmed_at = NULL, updated_at = ?
+                WHERE id = ?""",
+                (
+                    contract.canonical_json(),
+                    contract_hash,
+                    utc_now(),
+                    batch_id,
+                ),
+            )
+            self._process_mask_cleanup_queue(connection)
         return self.get_batch(batch_id)
 
     def confirm_compiled_contract(
@@ -1385,6 +1219,7 @@ class Repository:
         decisions: list[MappingDecision] | None = None,
         acknowledged_mask_sha256s: list[str] | None = None,
     ) -> dict[str, Any]:
+        from personaweave.domain import ReviewReason
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             batch = connection.execute(
@@ -1405,40 +1240,6 @@ class Repository:
             )
             if contract.sha256() != contract_hash:
                 raise ValueError("stored compiled contract hash is invalid")
-            mask_rows = connection.execute(
-                "SELECT * FROM formal_masks WHERE batch_id = ? AND contract_hash = ? "
-                "AND status = 'validated'",
-                (batch_id, contract_hash),
-            ).fetchall()
-            expected_masks = {
-                source.asset_id: source.authorization_mask
-                for source in contract.source_assets
-                if source.requires_authorization_mask
-            }
-            persisted_masks = {row["source_asset_id"]: row for row in mask_rows}
-            if (
-                set(persisted_masks) != set(expected_masks)
-                or any(
-                    evidence is None
-                    or persisted_masks[source_id]["sha256"] != evidence.sha256
-                    or persisted_masks[source_id]["width"] != evidence.width
-                    or persisted_masks[source_id]["height"] != evidence.height
-                    for source_id, evidence in expected_masks.items()
-                )
-            ):
-                raise ValueError("compiled contract has incomplete canonical masks")
-            uncertain_digests = {
-                row["sha256"]
-                for row in mask_rows
-                if "mask_uncertain" in json.loads(row["review_reasons_json"])
-            }
-            acknowledgement_values = acknowledged_mask_sha256s or []
-            acknowledged = set(acknowledgement_values)
-            if (
-                len(acknowledgement_values) != len(acknowledged)
-                or acknowledged != uncertain_digests
-            ):
-                raise ValueError("mask uncertainty acknowledgement digests do not exactly match")
             compiled_decisions = [
                 MappingDecision(
                     person_id=operation.person_id,
@@ -1454,78 +1255,35 @@ class Repository:
                 decision.model_dump(mode="json") for decision in compiled_decisions
             ]:
                 raise ValueError("manual mappings do not match the compiled contract")
+            mask_rows = connection.execute(
+                "SELECT id, sha256, review_reasons_json FROM formal_masks WHERE batch_id = ? AND status = ?",
+                (batch_id, "proposed"),
+            ).fetchall()
+            acknowledged = set(acknowledged_mask_sha256s or [])
+            for row in mask_rows:
+                review_reasons = set(json.loads(row["review_reasons_json"]))
+                if ReviewReason.MASK_UNCERTAIN.value in review_reasons:
+                    if row["sha256"] not in acknowledged:
+                        raise ValueError(
+                            f"uncertainty acknowledgement required for mask {row['sha256']}"
+                        )
             now = utc_now()
-            self._write_mappings(connection, batch_id, compiled_decisions, now)
             connection.execute(
                 """UPDATE formal_masks
-                SET status = 'confirmed',
-                    acknowledged_at = CASE
-                        WHEN review_reasons_json LIKE '%mask_uncertain%' THEN ?
-                        ELSE NULL
-                    END,
-                    updated_at = ?
-                WHERE batch_id = ? AND contract_hash = ? AND status = 'validated'""",
-                (now, now, batch_id, contract_hash),
+                SET status = ?, confirmed_at = ?
+                WHERE batch_id = ? AND status = ?""",
+                ("confirmed", now, batch_id, "proposed"),
             )
+            self._write_mappings(connection, batch_id, compiled_decisions, now)
             connection.execute(
                 """UPDATE batches
                 SET status = ?, contract_confirmed_at = ?, updated_at = ?
                 WHERE id = ?""",
                 (BatchStatus.READY, now, now, batch_id),
             )
+            self._process_mask_cleanup_queue(connection)
         return self.get_batch(batch_id)
 
-    def list_formal_masks(
-        self,
-        batch_id: str,
-        *,
-        current_only: bool = True,
-    ) -> list[dict[str, Any]]:
-        with self.connect() as connection:
-            if current_only:
-                rows = connection.execute(
-                    """SELECT masks.* FROM formal_masks AS masks
-                    JOIN batches ON batches.id = masks.batch_id
-                    WHERE masks.batch_id = ?
-                      AND masks.contract_hash = batches.compiled_contract_hash
-                      AND masks.status != 'invalidated'
-                    ORDER BY masks.source_asset_id""",
-                    (batch_id,),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    "SELECT * FROM formal_masks WHERE batch_id = ? ORDER BY created_at",
-                    (batch_id,),
-                ).fetchall()
-        return [self._decode_formal_mask(row) for row in rows]
-
-    def get_current_formal_mask(
-        self,
-        batch_id: str,
-        sha256: str,
-    ) -> dict[str, Any]:
-        with self.connect() as connection:
-            row = connection.execute(
-                """SELECT masks.* FROM formal_masks AS masks
-                JOIN batches ON batches.id = masks.batch_id
-                WHERE masks.batch_id = ?
-                  AND masks.sha256 = ?
-                  AND masks.contract_hash = batches.compiled_contract_hash
-                  AND masks.status != 'invalidated'
-                ORDER BY masks.source_asset_id
-                LIMIT 1""",
-                (batch_id, sha256),
-            ).fetchone()
-        if row is None:
-            raise KeyError((batch_id, sha256))
-        return self._decode_formal_mask(row)
-
-    @staticmethod
-    def _decode_formal_mask(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-        result = dict(row)
-        result["proposal"] = json.loads(result.pop("proposal_json"))
-        result["review_reasons"] = json.loads(result.pop("review_reasons_json"))
-        return result
 
     def list_assets_for_identity(self, identity_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -1553,8 +1311,43 @@ class Repository:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def list_formal_masks(self, batch_id: str) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT source_asset_id, storage_uri, sha256, width, height,
+                          status, proposal_json, review_reasons_json
+                   FROM formal_masks
+                   WHERE batch_id = ?
+                   ORDER BY created_at""",
+                (batch_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["proposal_json"] = json.loads(item["proposal_json"])
+            item["review_reasons_json"] = json.loads(item["review_reasons_json"])
+            result.append(item)
+        return result
+
+    def get_current_formal_mask(self, batch_id: str, sha256: str) -> dict[str, Any]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT source_asset_id, storage_uri, sha256, width, height,
+                          status, proposal_json, review_reasons_json
+                   FROM formal_masks
+                   WHERE batch_id = ? AND sha256 = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (batch_id, sha256),
+            ).fetchone()
+        if row is None:
+            raise KeyError((batch_id, sha256))
+        item = dict(row)
+        item["proposal_json"] = json.loads(item["proposal_json"])
+        item["review_reasons_json"] = json.loads(item["review_reasons_json"])
+        return item
+
     def delete_asset(self, asset_id: str) -> tuple[dict[str, Any], int]:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             row = connection.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
             if row is None:
                 raise KeyError(asset_id)
@@ -1938,11 +1731,9 @@ class Repository:
                 f"immutable fields={sorted(unknown_updates)}"
             )
         retry_input = {**job["input"], **requested_updates}
-        if (
-            job["input"].get("authorization_mask_sha256")
-            and retry_input.get("image_api_mode") != "multipart_edits"
-        ):
-            raise ValueError("masked formal jobs cannot switch away from multipart_edits")
+        is_formal = retry_input.get("compiled_contract") is not None
+        if is_formal and retry_input.get("image_api_mode") != "multipart_edits":
+            raise ValueError("formal jobs cannot switch away from multipart_edits")
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO jobs(
@@ -2024,7 +1815,7 @@ class Repository:
 
     def reset_analysis(self, batch_id: str) -> None:
         """Remove derived analysis state while preserving assets, history and code counters."""
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             batch = connection.execute(
                 "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL",
                 (batch_id,),
@@ -2048,7 +1839,7 @@ class Repository:
         person_id: str | None = None,
     ) -> dict[str, Any]:
         """Add a user-confirmed face occurrence to an existing or new stable Pxx."""
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             asset = connection.execute(
                 "SELECT id FROM assets WHERE id = ? AND batch_id = ? AND kind = ?",
@@ -2168,7 +1959,7 @@ class Repository:
         self,
         updates: list[tuple[str, float]],
     ) -> None:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             batch_ids = {
                 row["batch_id"]
                 for face_id, _ in updates
@@ -2190,7 +1981,7 @@ class Repository:
         unique_ids = list(dict.fromkeys(person_ids))
         if len(unique_ids) < 2:
             raise ValueError("at least two people are required for merge")
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             placeholders = ",".join("?" for _ in unique_ids)
             rows = connection.execute(
@@ -2219,7 +2010,7 @@ class Repository:
         return next(person for person in self.list_persons(batch_id) if person["id"] == target_id)
 
     def delete_person(self, batch_id: str, person_id: str) -> dict[str, Any]:
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             person = connection.execute(
                 "SELECT * FROM persons WHERE id = ? AND batch_id = ?",
@@ -2246,7 +2037,7 @@ class Repository:
         unique_face_ids = list(dict.fromkeys(face_ids))
         if not unique_face_ids:
             raise ValueError("at least one occurrence is required for split")
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             person = connection.execute(
                 "SELECT * FROM persons WHERE id = ? AND batch_id = ?",
@@ -2284,7 +2075,7 @@ class Repository:
 
     def save_mappings(self, batch_id: str, decisions: list[MappingDecision]) -> None:
         """Save an unconfirmed manual topology; only hash confirmation may make it READY."""
-        with self._formal_mask_mutation() as connection:
+        with self.connect() as connection:
             self._invalidate_confirmation(connection, batch_id)
             self._write_mappings(connection, batch_id, decisions, utc_now())
             connection.execute(
