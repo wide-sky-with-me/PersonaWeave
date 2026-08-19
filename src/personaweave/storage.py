@@ -4,11 +4,15 @@ import mimetypes
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
+from PIL import Image, UnidentifiedImageError
+
+from personaweave.assets import AssetResolver, UnsafeAssetPath
 
 from personaweave.domain import (
     AssetKind,
@@ -42,11 +46,15 @@ class Repository:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        committed = False
         try:
             yield connection
             connection.commit()
+            committed = True
         finally:
             connection.close()
+        if committed:
+            self._drain_mask_cleanup_queue()
 
     @contextmanager
     def _formal_mask_mutation(self) -> Iterator[sqlite3.Connection]:
@@ -525,7 +533,7 @@ class Repository:
                     "INSERT OR IGNORE INTO formal_mask_cleanup(storage_uri, created_at) VALUES (?, ?)",
                     (uri, utc_now()),
                 )
-                mask_ids_to_delete.append(row["id"])
+            mask_ids_to_delete.append(row["id"])
         if mask_ids_to_delete:
             placeholders = ",".join("?" for _ in mask_ids_to_delete)
             connection.execute(
@@ -542,23 +550,53 @@ class Repository:
         )
         return True
 
-    def _process_mask_cleanup_queue(self, connection: sqlite3.Connection) -> None:
-        rows = connection.execute(
-            "SELECT storage_uri FROM formal_mask_cleanup ORDER BY created_at LIMIT 100"
-        ).fetchall()
-        for row in rows:
-            uri = row["storage_uri"]
-            connection.execute(
-                "DELETE FROM formal_mask_cleanup WHERE storage_uri = ?",
-                (uri,),
-            )
+    def _drain_mask_cleanup_queue(self) -> None:
+        """Delete committed mask files without ever escaping the configured root."""
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
             try:
-                if uri.startswith("file://"):
-                    local_path = Path(uri.removeprefix("file://"))
-                    if local_path.exists() and local_path.is_file():
+                rows = connection.execute(
+                    "SELECT storage_uri FROM formal_mask_cleanup ORDER BY created_at LIMIT 100"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return
+            resolver = AssetResolver(self.formal_mask_root)
+            for row in rows:
+                uri = row["storage_uri"]
+                still_referenced = connection.execute(
+                    "SELECT 1 FROM formal_masks WHERE storage_uri = ? LIMIT 1",
+                    (uri,),
+                ).fetchone()
+                if still_referenced is not None:
+                    connection.execute(
+                        "DELETE FROM formal_mask_cleanup WHERE storage_uri = ?",
+                        (uri,),
+                    )
+                    continue
+                try:
+                    local_path = resolver.local_path(uri)
+                    if local_path is not None and local_path.exists():
+                        if not local_path.is_file():
+                            raise OSError("formal mask cleanup target is not a file")
                         local_path.unlink()
-            except (OSError, ValueError):
-                pass
+                except UnsafeAssetPath:
+                    # Never retain or act on an unsafe cleanup request.
+                    pass
+                except OSError:
+                    # Keep the queue item so a later committed operation can retry.
+                    continue
+                connection.execute(
+                    "DELETE FROM formal_mask_cleanup WHERE storage_uri = ?",
+                    (uri,),
+                )
+            connection.commit()
+        except sqlite3.Error:
+            # Cleanup is retryable and must not turn an already committed
+            # domain mutation into an apparent failure.
+            return
+        finally:
+            connection.close()
 
 
 
@@ -672,7 +710,6 @@ class Repository:
             )
             if cursor.rowcount != 1:
                 raise KeyError(batch_id)
-            self._process_mask_cleanup_queue(connection)
 
     def create_library_item(self, label: str) -> dict[str, Any]:
         item_id = str(uuid4())
@@ -1033,6 +1070,77 @@ class Repository:
                 compilation = FormalCompilationResult.model_validate(compilation)
             contract = compilation.contract
             compiled_masks = compilation.masks
+        editable_sources = {
+            source.asset_id: source
+            for source in contract.source_assets
+            if source.editable_face_instance_ids
+        }
+        if any(
+            source.authorization_mask is not None
+            for source in contract.source_assets
+            if not source.editable_face_instance_ids
+        ):
+            raise ValueError("non-editable sources cannot carry authorization masks")
+        if any(
+            source.authorization_mask is None for source in editable_sources.values()
+        ):
+            raise ValueError("every editable source requires an authorization mask")
+        artifacts_by_source: dict[str, Any] = {}
+        for artifact in compiled_masks:
+            source_id = artifact.evidence.source_asset_id
+            if source_id in artifacts_by_source:
+                raise ValueError("compiled mask artifacts must be unique per source")
+            artifacts_by_source[source_id] = artifact
+        if set(artifacts_by_source) != set(editable_sources):
+            raise ValueError("compiled mask artifacts must cover exactly the editable sources")
+        for source_id, source in editable_sources.items():
+            artifact = artifacts_by_source[source_id]
+            evidence = artifact.evidence
+            if evidence != source.authorization_mask:
+                raise ValueError("compiled mask artifact does not match contract evidence")
+            if (
+                evidence.source_asset_code != source.code
+                or evidence.proposal.source_asset_id != source_id
+                or evidence.proposal.source_asset_code != source.code
+            ):
+                raise ValueError("compiled mask source identity is inconsistent")
+            if hashlib.sha256(artifact.png_bytes).hexdigest() != evidence.sha256:
+                raise ValueError("compiled mask artifact digest is invalid")
+            try:
+                with Image.open(BytesIO(artifact.png_bytes)) as mask_image:
+                    mask_image.load()
+                    if (
+                        mask_image.format != "PNG"
+                        or mask_image.mode != "L"
+                        or mask_image.size != (evidence.width, evidence.height)
+                    ):
+                        raise ValueError("compiled mask artifact format or dimensions are invalid")
+            except (UnidentifiedImageError, OSError) as error:
+                raise ValueError("compiled mask artifact is not a valid PNG") from error
+            faces_by_id = {face.face_instance_id: face for face in source.faces}
+            operations_by_person = {
+                operation.person_id: operation for operation in contract.operations
+            }
+            editable_ids = set(source.editable_face_instance_ids)
+            included_ids = {
+                contour.face_instance_id
+                for contour in evidence.proposal.contours
+                if contour.operation == "include"
+            }
+            if not editable_ids.issubset(included_ids):
+                raise ValueError("authorization mask must include every editable face")
+            for contour in evidence.proposal.contours:
+                face = faces_by_id.get(contour.face_instance_id)
+                operation = operations_by_person.get(contour.person_id)
+                if (
+                    contour.face_instance_id not in editable_ids
+                    or face is None
+                    or operation is None
+                    or face.person_id != contour.person_id
+                    or face.person_code != contour.person_code
+                    or operation.permissions != contour.permissions
+                ):
+                    raise ValueError("authorization mask contour is outside the editable contract scope")
         contract_hash = contract.sha256()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1144,44 +1252,74 @@ class Repository:
                             "compiled operation target evidence is inconsistent"
                         )
 
-            self._invalidate_confirmation(connection, batch_id)
-            now = utc_now()
-            for artifact in compiled_masks:
-                evidence = artifact.evidence
-                mask_sha256 = evidence.sha256
-                mask_filename = f"mask-{batch_id}-{evidence.source_asset_id}-{mask_sha256[:12]}.png"
-                mask_path = self.formal_mask_root / mask_filename
-                mask_path.write_bytes(artifact.png_bytes)
-                storage_uri = mask_path.resolve().as_uri()
-                mask_id = str(uuid4())
-                review_reasons_list = sorted(
-                    reason.value for reason in evidence.review_reasons
+            staged_paths: list[Path] = []
+            created_paths: list[Path] = []
+            mask_uris: dict[str, str] = {}
+            try:
+                for artifact in compiled_masks:
+                    evidence = artifact.evidence
+                    mask_filename = (
+                        f"mask-{batch_id}-{evidence.source_asset_id}-{evidence.sha256[:12]}.png"
+                    )
+                    mask_path = (self.formal_mask_root / mask_filename).resolve()
+                    if not mask_path.is_relative_to(self.formal_mask_root.resolve()):
+                        raise ValueError("formal mask path escapes the configured root")
+                    temporary_path = self.formal_mask_root / f".{mask_filename}.{uuid4().hex}.tmp"
+                    staged_paths.append(temporary_path)
+                    with temporary_path.open("xb") as temporary_file:
+                        temporary_file.write(artifact.png_bytes)
+                        temporary_file.flush()
+                    if mask_path.exists():
+                        if (
+                            not mask_path.is_file()
+                            or hashlib.sha256(mask_path.read_bytes()).hexdigest()
+                            != evidence.sha256
+                        ):
+                            raise ValueError("existing formal mask artifact conflicts with its digest")
+                        temporary_path.unlink()
+                        staged_paths.remove(temporary_path)
+                    else:
+                        temporary_path.replace(mask_path)
+                        staged_paths.remove(temporary_path)
+                        created_paths.append(mask_path)
+                    mask_uris[evidence.source_asset_id] = mask_path.as_uri()
+
+                self._invalidate_confirmation(
+                    connection,
+                    batch_id,
+                    preserve_mask_uris=set(mask_uris.values()),
                 )
-                connection.execute(
-                    """INSERT INTO formal_masks(
-                        id, batch_id, source_asset_id, storage_uri, sha256,
-                        width, height, status, proposal_json, review_reasons_json,
-                        created_at, confirmed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
-                    (
-                        mask_id,
-                        batch_id,
-                        evidence.source_asset_id,
-                        storage_uri,
-                        mask_sha256,
-                        evidence.width,
-                        evidence.height,
-                        "proposed",
-                        json.dumps(
-                            evidence.proposal.model_dump(mode="json"),
-                            ensure_ascii=False,
+                now = utc_now()
+                for artifact in compiled_masks:
+                    evidence = artifact.evidence
+                    review_reasons_list = sorted(
+                        reason.value for reason in evidence.review_reasons
+                    )
+                    connection.execute(
+                        """INSERT INTO formal_masks(
+                            id, batch_id, source_asset_id, storage_uri, sha256,
+                            width, height, status, proposal_json, review_reasons_json,
+                            created_at, confirmed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+                        (
+                            str(uuid4()),
+                            batch_id,
+                            evidence.source_asset_id,
+                            mask_uris[evidence.source_asset_id],
+                            evidence.sha256,
+                            evidence.width,
+                            evidence.height,
+                            "proposed",
+                            json.dumps(
+                                evidence.proposal.model_dump(mode="json"),
+                                ensure_ascii=False,
+                            ),
+                            json.dumps(review_reasons_list, ensure_ascii=False),
+                            now,
                         ),
-                        json.dumps(review_reasons_list, ensure_ascii=False),
-                        now,
-                    ),
-                )
-            for identity_id, evidence in evidence_by_id.items():
-                connection.execute(
+                    )
+                for identity_id, evidence in evidence_by_id.items():
+                    connection.execute(
                     """UPDATE identities
                     SET target_profile_json = ?, reference_sufficiency_json = ?
                     WHERE id = ?""",
@@ -1196,8 +1334,8 @@ class Repository:
                         ),
                         identity_id,
                     ),
-                )
-            connection.execute(
+                    )
+                connection.execute(
                 """UPDATE batches
                 SET compiled_contract_json = ?, compiled_contract_hash = ?,
                     contract_confirmed_at = NULL, updated_at = ?
@@ -1208,8 +1346,15 @@ class Repository:
                     utc_now(),
                     batch_id,
                 ),
-            )
-            self._process_mask_cleanup_queue(connection)
+                )
+                # Surface commit failures while newly-created files are still recoverable.
+                connection.commit()
+            except Exception:
+                for temporary_path in staged_paths:
+                    temporary_path.unlink(missing_ok=True)
+                for created_path in created_paths:
+                    created_path.unlink(missing_ok=True)
+                raise
         return self.get_batch(batch_id)
 
     def confirm_compiled_contract(
@@ -1256,17 +1401,66 @@ class Repository:
             ]:
                 raise ValueError("manual mappings do not match the compiled contract")
             mask_rows = connection.execute(
-                "SELECT id, sha256, review_reasons_json FROM formal_masks WHERE batch_id = ? AND status = ?",
-                (batch_id, "proposed"),
+                """SELECT id, source_asset_id, storage_uri, sha256, width, height,
+                          status, proposal_json, review_reasons_json
+                   FROM formal_masks WHERE batch_id = ?""",
+                (batch_id,),
             ).fetchall()
-            acknowledged = set(acknowledged_mask_sha256s or [])
-            for row in mask_rows:
-                review_reasons = set(json.loads(row["review_reasons_json"]))
-                if ReviewReason.MASK_UNCERTAIN.value in review_reasons:
-                    if row["sha256"] not in acknowledged:
-                        raise ValueError(
-                            f"uncertainty acknowledgement required for mask {row['sha256']}"
-                        )
+            expected_masks = {
+                source.asset_id: source.authorization_mask
+                for source in contract.source_assets
+                if source.editable_face_instance_ids
+            }
+            if any(evidence is None for evidence in expected_masks.values()):
+                raise ValueError("confirmed contract is missing an editable-source mask")
+            masks_by_source = {row["source_asset_id"]: row for row in mask_rows}
+            if len(masks_by_source) != len(mask_rows) or set(masks_by_source) != set(expected_masks):
+                raise ValueError("stored masks do not exactly cover the editable contract sources")
+            resolver = AssetResolver(self.formal_mask_root)
+            uncertain_hashes: set[str] = set()
+            for source_id, expected in expected_masks.items():
+                assert expected is not None
+                row = masks_by_source[source_id]
+                stored_reasons = set(json.loads(row["review_reasons_json"]))
+                if (
+                    row["status"] != "proposed"
+                    or row["sha256"] != expected.sha256
+                    or row["width"] != expected.width
+                    or row["height"] != expected.height
+                    or json.loads(row["proposal_json"])
+                    != expected.proposal.model_dump(mode="json")
+                    or stored_reasons
+                    != {reason.value for reason in expected.review_reasons}
+                ):
+                    raise ValueError("stored mask does not match the compiled contract")
+                try:
+                    mask_path = resolver.local_path(row["storage_uri"])
+                except UnsafeAssetPath as error:
+                    raise ValueError("stored mask path is outside the configured root") from error
+                if mask_path is None or not mask_path.is_file():
+                    raise ValueError("stored mask artifact is missing")
+                mask_bytes = mask_path.read_bytes()
+                if hashlib.sha256(mask_bytes).hexdigest() != expected.sha256:
+                    raise ValueError("stored mask artifact digest is invalid")
+                try:
+                    with Image.open(BytesIO(mask_bytes)) as mask_image:
+                        mask_image.load()
+                        if (
+                            mask_image.format != "PNG"
+                            or mask_image.mode != "L"
+                            or mask_image.size != (expected.width, expected.height)
+                        ):
+                            raise ValueError("stored mask artifact format or dimensions are invalid")
+                except (UnidentifiedImageError, OSError) as error:
+                    raise ValueError("stored mask artifact is not a valid PNG") from error
+                if ReviewReason.MASK_UNCERTAIN.value in stored_reasons:
+                    uncertain_hashes.add(row["sha256"])
+            acknowledgements = acknowledged_mask_sha256s or []
+            acknowledged = set(acknowledgements)
+            if len(acknowledged) != len(acknowledgements) or acknowledged != uncertain_hashes:
+                raise ValueError(
+                    "uncertainty acknowledgement must exactly match uncertain mask digests"
+                )
             now = utc_now()
             connection.execute(
                 """UPDATE formal_masks
@@ -1281,7 +1475,6 @@ class Repository:
                 WHERE id = ?""",
                 (BatchStatus.READY, now, now, batch_id),
             )
-            self._process_mask_cleanup_queue(connection)
         return self.get_batch(batch_id)
 
 

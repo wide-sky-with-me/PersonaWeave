@@ -61,10 +61,12 @@ It uploads only a generated test card, sends one image-edit request, restores
 the original outside a circular mask, and requires zero changed protected
 pixels. It does not use project photos.
 
-The gateway listens on `127.0.0.1:8010` by default. Its `/ready` endpoint stays
-at HTTP 503 until the separately qualified `swap.json` and `validate.json`
-workflows exist; a functioning detector must not imply that face replacement is
-production-ready.
+The gateway listens on `127.0.0.1:8010` by default. Its `/ready` endpoint checks
+the active analysis workflows and every node required by the selected formal
+generation path. Without `swap.json`, readiness requires the built-in dynamic
+masked multipart nodes; without `validate.json`, final validation is reported as
+the application-side source comparison plus two independently configured Yunwu
+reviewers. Optional static workflows are validated when present.
 
 ## Quick replacement preview
 

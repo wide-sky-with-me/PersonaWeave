@@ -197,6 +197,7 @@ class PipelineExecutor:
         observations = []
         observation_faces: dict[str, dict[str, Any]] = {}
         appearance_requests: list[tuple[str, list[dict[str, Any]]]] = []
+        expected_face_count = sum(len(result.get("faces", [])) for result in results)
         for result in results:
             asset = self.repository.get_asset(result["asset_id"])
             try:
@@ -210,6 +211,11 @@ class PipelineExecutor:
                 source = ImageOps.exif_transpose(image).convert("RGB")
             per_image_observations = []
             for index, face in enumerate(result.get("faces", []), start=1):
+                # Identity grouping is owned by this cross-image pass. Never trust
+                # similarly named metadata supplied by a face-detection provider.
+                face["suggested_person_key"] = None
+                face["identity_confidence"] = None
+                face["needs_confirmation"] = True
                 bbox = face["bbox"]
                 padding_x = round(bbox["width"] * 0.35)
                 padding_y = round(bbox["height"] * 0.35)
@@ -256,6 +262,10 @@ class PipelineExecutor:
                     + base64.b64encode(preview_output.getvalue()).decode()
                 )
                 appearance_requests.append((preview_uri, missing_appearance_observations))
+        if len(observations) != expected_face_count:
+            raise StageExecutionError(
+                "cross-image person fusion could not read every detected face from local assets"
+            )
         if appearance_requests and appearance_analyzer is not None:
             async def analyze_appearances(
                 source_uri: str,
@@ -412,6 +422,11 @@ class PipelineExecutor:
             validate_swap_request_scope(request)
             source = self.repository.get_asset(request.asset_id)
             request.asset_uri = self.assets.for_remote(request.asset_uri, source["media_type"])
+            if request.authorization_mask_uri is not None:
+                request.authorization_mask_uri = self.assets.for_remote(
+                    request.authorization_mask_uri,
+                    "image/png",
+                )
             for operation in request.replacements:
                 operation.reference_uris = [
                     self.assets.for_remote(reference_uri) for reference_uri in operation.reference_uris
@@ -451,7 +466,6 @@ class PipelineExecutor:
                 "MULTIMODAL SOURCE-AWARE EDIT PLAN:\n"
                 f"{plan.edit_prompt}"
             )
-            original_adaptive_instruction = request.adaptive_instruction
             final_review: dict[str, Any] = {}
             result: SwapResult | None = None
             completed_iterations = 0
@@ -514,8 +528,7 @@ class PipelineExecutor:
                     final_review["stop_reason"] = "review_incomplete"
                     break
                 request.adaptive_instruction = (
-                    f"{original_adaptive_instruction}\n\n"
-                    "MULTIMODAL REVIEW REVISED INSTRUCTION:\n"
+                    "MULTIMODAL REVIEW REVISED EDIT PLAN:\n"
                     f"{review.revised_edit_prompt}"
                 )
 
@@ -548,6 +561,9 @@ class PipelineExecutor:
 
         request = ValidationRequest.model_validate(payload)
         source_comparison = compare_source_result(request, self.assets, self.repository)
+        if not source_comparison.passed:
+            source_comparison.review_reasons = request.review_reasons
+            return source_comparison.model_dump(mode="json")
         request.source_uri = self.assets.for_remote(request.source_uri)
         request.result_uri = self.assets.for_remote(request.result_uri)
         for subject in request.expected_subjects:

@@ -76,6 +76,16 @@ def test_settings_reject_partial_quality_reviewer_configuration(
             database_path=tmp_path / "api.sqlite3",
             asset_root=tmp_path / "assets",
             yunwu_reviewer_model_a="review-model-a",
+            yunwu_reviewer_model_b=None,
+        )
+
+
+def test_settings_reject_non_multipart_formal_image_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="formal_image_api_mode"):
+        Settings(
+            database_path=tmp_path / "api.sqlite3",
+            asset_root=tmp_path / "assets",
+            formal_image_api_mode="json_generations",
         )
 
 
@@ -211,16 +221,49 @@ def test_health_reports_unconfigured_providers_without_leaking_secrets(tmp_path:
                 "api_mode": "chat_completions",
                 "api_path": "/chat/completions",
             },
-            "yunwu_image": {
+            "yunwu_preview_image": {
                 "configured": False,
                 "model": "gpt-image-1",
                 "api_mode": "multipart_edits",
                 "api_path": "/images/edits",
                 "size": "1024x1024",
                 "response_format": "url",
+                "timeout_seconds": 600.0,
+            },
+            "yunwu_formal_image": {
+                "configured": False,
+                "model": "gpt-image-2",
+                "api_mode": "multipart_edits",
+                "api_path": "/images/edits",
+                "size": "1024x1024",
+                "response_format": None,
+                "timeout_seconds": 600.0,
             },
         },
     }
+
+
+def test_health_never_exposes_provider_credentials(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "api.sqlite3",
+        asset_root=tmp_path / "assets",
+        yunwu_api_key="yunwu-test-secret",
+        yunwu_vision_model="vision-model",
+        inference_base_url="http://inference.example",
+        inference_api_key="inference-test-secret",
+    )
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    app = FastAPI()
+    app.include_router(build_router(repository, settings))
+
+    response = TestClient(app).get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["providers"]["yunwu_preview_image"]["configured"] is True
+    assert response.json()["providers"]["yunwu_formal_image"]["configured"] is True
+    assert "yunwu-test-secret" not in response.text
+    assert "inference-test-secret" not in response.text
 
 
 def test_model_catalog_uses_provider_capabilities_instead_of_model_names(
@@ -251,6 +294,22 @@ def test_model_catalog_uses_provider_capabilities_instead_of_model_names(
 
     assert response.status_code == 200
     body = response.json()
+    assert body["configured"]["preview_image"] == {
+        "model": "gpt-image-1",
+        "api_mode": "multipart_edits",
+        "api_path": "/images/edits",
+        "size": "1024x1024",
+        "response_format": "url",
+        "timeout_seconds": 600.0,
+    }
+    assert body["configured"]["formal_image"] == {
+        "model": "gpt-image-2",
+        "api_mode": "multipart_edits",
+        "api_path": "/images/edits",
+        "size": "1024x1024",
+        "response_format": None,
+        "timeout_seconds": 600.0,
+    }
     assert body["conversation_candidates"][0]["id"] == "future-vision-model"
     assert body["conversation_candidates"][0]["roles"] == ["conversation"]
     assert body["image_candidates"][0]["id"] == "future-renderer-without-image-in-name"
@@ -768,6 +827,8 @@ def test_missing_face_can_be_manually_added_to_existing_person(tmp_path: Path) -
     )
     assert completed.status_code == 200
     person = client.get(f"/api/v1/batches/{batch['id']}").json()["persons"][0]
+    assert person["confirmed"] is False
+    assert person["faces"][0]["needs_confirmation"] is True
 
     added = client.post(
         f"/api/v1/batches/{batch['id']}/assets/{source['id']}/faces",
@@ -781,6 +842,7 @@ def test_missing_face_can_be_manually_added_to_existing_person(tmp_path: Path) -
     assert added.json()["display_code"] == "P01"
     assert len(added.json()["faces"]) == 2
     assert added.json()["faces"][1]["identity_confidence"] == 1.0
+    assert added.json()["faces"][1]["needs_confirmation"] is False
     duplicate = client.post(
         f"/api/v1/batches/{batch['id']}/assets/{source['id']}/faces",
         json={"bbox": {"x": 2, "y": 2, "width": 2, "height": 2}},
@@ -869,8 +931,23 @@ def test_public_job_derives_retryability_from_canonical_code(tmp_path: Path) -> 
 
 
 def test_swap_retry_preserves_stored_fidelity_mode(tmp_path: Path) -> None:
-    client = make_client(tmp_path)
-    repository = Repository(tmp_path / "api.sqlite3")
+    settings = Settings(
+        database_path=tmp_path / "api.sqlite3",
+        asset_root=tmp_path / "assets",
+        yunwu_image_model="preview-only-model",
+        yunwu_image_api_mode="json_generations",
+        yunwu_image_api_path="/api/v3/images/generations",
+        yunwu_image_size="2K",
+        formal_image_model="gpt-image-1",
+        formal_image_api_mode="multipart_edits",
+        formal_image_api_path="/images/edits",
+        formal_image_size="1024x1024",
+    )
+    repository = Repository(settings.database_path)
+    repository.initialize()
+    app = FastAPI()
+    app.include_router(build_router(repository, settings))
+    client = TestClient(app)
 
     for preserve_outside_mask in (True, False):
         batch = repository.create_batch(f"fidelity-{preserve_outside_mask}")
@@ -902,7 +979,7 @@ def test_swap_retry_preserves_stored_fidelity_mode(tmp_path: Path) -> None:
         assert retried["input"]["image_api_mode"] == "multipart_edits"
         assert retried["input"]["image_api_path"] == "/images/edits"
         assert retried["input"]["image_output_size"] == "1024x1024"
-        assert retried["input"]["image_response_format"] == "url"
+        assert retried["input"]["image_response_format"] is None
 
 def test_same_filename_does_not_overwrite_different_images(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -963,7 +1040,7 @@ def test_preview_forwards_configured_image_model(tmp_path: Path, monkeypatch) ->
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
-            pass
+            captured.setdefault("timeouts", []).append(kwargs.get("timeout"))
 
         async def __aenter__(self):
             return self
@@ -991,6 +1068,7 @@ def test_preview_forwards_configured_image_model(tmp_path: Path, monkeypatch) ->
         yunwu_image_api_path="/images/edits",
         yunwu_image_size="1024x1024",
         yunwu_image_response_format="url",
+        yunwu_image_timeout_seconds=321,
         preview_strategy="controlled_mask",
         inference_base_url="http://127.0.0.1:8010",
     )
@@ -1009,6 +1087,7 @@ def test_preview_forwards_configured_image_model(tmp_path: Path, monkeypatch) ->
     assert response.status_code == 200
     assert response.content == b"generated-image"
     assert captured == {
+        "timeouts": [600.0, 300.0, 321.0],
         "url": "http://127.0.0.1:8010/v1/preview-replacement",
         "data": {
             "description": "replace every detected face",

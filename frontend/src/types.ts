@@ -83,7 +83,7 @@ export type FaceOccurrence = {
   bbox: { x: number; y: number; width: number; height: number }
   detection_confidence: number
   identity_confidence?: number | null
-  needs_confirmation: boolean | number
+  needs_confirmation: boolean
   appearance: {
     apparent_age?: string
     face_features?: string
@@ -104,7 +104,7 @@ export type Person = {
   cluster_key: string
   display_code: string
   label?: string | null
-  confirmed: boolean | number
+  confirmed: boolean
   faces: FaceOccurrence[]
   mapping?: PersonMapping | null
 }

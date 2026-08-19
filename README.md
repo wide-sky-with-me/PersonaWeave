@@ -181,14 +181,16 @@ retained separately, and a result is eligible for human batch approval only
 when both reviewers and the local source comparison pass. These reviewers share
 the visual API mode, path, and multimodal timeout above.
 
-Image editing has an independent profile:
+Model-native preview image editing has an independent profile:
 `PERSONAWEAVE_YUNWU_IMAGE_MODEL`, `PERSONAWEAVE_YUNWU_IMAGE_API_MODE`,
 `PERSONAWEAVE_YUNWU_IMAGE_API_PATH`, `PERSONAWEAVE_YUNWU_IMAGE_SIZE`, and
-`PERSONAWEAVE_YUNWU_IMAGE_RESPONSE_FORMAT`. Formal batches require
-`multipart_edits`, because their confirmed authorization Mask must reach the
-image-edit request; `json_generations` remains available only to preview paths
-that do not claim formal Mask enforcement. Changing a model never silently
-changes its endpoint or payload contract.
+`PERSONAWEAVE_YUNWU_IMAGE_RESPONSE_FORMAT`. Formal batches use the separate
+`PERSONAWEAVE_FORMAL_IMAGE_*` profile, which is restricted to
+`multipart_edits` because its confirmed authorization mask must reach the
+image-edit request. Its response format may be left blank for endpoints such
+as Yunwu GPT Image that reject that optional field and return `b64_json` by
+default. `json_generations` remains preview-only. Changing a model never
+silently changes its endpoint or payload contract.
 
 The default `PERSONAWEAVE_PREVIEW_STRATEGY=model_native` path does not use local
 face detection or a local mask. The configured visual model first converts the
@@ -215,8 +217,12 @@ exposure, contrast, saturation, gamma, and color-cast drift. The default
 model-native preview remains a full-frame edit without local compositing.
 
 The application does not use Yunwu for biometric identity assignment. The
-configured inference gateway must provide dedicated face detection, embedding,
-clustering, and local face replacement operations.
+configured inference gateway provides local face detection and the protected
+execution boundary. When no qualified static swap workflow is installed, the
+included Comfy gateway constructs a bounded masked multipart graph around the
+configured Yunwu formal image profile, then restores canonical-mask-external
+pixels locally. Final validation runs in the application as local source
+comparison plus two distinct Yunwu reviewer models.
 
 Do not point `PERSONAWEAVE_INFERENCE_BASE_URL` at Yunwu's OpenAI-compatible
 `/v1` endpoint. That setting requires a service implementing PersonaWeave's

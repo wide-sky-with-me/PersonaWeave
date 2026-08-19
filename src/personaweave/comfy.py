@@ -597,16 +597,16 @@ class ComfyWorkflowEngine:
         source_asset: tuple[bytes, str, str],
         mask_asset: tuple[bytes, str, str],
     ) -> tuple[str, str]:
-        source_uri = await self._upload_content_unbounded(
+        source_uri = await self._upload_content(
             source_asset[0],
             source_asset[1],
             source_asset[2],
             f"personaweave/{request.batch_id}",
         )
-        mask_uri = await self._upload_content_unbounded(
+        mask_uri = await self._upload_content(
             mask_asset[0],
             mask_asset[1],
-            mask_asset[2],
+            "authorization-mask.png",
             f"personaweave/{request.batch_id}",
         )
         return source_uri, mask_uri
@@ -921,7 +921,6 @@ class ComfyWorkflowEngine:
                     "api_mode": request.image_api_mode,
                     "api_path": request.image_api_path,
                     "output_size": request.image_output_size,
-                    "response_format": request.image_response_format,
                 },
             },
             "12": {
@@ -932,6 +931,8 @@ class ComfyWorkflowEngine:
                 },
             },
         }
+        if request.image_response_format is not None:
+            prompt["7"]["inputs"]["response_format"] = request.image_response_format
         if reference_image is not None:
             prompt["6"] = {
                 "class_type": "LoadImage",

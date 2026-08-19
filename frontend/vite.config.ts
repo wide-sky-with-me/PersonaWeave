@@ -1,11 +1,12 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
   base: '/app/',
   plugins: [react()],
   build: {
-    outDir: new URL('../src/personaweave/static', import.meta.url).pathname,
+    outDir: fileURLToPath(new URL('../src/personaweave/static', import.meta.url)),
     emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1100,

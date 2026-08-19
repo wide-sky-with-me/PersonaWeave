@@ -11,19 +11,28 @@ import torch
 import torch.nn.functional as functional
 from PIL import Image, ImageDraw, ImageFilter
 
-from .yunwu_image_api import image_api_endpoint, json_generation_payload
+from .yunwu_image_api import (
+    image_api_endpoint,
+    json_generation_payload,
+    multipart_edit_data,
+)
 
 
 MINIMUM_IMAGE_API_TIMEOUT_SECONDS = 600.0
 
 
-def _image_api_timeout_seconds() -> float:
-    configured = os.getenv("PERSONAWEAVE_YUNWU_IMAGE_TIMEOUT_SECONDS", "600")
+def _image_api_timeout_seconds(*, formal: bool = False) -> float:
+    variable = (
+        "PERSONAWEAVE_FORMAL_IMAGE_TIMEOUT_SECONDS"
+        if formal
+        else "PERSONAWEAVE_YUNWU_IMAGE_TIMEOUT_SECONDS"
+    )
+    configured = os.getenv(variable, "600")
     try:
         return max(MINIMUM_IMAGE_API_TIMEOUT_SECONDS, float(configured))
     except ValueError as error:
         raise ValueError(
-            "PERSONAWEAVE_YUNWU_IMAGE_TIMEOUT_SECONDS must be a number"
+            f"{variable} must be a number"
         ) from error
 
 
@@ -242,14 +251,14 @@ class YunwuMaskedImageEdit:
                     "STRING",
                     {"default": os.getenv("PERSONAWEAVE_YUNWU_IMAGE_SIZE") or "1024x1024"},
                 ),
-                "response_format": (
-                    ["url", "b64_json"],
-                    {"default": os.getenv("PERSONAWEAVE_YUNWU_IMAGE_RESPONSE_FORMAT") or "url"},
-                ),
             },
             "optional": {
                 "mask": ("MASK",),
                 "reference_image": ("IMAGE",),
+                "response_format": (
+                    "STRING",
+                    {"default": ""},
+                ),
             },
         }
 
@@ -266,9 +275,9 @@ class YunwuMaskedImageEdit:
         api_mode: str,
         api_path: str,
         output_size: str,
-        response_format: str,
         mask: torch.Tensor | None = None,
         reference_image: torch.Tensor | None = None,
+        response_format: str | None = None,
     ):
         api_key = os.getenv("PERSONAWEAVE_YUNWU_API_KEY")
         base_url = os.getenv("PERSONAWEAVE_YUNWU_BASE_URL", "https://yunwu.ai/v1").rstrip("/")
@@ -291,7 +300,7 @@ class YunwuMaskedImageEdit:
             if mask is not None
             else None
         )
-        timeout_seconds = _image_api_timeout_seconds()
+        timeout_seconds = _image_api_timeout_seconds(formal=mask is not None)
         timeout = httpx.Timeout(timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
             try:
@@ -343,13 +352,12 @@ class YunwuMaskedImageEdit:
                     response = client.post(
                         image_api_endpoint(base_url, api_path, api_mode),
                         headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
-                        data={
-                            "model": model,
-                            "prompt": prompt,
-                            "n": "1",
-                            "size": output_size,
-                            "response_format": response_format,
-                        },
+                        data=multipart_edit_data(
+                            model=model,
+                            prompt=prompt,
+                            size=output_size,
+                            response_format=response_format,
+                        ),
                         files=files,
                     )
                 else:

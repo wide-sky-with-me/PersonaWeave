@@ -182,7 +182,10 @@ def formal_compilation(
     artifacts = []
     for source in contract.source_assets:
         source_record = repository.get_asset(source.asset_id)
-        source_path = Path(source_record["storage_uri"].removeprefix("file://"))
+        source_path = AssetResolver(repository.formal_mask_root).local_path(
+            source_record["storage_uri"]
+        )
+        assert source_path is not None
         faces = repository.list_faces_for_asset(source.asset_id)
         compiled_faces = [
             CompiledFaceEvidence(
@@ -404,11 +407,10 @@ def test_contract_invalidation_removes_committed_mask_after_database_commit(
 ) -> None:
     batch, _, compilation = prepared_edit_compilation(repository, (True,))
     repository.store_compiled_contract(batch["id"], compilation)
-    mask_path = Path(
-        repository.list_formal_masks(batch["id"])[0]["storage_uri"].removeprefix(
-            "file://"
-        )
+    mask_path = AssetResolver(repository.formal_mask_root).local_path(
+        repository.list_formal_masks(batch["id"])[0]["storage_uri"]
     )
+    assert mask_path is not None
     assert mask_path.is_file()
 
     repository.update_batch_spec(batch["id"], "修改 @P01 的发型", 2)
@@ -422,11 +424,10 @@ def test_permanent_batch_delete_removes_committed_mask(
 ) -> None:
     batch, _, compilation = prepared_edit_compilation(repository, (True,))
     repository.store_compiled_contract(batch["id"], compilation)
-    mask_path = Path(
-        repository.list_formal_masks(batch["id"])[0]["storage_uri"].removeprefix(
-            "file://"
-        )
+    mask_path = AssetResolver(repository.formal_mask_root).local_path(
+        repository.list_formal_masks(batch["id"])[0]["storage_uri"]
     )
+    assert mask_path is not None
     repository.trash_batch(batch["id"])
 
     repository.delete_batch(batch["id"])
@@ -519,6 +520,36 @@ class OccurrenceCoverageCompiler:
         )
 
 
+class CoordinatedFormalCompiler(OccurrenceCoverageCompiler):
+    def __init__(self):
+        super().__init__()
+        self.initial_calls: list[str] = []
+        self.initial_ready = asyncio.Event()
+        self.coverage_calls: list[str] = []
+        self.coverage_ready = asyncio.Event()
+
+    async def _coordinate_initial(self, name: str) -> None:
+        self.initial_calls.append(name)
+        if len(self.initial_calls) == 2:
+            self.initial_ready.set()
+        await asyncio.wait_for(self.initial_ready.wait(), timeout=1)
+
+    async def compile_target_identity(self, **kwargs):
+        await self._coordinate_initial("identity")
+        return await super().compile_target_identity(**kwargs)
+
+    async def compile_attribute_permissions(self, **kwargs):
+        await self._coordinate_initial("permissions")
+        return await super().compile_attribute_permissions(**kwargs)
+
+    async def compile_source_reference_coverage(self, **kwargs):
+        self.coverage_calls.append(kwargs["source_asset_code"])
+        if len(self.coverage_calls) == 2:
+            self.coverage_ready.set()
+        await asyncio.wait_for(self.coverage_ready.wait(), timeout=1)
+        return await super().compile_source_reference_coverage(**kwargs)
+
+
 async def compile_reference_occurrence_case(
     repository: Repository,
     compiler: OccurrenceCoverageCompiler,
@@ -571,6 +602,65 @@ async def compile_reference_occurrence_case(
         ],
     )
     return compiled["compiled_contract"]["operations"][0]["source_reference_coverage"][0]
+
+
+@pytest.mark.anyio
+async def test_formal_identity_permissions_and_coverages_run_concurrently(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("parallel evidence", "将 @P01 替换为 @T01")
+    sources = [
+        add_source(repository, batch["id"], f"evidence-{index}.jpg")
+        for index in range(2)
+    ]
+    identity = repository.create_identity(batch["id"], "target")
+    repository.add_asset(
+        batch_id=batch["id"],
+        identity_id=identity["id"],
+        kind="reference",
+        filename="frontal.jpg",
+        media_type="image/jpeg",
+        storage_uri=sources[0]["storage_uri"],
+        sha256="b" * 64,
+    )
+    compiler = CoordinatedFormalCompiler()
+    service = WorkflowService(
+        repository,
+        contract_compiler=compiler,
+        semantic_mask_compiler=DeterministicSemanticMaskCompiler(),
+        asset_resolver=AssetResolver(repository.database_path.parent),
+    )
+    service.start_analysis(batch["id"])
+    service.complete_analysis(
+        batch["id"],
+        [
+            {
+                "asset_id": source["id"],
+                "provider": "fake",
+                "faces": [{
+                    "external_face_id": f"face-{index}",
+                    "bbox": {"x": 20, "y": 20, "width": 40, "height": 40},
+                    "detection_confidence": 1,
+                    "suggested_person_key": "same-person",
+                    "appearance": {"pose": "left profile"},
+                }],
+            }
+            for index, source in enumerate(sources)
+        ],
+    )
+    person = repository.list_persons(batch["id"])[0]
+
+    await service.compile_task_contract(
+        batch["id"],
+        [MappingDecision(
+            person_id=person["id"],
+            action=MappingAction.REPLACE,
+            target_identity_id=identity["id"],
+        )],
+    )
+
+    assert set(compiler.initial_calls) == {"identity", "permissions"}
+    assert compiler.coverage_calls == ["I01", "I02"]
 
 
 @pytest.mark.anyio
@@ -897,7 +987,9 @@ def test_analysis_always_pauses_for_mapping_confirmation(repository: Repository)
     )
 
     assert repository.get_batch(batch["id"])["status"] == BatchStatus.AWAITING_CONFIRMATION
-    assert repository.list_persons(batch["id"])[0]["confirmed"] == 0
+    person = repository.list_persons(batch["id"])[0]
+    assert person["confirmed"] == 0
+    assert person["faces"][0]["needs_confirmation"] == 1
 
 
 def test_every_detected_person_requires_a_mapping(repository: Repository) -> None:
@@ -1448,8 +1540,10 @@ def test_validation_jobs_link_peer_results_for_the_same_target_identity(
     repository: Repository,
 ) -> None:
     batch = repository.create_batch("consistent set", "将 @P01 替换为 @T01")
-    first = add_source(repository, batch["id"], "first.jpg")
-    second = add_source(repository, batch["id"], "second.jpg")
+    sources = [
+        add_source(repository, batch["id"], f"source-{index}.jpg")
+        for index in range(4)
+    ]
     identity = repository.create_identity(batch["id"], "target")
     repository.add_asset(
         batch_id=batch["id"],
@@ -1476,7 +1570,7 @@ def test_validation_jobs_link_peer_results_for_the_same_target_identity(
                     "needs_confirmation": True,
                 }],
             }
-            for index, asset in enumerate((first, second), start=1)
+            for index, asset in enumerate(sources, start=1)
         ],
     )
     person = repository.list_persons(batch["id"])[0]
@@ -1500,11 +1594,11 @@ def test_validation_jobs_link_peer_results_for_the_same_target_identity(
                 output_sha256=f"result-{asset['display_code']}",
                 provider="fake",
             )
-            for asset in (first, second)
+            for asset in sources
         ],
     )
 
-    assert len(validation_jobs) == 2
+    assert len(validation_jobs) == 4
     for job in validation_jobs:
         assert job["input"]["expected_subjects"][0]["target_identity_code"] == "T01"
         assert len(job["input"]["peer_results"]) == 1

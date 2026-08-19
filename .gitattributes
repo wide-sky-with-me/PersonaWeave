@@ -1,0 +1,5 @@
+*.sh text eol=lf
+.env text eol=lf
+.env.* text eol=lf
+infra/comfyui/*.env text eol=lf
+src/personaweave/static/** text eol=lf

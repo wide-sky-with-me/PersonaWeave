@@ -405,7 +405,7 @@ export default function App() {
           colorText: '#1e1e1e',
           colorTextSecondary: '#717171',
           borderRadius: 6,
-          borderRadiusLG: 10,
+          borderRadiusLG: 8,
           controlHeight: 32,
           fontSize: 13,
           fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, sans-serif',

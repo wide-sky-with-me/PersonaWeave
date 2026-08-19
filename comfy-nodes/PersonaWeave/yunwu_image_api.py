@@ -43,3 +43,16 @@ def json_generation_payload(
         "watermark": False,
         "image": image_uris[0] if len(image_uris) == 1 else image_uris,
     }
+
+
+def multipart_edit_data(
+    *,
+    model: str,
+    prompt: str,
+    size: str,
+    response_format: str | None = None,
+) -> dict[str, str]:
+    data = {"model": model, "prompt": prompt, "n": "1", "size": size}
+    if response_format:
+        data["response_format"] = response_format
+    return data

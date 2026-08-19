@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Annotated, Literal, TypeAlias
 from urllib.parse import urlparse
@@ -19,6 +20,7 @@ from personaweave.domain import (
     PersonAppearance,
     PersonDetectionAudit,
     ReferenceSufficiency,
+    SemanticMaskProposal,
     SourceOccurrenceEvidence,
     SourceOccurrenceReferenceAssessment,
     SourceOperationReferenceCoverage,
@@ -160,6 +162,11 @@ class PersonClustering(BaseModel):
     groups: list[PersonCluster]
 
 
+class LargePersonClustering(BaseModel):
+    duplicate_groups: list[PersonCluster] = Field(default_factory=list)
+    uncertain_codes: list[str] = Field(default_factory=list)
+
+
 class PersonAppearanceObservation(BaseModel):
     code: str = Field(min_length=1, max_length=40)
     appearance: PersonAppearance
@@ -227,10 +234,23 @@ def _parse_json_object(raw: object) -> dict:
     content = raw.strip()
     if content.startswith("```"):
         first_newline = content.find("\n")
-        if first_newline == -1 or not content.endswith("```"):
+        closing_fence = content.find("```", first_newline + 1) if first_newline != -1 else -1
+        if first_newline == -1 or closing_fence == -1:
             raise ValueError("Yunwu returned an incomplete fenced JSON response")
-        content = content[first_newline + 1 : -3].strip()
-    parsed = json.loads(content)
+        content = content[first_newline + 1 : closing_fence].strip()
+    if len(content) > 512_000:
+        raise ValueError("Yunwu response content exceeds the bounded JSON limit")
+    start = content.find("{")
+    if start < 0:
+        raise ValueError("Yunwu response did not contain a JSON object")
+    try:
+        # Some OpenAI-compatible gateways append a second JSON object or a
+        # short explanatory suffix despite response_format=json_object. The
+        # contract validators below still require the complete expected
+        # schema, IDs, and permission partitions before accepting this object.
+        parsed, _ = json.JSONDecoder().raw_decode(content[start:])
+    except json.JSONDecodeError as error:
+        raise ValueError("Yunwu response did not contain a complete JSON object") from error
     if not isinstance(parsed, dict):
         raise ValueError("Yunwu response must be a JSON object")
     return parsed
@@ -626,6 +646,65 @@ class YunwuMultimodalProvider:
                 raise ValueError("replace permissions must authorize face_identity")
         return result
 
+    async def compile_semantic_mask_proposal(
+        self,
+        *,
+        source_asset_id: str,
+        source_asset_code: str,
+        source_uri: str,
+        faces: list[dict[str, object]],
+        protected_people: list[dict[str, str]],
+        identity_evidence: list[dict[str, object]],
+    ) -> SemanticMaskProposal:
+        """Request bounded mask geometry; local compilation remains authoritative."""
+        if not self.configured:
+            raise ProviderNotConfigured("Yunwu API key and vision model are required")
+        if len(faces) > 128 or len(identity_evidence) > 128:
+            raise ValueError("semantic mask proposal context exceeds bounded limits")
+        shape = {
+            "source_asset_id": source_asset_id,
+            "source_asset_code": source_asset_code,
+            "contours": [{
+                "operation": "include",
+                "face_instance_id": "exact supplied face_instance_id",
+                "person_id": "exact supplied person_id",
+                "person_code": "exact supplied person_code",
+                "permissions": {
+                    "editable": ["exact supplied editable attributes"],
+                    "protected": ["exact supplied protected attributes"],
+                },
+                "points": [{"x": 0.0, "y": 0.0}],
+                "confidence": 0.0,
+                "evidence": "short visible-only reason",
+            }],
+            "confidence": 0.0,
+            "summary": "short geometry assessment",
+        }
+        prompt = (
+            "Propose authorization mask geometry for this exact source image. Return arbitrary "
+            "normalized polygon contours, not ellipses or bounding boxes. Coordinates must be finite "
+            "and inside [0,1]. Include only visible head pixels needed by editable confirmed faces; "
+            "use exclude contours for protected attributes, occluders, and neighboring people. Never "
+            "add faces, change mappings, authorize protected people or attributes, or widen ambiguous "
+            "scope. Repeat exact supplied IDs and permission partitions. Return JSON only, at most 64 "
+            "contours and 64 points per contour. Empty editable scope requires empty contours.\n"
+            f"EXACT FACE BBOXES/CODES/AUTHORIZATION: {json.dumps(faces, ensure_ascii=False)}\n"
+            f"PROTECTED PEOPLE: {json.dumps(protected_people, ensure_ascii=False)}\n"
+            f"IDENTITY PROFILE/REFERENCE COVERAGE: {json.dumps(identity_evidence, ensure_ascii=False)}\n"
+            f"RETURN SHAPE: {json.dumps(shape, ensure_ascii=False)}"
+        )
+        compiled = SemanticMaskProposal.model_validate(await self._json_completion([
+            {"type": "text", "text": prompt},
+            {"type": "text", "text": f"SOURCE IMAGE {source_asset_code}"},
+            {"type": "image_url", "image_url": {"url": source_uri, "detail": "high"}},
+        ]))
+        if (
+            compiled.source_asset_id != source_asset_id
+            or compiled.source_asset_code != source_asset_code
+        ):
+            raise ValueError("semantic mask compiler returned mismatched source identity")
+        return compiled
+
     async def audit_person_detection(
         self,
         *,
@@ -677,14 +756,13 @@ class YunwuMultimodalProvider:
             }],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
         audit = PersonDetectionAudit.model_validate(
             _parse_json_object(body["choices"][0]["message"]["content"])
         )
@@ -710,6 +788,8 @@ class YunwuMultimodalProvider:
         if not observations:
             return {}
         codes = [observation["code"] for observation in observations]
+        if len(observations) > 24:
+            return await self._cluster_large_observation_set(observations, codes)
         schema_hint = {
             "groups": [
                 {"members": [codes[0]], "confidence": 0.0}
@@ -742,14 +822,13 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
         clustering = PersonClustering.model_validate(
             _parse_json_object(body["choices"][0]["message"]["content"])
         )
@@ -763,6 +842,68 @@ class YunwuMultimodalProvider:
                 assignments[member] = (group_key, group.confidence)
         return assignments
 
+    async def _cluster_large_observation_set(
+        self,
+        observations: list[dict[str, str]],
+        codes: list[str],
+    ) -> dict[str, tuple[str, float]]:
+        schema_hint = {
+            "duplicate_groups": [{"members": [codes[0], codes[-1]], "confidence": 0.0}],
+            "uncertain_codes": [],
+        }
+        content: list[dict[str, object]] = [{
+            "type": "text",
+            "text": (
+                "Find only repeated appearances of the same visible source person across this "
+                "large multi-image observation set. Return duplicate_groups only when at least two "
+                "codes from different Ixx source images are a high-confidence same-person match. "
+                "Never put two codes with the same Ixx prefix in one group. Put ambiguous possible "
+                "duplicates in uncertain_codes. Omit a code from both lists when no duplicate match "
+                "was found; the application will preserve it as a separate person pending mandatory "
+                "human confirmation. Never identify or name a real person. Every returned code must "
+                "exactly match a supplied code and may appear at most once. Return JSON only: "
+                f"{json.dumps(schema_hint, ensure_ascii=False)}"
+            ),
+        }]
+        for observation in observations:
+            content.extend([
+                {"type": "text", "text": f"OBSERVATION {observation['code']}"},
+                {"type": "image_url", "image_url": {
+                    "url": observation["crop_uri"],
+                    "detail": "high",
+                }},
+            ])
+        clustering = LargePersonClustering.model_validate(
+            await self._json_completion(content)
+        )
+        known = set(codes)
+        duplicate_members = [
+            member
+            for group in clustering.duplicate_groups
+            for member in group.members
+        ]
+        returned = [*duplicate_members, *clustering.uncertain_codes]
+        if len(returned) != len(set(returned)) or not set(returned).issubset(known):
+            raise ValueError("large person clustering returned duplicate or unknown observations")
+        for group in clustering.duplicate_groups:
+            if len(group.members) < 2:
+                raise ValueError("large person duplicate groups require at least two observations")
+            source_codes = {member.split("-F", 1)[0] for member in group.members}
+            if len(source_codes) != len(group.members):
+                raise ValueError("large person clustering cannot merge faces from the same source")
+
+        assignments: dict[str, tuple[str, float]] = {}
+        for group in clustering.duplicate_groups:
+            group_key = "vlm:" + "|".join(sorted(group.members))
+            for member in group.members:
+                assignments[member] = (group_key, group.confidence)
+        uncertain = set(clustering.uncertain_codes)
+        for code in codes:
+            if code not in assignments:
+                confidence = 0.0 if code in uncertain else 0.5
+                assignments[code] = (f"vlm:{code}", confidence)
+        return assignments
+
     async def analyze_person_appearances(
         self,
         *,
@@ -774,6 +915,34 @@ class YunwuMultimodalProvider:
             raise ProviderNotConfigured("Yunwu API key and vision model are required")
         if not observations:
             return {}
+        if len(observations) > 12:
+            combined: dict[str, PersonAppearance] = {}
+            chunks = [
+                observations[start : start + 12]
+                for start in range(0, len(observations), 12)
+            ]
+            chunk_semaphore = asyncio.Semaphore(4)
+
+            async def analyze_chunk(
+                chunk: list[dict[str, object]],
+            ) -> dict[str, PersonAppearance]:
+                async with chunk_semaphore:
+                    return await self.analyze_person_appearances(
+                        source_uri=source_uri,
+                        observations=chunk,
+                    )
+
+            chunk_results = await asyncio.gather(*(
+                analyze_chunk(chunk) for chunk in chunks
+            ))
+            for chunk_result in chunk_results:
+                overlap = set(combined).intersection(chunk_result)
+                if overlap:
+                    raise ValueError("appearance analysis returned duplicate observations")
+                combined.update(chunk_result)
+            if set(combined) != {str(observation["code"]) for observation in observations}:
+                raise ValueError("appearance analysis did not cover every observation exactly once")
+            return combined
         codes = [str(observation["code"]) for observation in observations]
         schema_hint = {
             "people": [{
@@ -805,25 +974,11 @@ class YunwuMultimodalProvider:
             f"OBSERVATIONS: {json.dumps(observations, ensure_ascii=False)}\n"
             f"Return JSON only using this shape: {json.dumps(schema_hint, ensure_ascii=False)}"
         )
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [{"role": "user", "content": [
+        analysis = PersonAppearanceAnalysis.model_validate(
+            await self._json_completion([
                 {"type": "text", "text": instructions},
                 {"type": "image_url", "image_url": {"url": source_uri, "detail": "high"}},
-            ]}],
-            "response_format": {"type": "json_object"},
-        }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
-        analysis = PersonAppearanceAnalysis.model_validate(
-            _parse_json_object(body["choices"][0]["message"]["content"])
+            ])
         )
         returned = [person.code for person in analysis.people]
         if len(returned) != len(set(returned)) or set(returned) != set(codes):
@@ -840,12 +995,24 @@ class YunwuMultimodalProvider:
         if not self.configured:
             raise ProviderNotConfigured("Yunwu API key and vision model are required")
         operations = [{
+            "face_instance_id": operation.face_instance_id,
             "source_person": operation.source_person_code,
             "target_identity": operation.target_identity_code,
             "bbox": operation.bbox.model_dump(),
             "source_appearance": operation.source_appearance.model_dump(),
             "additional_requirement": operation.instruction,
-            "has_reference": bool(operation.reference_uris),
+            "editable_attributes": (
+                list(operation.permissions.editable) if operation.permissions else []
+            ),
+            "protected_attributes": (
+                list(operation.permissions.protected) if operation.permissions else []
+            ),
+            "target_reference_count": len(operation.reference_uris),
+            "reference_coverage_sufficient": (
+                operation.source_reference_coverage.sufficient
+                if operation.source_reference_coverage is not None
+                else None
+            ),
         } for operation in request.replacements]
         schema_hint = {
             "edit_prompt": "complete standalone generator-ready instruction",
@@ -854,23 +1021,27 @@ class YunwuMultimodalProvider:
             "warnings": [],
         }
         instructions = (
-            "ROLE: Initial multimodal planner for a bounded numbered people-edit loop. You are not a "
-            "biometric verifier.\n"
-            f"Immutable user task: {json.dumps(request.task_instruction, ensure_ascii=False)}\n"
-            f"Immutable compiled scope: {json.dumps(request.compiled_instruction, ensure_ascii=False)}\n"
-            f"Numbered operations and source appearance context: {json.dumps(operations, ensure_ascii=False)}\n"
-            "Inspect the immutable original source and produce one complete standalone prompt for the "
-            "image-edit model. Keep every numbered mapping and bbox unchanged. Adapt each requested new "
-            "facial identity or facial trait to the source person's broad visible age impression, face-to-body "
-            "proportions, neckline, pose, expression, gaze, lighting, blur, depth and occlusion so the whole "
-            "person remains visually coherent. Preserve the source hair, eyewear, accessories, body, hands, "
-            "clothing and pose unless the immutable user task explicitly requests changing one of them. "
-            "Never invent an exact age or alter an unrequested person. Require the exact original dimensions, "
-            "crop, composition, background, objects, text and logos. Every generation round edits the original, "
-            "never a previous candidate. If text and an observed trait conflict, the explicit immutable user "
-            "task wins only for the requested trait; all remaining source traits stay protected. Record ambiguity "
-            "in warnings instead of guessing. Do not name or identify anyone beyond literal target wording already "
-            "present in the immutable user task. Return JSON only: "
+            "ROLE: Source-aware planner for one mask-bounded numbered face edit. Do not identify "
+            "real people.\n"
+            f"IMMUTABLE USER TASK: {json.dumps(request.task_instruction, ensure_ascii=False)}\n"
+            f"IMMUTABLE COMPILED SCOPE: {json.dumps(request.compiled_instruction, ensure_ascii=False)}\n"
+            f"SELECTION MODE: {request.selection_mode}\n"
+            f"EXACT SOURCE OPERATIONS: {json.dumps(operations, ensure_ascii=False)}\n"
+            f"AUTHORIZATION MASK PRESENT: {request.authorization_mask_uri is not None}.\n"
+            "Inspect the original image, then write one generator-ready edit_prompt. Follow this "
+            "priority order: (1) edit only the exact numbered operations that satisfy the selection "
+            "mode; (2) apply only the requested facial identity or facial attributes inside each "
+            "authorized face region; (3) retain each source subject's head angle, expression, gaze, "
+            "mouth state, age impression, skin lighting, sharpness, noise, occlusion and face-to-body "
+            "proportions; (4) preserve every protected attribute and all unrequested people; (5) "
+            "preserve exact dimensions, crop, composition, bodies, clothing, hands, background, "
+            "objects, text, logos, color and photographic style. Reference images supply facial "
+            "identity evidence only, never composition, pose, clothing or hairstyle. Never request a "
+            "whole-image redraw, beautification, reframing, added detail or unrelated cleanup. Every "
+            "round edits the immutable original, not the previous candidate. Explicit user wording wins "
+            "only for the named editable trait; uncertainty goes into warnings and must not broaden "
+            "scope. Keep edit_prompt concise and operational, preferably under 2400 characters; do not "
+            "repeat raw JSON or add commentary. Return JSON only: "
             f"{json.dumps(schema_hint, ensure_ascii=False)}"
         )
         content = [
@@ -893,17 +1064,24 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
-        return ImageEditPlan.model_validate(
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
+        plan = ImageEditPlan.model_validate(
             _parse_json_object(body["choices"][0]["message"]["content"])
         )
+        if (
+            request.selection_mode != "prompt"
+            and plan.intended_face_edits != len(operations)
+        ):
+            raise ValueError(
+                "numbered edit planner changed the confirmed face-edit count"
+            )
+        return plan
 
     async def plan_image_edit(
         self,
@@ -969,14 +1147,13 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
         raw = body["choices"][0]["message"]["content"]
         return ImageEditPlan.model_validate(_parse_json_object(raw))
 
@@ -1072,14 +1249,13 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
         raw = body["choices"][0]["message"]["content"]
         review = ImageEditReview.model_validate(_parse_json_object(raw))
         return enforce_image_edit_review(review)
@@ -1130,38 +1306,41 @@ class YunwuMultimodalProvider:
         has_target_references = any(
             operation.reference_uris for operation in request.replacements
         )
+        prompt_used = (
+            request.adaptive_instruction.strip()
+            or request.compiled_instruction.strip()
+        )
         instructions = (
-            "ROLE: Strict reviewer and next-prompt author for a numbered image-edit task.\n"
-            f"Image 1 is immutable original @{request.source_image_code or 'source'}. "
-            "Image 2 is the current result. "
+            "ROLE: Strict visual reviewer and next-prompt author for one mask-bounded numbered "
+            "face edit. Do not identify real people.\n"
+            f"IMAGE 1: immutable original @{request.source_image_code or 'source'}. "
+            "IMAGE 2: current source-composited result. Pixels outside the authorization mask have "
+            "already been restored from the original. "
             + (
-                "Later images are optional target identity references in mapping order.\n"
+                "LATER IMAGES: target identity references in mapping order; use them only for face identity.\n"
                 if has_target_references
                 else "No target identity reference was supplied; judge the requested appearance from text.\n"
             )
-            + f"Immutable task requirement: {json.dumps(request.task_instruction, ensure_ascii=False)}\n"
-            + f"Confirmed mappings: {json.dumps(mappings, ensure_ascii=False)}\n"
-            + f"Source appearance contexts: {json.dumps(source_appearances, ensure_ascii=False)}\n"
-            + f"Operation requirements and preview coordinate aids: {json.dumps(operation_requirements, ensure_ascii=False)}\n"
-            + f"Subject selection mode: {request.selection_mode}. In prompt mode, listed people are candidates; "
-            + "only people visibly matching the immutable requirement should be changed.\n"
-            + f"Prompt used: {json.dumps(request.compiled_instruction, ensure_ascii=False)}\n"
-            + f"Iteration: {iteration} of {request.max_iterations}.\n"
-            + "Check every requested edit, target-reference similarity only when references exist, natural face quality, preservation "
-            + "of source pose/expression/gaze, and preservation of all unrequested people, bodies, clothing, "
-            + "background, objects, framing, lighting, text and logos. Compare the complete canvases and reject "
-            + "any obvious whole-image color cast, white-balance, exposure, contrast, saturation or gamma shift. "
-            + "Inspect the full head, hairline, ears, jaw, neck and nearby skin/clothing for seams, pasted-face "
-            + "boundaries, halos, mismatched sharpness, noise, depth of field or local lighting. Also check that edited faces remain "
-            + "coherent with the source person's visible age impression, face-to-body proportions, hair, "
-            + "eyewear, accessories, clothing neckline, pose, lighting and occlusion without changing those "
-            + "protected source traits unless explicitly requested. Do not name real people or claim "
-            + "biometric verification. All six scores must be integers from 0 through 100; never use 0-1 "
-            + "decimals or a 0-10 scale. passed may be true only when all score thresholds are met. If failed "
-            + "and another iteration remains, revised_edit_prompt must be a complete standalone instruction "
-            + "for editing the immutable original again. It must retain every numbered mapping and all "
-            + "preservation constraints, then add concrete corrections. Never instruct editing the failed "
-            + "candidate. On the final iteration or when passed, return null. Return JSON only: "
+            + f"IMMUTABLE TASK: {json.dumps(request.task_instruction, ensure_ascii=False)}\n"
+            + f"CONFIRMED MAPPINGS: {json.dumps(mappings, ensure_ascii=False)}\n"
+            + f"SOURCE CONTEXTS: {json.dumps(source_appearances, ensure_ascii=False)}\n"
+            + f"PER-OPERATION REQUIREMENTS: {json.dumps(operation_requirements, ensure_ascii=False)}\n"
+            + f"SELECTION MODE: {request.selection_mode}. In prompt mode, listed people are candidates; "
+            + "only a visible match to the immutable task is an intended edit.\n"
+            + f"ACTUAL PROMPT USED THIS ROUND: {json.dumps(prompt_used, ensure_ascii=False)}\n"
+            + f"ITERATION: {iteration} of {request.max_iterations}.\n"
+            + "First verify exact target count and mapping. Then inspect only visible evidence: target "
+            + "identity or requested traits, natural facial geometry, source expression/pose/gaze, "
+            + "hairline/ears/jaw/neck boundaries, lighting, sharpness, noise, depth and occlusion. Also "
+            + "check protected faces, bodies, clothing, background, objects, framing, text, logos and "
+            + "global color. Do not penalize intended facial identity changes or harmless encoding-level "
+            + "differences. All six scores are integer 0-100. passed=true only when every fixed threshold "
+            + "is met and there is no critical issue. List only concrete visible issues that a new edit "
+            + "of the original could correct; avoid vague advice and duplicate issues. If failed and a "
+            + "round remains, revised_edit_prompt is mandatory and must be a concise, complete, standalone "
+            + "instruction for editing the immutable original. Preserve exact mappings and successful "
+            + "constraints, then add corrections for every major or critical issue. Never reference or "
+            + "edit the failed candidate. On pass or final iteration return null. Return JSON only: "
             + f"{json.dumps(schema_hint, ensure_ascii=False)}"
         )
         content = [
@@ -1185,14 +1364,13 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                self.endpoint,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        response = await self._client.post(
+            self.endpoint,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        body = response.json()
         raw = body["choices"][0]["message"]["content"]
         review = ImageEditReview.model_validate(_parse_json_object(raw))
         return enforce_image_edit_review(review)
@@ -1280,9 +1458,16 @@ class YunwuMultimodalProvider:
             {"type": "image_url", "image_url": {"url": request.source_uri}},
             {"type": "image_url", "image_url": {"url": request.result_uri}},
         ]
+        seen_references: set[str] = set()
         for subject in request.expected_subjects:
             for reference_uri in subject.reference_uris:
-                content.append({"type": "image_url", "image_url": {"url": reference_uri}})
+                if reference_uri in seen_references:
+                    continue
+                seen_references.add(reference_uri)
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": reference_uri},
+                })
         for peer in request.peer_results:
             content.append({"type": "image_url", "image_url": {"url": peer.result_uri}})
         parsed = _VisualValidationPayload.model_validate(

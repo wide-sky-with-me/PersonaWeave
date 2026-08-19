@@ -53,11 +53,12 @@ class WorkflowService:
         image_api_mode: str = "multipart_edits",
         image_api_path: str = "/images/edits",
         image_output_size: str = "1024x1024",
-        image_response_format: str = "url",
+        image_response_format: str | None = None,
         *,
         contract_compiler: TaskContractCompiler | None = None,
         semantic_mask_compiler: Any | None = None,
         asset_resolver: AssetResolver | None = None,
+        contract_compilation_concurrency: int = 4,
     ):
         self.repository = repository
         self.image_model = image_model
@@ -68,7 +69,9 @@ class WorkflowService:
         self.contract_compiler = contract_compiler
         self.semantic_mask_compiler = semantic_mask_compiler
         self.asset_resolver = asset_resolver
-        self.formal_contract_compiler = FormalContractCompiler()
+        self.formal_contract_compiler = FormalContractCompiler(
+            contract_compilation_concurrency
+        )
         self.swap_request_factory = FormalSwapRequestFactory()
 
     def _build_formal_sources(self, batch_id: str) -> tuple[FormalSourceSnapshot, ...]:
@@ -142,6 +145,8 @@ class WorkflowService:
                 f"unknown={result_ids - source_ids}"
             )
         for result in results:
+            for face in result["faces"]:
+                face["needs_confirmation"] = True
             self.repository.record_analysis(batch_id, result["asset_id"], result["faces"])
             job = self.repository.get_job_for_item(batch_id, JobStage.ANALYZE, result["asset_id"])
             self.repository.complete_job(
@@ -272,6 +277,9 @@ class WorkflowService:
         compiler = self.contract_compiler
         if compiler is None:
             raise ValueError("task contract compiler is not configured")
+        mask_compiler = self.semantic_mask_compiler
+        if mask_compiler is None:
+            raise ValueError("semantic mask proposal compiler is not configured")
         people = self.repository.list_persons(batch_id)
         identities = self.repository.list_identities(batch_id)
         sources = self._build_formal_sources(batch_id)
@@ -313,6 +321,7 @@ class WorkflowService:
         compilation = await self.formal_contract_compiler.compile(
             snapshot,
             compiler,
+            mask_compiler,
             self.asset_resolver,
         )
         return self.repository.store_compiled_contract(batch_id, compilation)
@@ -488,6 +497,19 @@ class WorkflowService:
                 for operation in operations
                 if operation.get("target_identity_code")
             }
+            peer_anchors: dict[str, tuple[dict, dict, list[str]]] = {}
+            for target_code in sorted(target_codes):
+                anchor = next(
+                    (
+                        (peer_result, peer_source, peer_codes)
+                        for peer_result, peer_source, peer_codes in peer_data
+                        if peer_result["id"] != result_asset["id"]
+                        and target_code in peer_codes
+                    ),
+                    None,
+                )
+                if anchor is not None:
+                    peer_anchors[anchor[0]["id"]] = anchor
             validation = ValidationRequest(
                 batch_id=batch_id,
                 contract_hash=swap_job["input"]["contract_hash"],
@@ -525,9 +547,7 @@ class WorkflowService:
                         source_image_code=peer_source["display_code"],
                         target_identity_codes=peer_codes,
                     )
-                    for peer_result, peer_source, peer_codes in peer_data
-                    if peer_result["id"] != result_asset["id"]
-                    and target_codes.intersection(peer_codes)
+                    for peer_result, peer_source, peer_codes in peer_anchors.values()
                 ],
                 review_reasons=swap_job["input"].get("review_reasons", []),
             )

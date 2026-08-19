@@ -433,6 +433,10 @@ def test_source_varying_reference_and_mask_reasons_do_not_leak_between_requests(
     assert CompiledBatchContract.model_validate_json(
         contract.canonical_json()
     ) == contract
+    masks_by_source = {
+        source.asset_id: source.authorization_mask
+        for source in contract.source_assets
+    }
     sources = tuple(
         FormalSourceSnapshot(
             id=source_id,
@@ -441,6 +445,9 @@ def test_source_varying_reference_and_mask_reasons_do_not_leak_between_requests(
             media_type="image/png",
             sha256=digest,
             persisted_authorization_mask_uri=f"file:///masks/{source_id}.png",
+            persisted_authorization_mask_sha256=masks_by_source[source_id].sha256,
+            persisted_authorization_mask_width=masks_by_source[source_id].width,
+            persisted_authorization_mask_height=masks_by_source[source_id].height,
             faces=(FormalFaceSnapshot(
                 id=face_id,
                 person_id="person-1",

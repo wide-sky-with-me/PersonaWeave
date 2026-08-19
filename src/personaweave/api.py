@@ -363,7 +363,7 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
     gateway = InferenceGateway(
         settings.inference_base_url,
         settings.inference_api_key,
-        settings.request_timeout_seconds,
+        settings.formal_image_timeout_seconds,
     )
     vision_client = httpx.AsyncClient(timeout=settings.multimodal_timeout_seconds)
 
@@ -413,14 +413,15 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
     asset_resolver = AssetResolver(settings.asset_root)
     workflow = WorkflowService(
         repository,
-        settings.yunwu_image_model,
-        settings.yunwu_image_api_mode,
-        settings.yunwu_image_api_path,
-        settings.yunwu_image_size,
-        settings.yunwu_image_response_format,
+        settings.formal_image_model,
+        settings.formal_image_api_mode,
+        settings.formal_image_api_path,
+        settings.formal_image_size,
+        settings.formal_image_response_format,
         contract_compiler=yunwu,
         semantic_mask_compiler=yunwu,
         asset_resolver=asset_resolver,
+        contract_compilation_concurrency=settings.contract_compilation_concurrency,
     )
     executor = PipelineExecutor(
         repository,
@@ -491,8 +492,13 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
 
     def public_person(person: dict) -> dict:
         item = dict(person)
+        item["confirmed"] = bool(item.get("confirmed"))
         item["faces"] = [
-            {**face, "crop_url": f"/api/v1/faces/{face['id']}/crop"}
+            {
+                **face,
+                "needs_confirmation": bool(face.get("needs_confirmation", True)),
+                "crop_url": f"/api/v1/faces/{face['id']}/crop",
+            }
             for face in person.get("faces", [])
         ]
         return item
@@ -604,7 +610,16 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
             if path.exists():
                 temporary_path.unlink()
             else:
-                temporary_path.replace(path)
+                try:
+                    temporary_path.replace(path)
+                except (FileExistsError, PermissionError):
+                    # Concurrent identical uploads may race on the same
+                    # digest path. Once the destination exists, the upload
+                    # is already durably represented.
+                    if path.exists():
+                        temporary_path.unlink(missing_ok=True)
+                    else:
+                        raise
             return path.resolve().as_uri(), digest, media_type
         except Exception:
             temporary_path.unlink(missing_ok=True)
@@ -622,13 +637,23 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
                     "api_mode": settings.yunwu_vision_api_mode,
                     "api_path": settings.yunwu_vision_api_path,
                 },
-                "yunwu_image": {
+                "yunwu_preview_image": {
                     "configured": bool(settings.yunwu_api_key and settings.yunwu_image_model),
                     "model": settings.yunwu_image_model,
                     "api_mode": settings.yunwu_image_api_mode,
                     "api_path": settings.yunwu_image_api_path,
                     "size": settings.yunwu_image_size,
                     "response_format": settings.yunwu_image_response_format,
+                    "timeout_seconds": settings.yunwu_image_timeout_seconds,
+                },
+                "yunwu_formal_image": {
+                    "configured": bool(settings.yunwu_api_key and settings.formal_image_model),
+                    "model": settings.formal_image_model,
+                    "api_mode": settings.formal_image_api_mode,
+                    "api_path": settings.formal_image_api_path,
+                    "size": settings.formal_image_size,
+                    "response_format": settings.formal_image_response_format,
+                    "timeout_seconds": settings.formal_image_timeout_seconds,
                 },
             },
         }
@@ -667,12 +692,21 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
                     "api_mode": settings.yunwu_vision_api_mode,
                     "api_path": settings.yunwu_vision_api_path,
                 },
-                "image": {
+                "preview_image": {
                     "model": settings.yunwu_image_model,
                     "api_mode": settings.yunwu_image_api_mode,
                     "api_path": settings.yunwu_image_api_path,
                     "size": settings.yunwu_image_size,
                     "response_format": settings.yunwu_image_response_format,
+                    "timeout_seconds": settings.yunwu_image_timeout_seconds,
+                },
+                "formal_image": {
+                    "model": settings.formal_image_model,
+                    "api_mode": settings.formal_image_api_mode,
+                    "api_path": settings.formal_image_api_path,
+                    "size": settings.formal_image_size,
+                    "response_format": settings.formal_image_response_format,
+                    "timeout_seconds": settings.formal_image_timeout_seconds,
                 },
             },
             "conversation_candidates": [
@@ -738,7 +772,7 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
                 "response_format": settings.yunwu_image_response_format,
                 "strategy": settings.preview_strategy,
             }
-            async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=settings.yunwu_image_timeout_seconds) as client:
                 response = await client.post(
                     f"{settings.inference_base_url.rstrip('/')}/v1/preview-replacement",
                     headers=headers,
@@ -1858,11 +1892,11 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
             input_updates = None
             if job["stage"] == JobStage.SWAP:
                 input_updates = {
-                    "image_model": settings.yunwu_image_model,
-                    "image_api_mode": settings.yunwu_image_api_mode,
-                    "image_api_path": settings.yunwu_image_api_path,
-                    "image_output_size": settings.yunwu_image_size,
-                    "image_response_format": settings.yunwu_image_response_format,
+                    "image_model": settings.formal_image_model,
+                    "image_api_mode": settings.formal_image_api_mode,
+                    "image_api_path": settings.formal_image_api_path,
+                    "image_output_size": settings.formal_image_size,
+                    "image_response_format": settings.formal_image_response_format,
                 }
             retried = repository.retry_job(job_id, input_updates=input_updates)
             retry_status = {

@@ -37,7 +37,7 @@ from personaweave.domain import (
     ValidationRequest,
     ValidationResult,
 )
-from personaweave.executor import PipelineExecutor
+from personaweave.executor import PipelineExecutor, StageExecutionError
 from personaweave.formal_masks import (
     CompiledMaskArtifact,
     FormalCompilationResult,
@@ -69,7 +69,10 @@ def confirm_edit_contract(
             "makeup",
         ],
     )
-    source_path = Path(source["storage_uri"].removeprefix("file://"))
+    source_path = AssetResolver(repository.database_path.parent).local_path(
+        source["storage_uri"]
+    )
+    assert source_path is not None
     with Image.open(source_path) as source_image:
         width, height = source_image.size
     proposal = SemanticMaskProposal(
@@ -194,6 +197,14 @@ class FakeGateway:
         )
 
 
+class UpstreamConfirmedGateway(FakeGateway):
+    async def analyze(self, request):
+        result = await super().analyze(request)
+        result.faces[0].identity_confidence = 1.0
+        result.faces[0].needs_confirmation = False
+        return result
+
+
 class FakeValidationGateway:
     configured = True
 
@@ -282,6 +293,18 @@ class CoordinatedPersonFusionValidator(FakePersonFusionValidator):
             source_uri=source_uri,
             observations=observations,
         )
+
+
+class UncertainPersonFusionValidator(FakePersonFusionValidator):
+    async def cluster_person_observations(self, observations):
+        assert [observation["code"] for observation in observations] == [
+            "I01-F01",
+            "I02-F01",
+        ]
+        return {
+            "I01-F01": ("vlm:I01-F01", 0.0),
+            "I02-F01": ("vlm:I02-F01", 0.5),
+        }
 
 
 class FakeSwapGateway:
@@ -670,6 +693,85 @@ async def test_existing_extracted_people_can_be_refused_without_reanalysis(tmp_p
 
 
 @pytest.mark.anyio
+async def test_fusion_persists_uncertain_and_singleton_confidence_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "confidence.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("confidence")
+    for index, color in enumerate(("red", "blue"), start=1):
+        path = asset_root / f"source-{index}.jpg"
+        Image.new("RGB", (64, 64), color).save(path, format="JPEG")
+        repository.add_asset(
+            batch_id=batch["id"],
+            kind="source",
+            filename=path.name,
+            media_type="image/jpeg",
+            storage_uri=path.resolve().as_uri(),
+            sha256=f"hash-{index}",
+        )
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        UpstreamConfirmedGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        concurrency=2,
+        advisory_validator=UncertainPersonFusionValidator(),  # type: ignore[arg-type]
+    )
+
+    result = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
+    faces = [
+        face
+        for person in repository.list_persons(batch["id"])
+        for face in person["faces"]
+    ]
+
+    assert result["completed"] is True
+    assert sorted(face["identity_confidence"] for face in faces) == [0.0, 0.5]
+    assert all(face["needs_confirmation"] == 1 for face in faces)
+
+
+@pytest.mark.anyio
+async def test_fusion_fails_when_a_detected_face_asset_is_not_local(tmp_path: Path) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "unreadable.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("unreadable")
+    asset = repository.add_asset(
+        batch_id=batch["id"],
+        kind="source",
+        filename="remote.jpg",
+        media_type="image/jpeg",
+        storage_uri="https://assets.example.test/remote.jpg",
+        sha256="remote-hash",
+    )
+    executor = PipelineExecutor(
+        repository,
+        WorkflowService(repository),
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        advisory_validator=UncertainPersonFusionValidator(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(StageExecutionError, match="could not read every detected face"):
+        await executor._cluster_analysis_people([{
+            "asset_id": asset["id"],
+            "faces": [{
+                "external_face_id": "face-1",
+                "bbox": {"x": 1, "y": 2, "width": 30, "height": 40},
+                "detection_confidence": 0.99,
+                "identity_confidence": 1.0,
+                "needs_confirmation": False,
+            }],
+        }])
+
+
+@pytest.mark.anyio
 async def test_provider_cannot_complete_another_assets_job(tmp_path: Path) -> None:
     repository, batch, executor = prepare_analysis(tmp_path, FakeGateway(mismatched_asset=True))
 
@@ -908,6 +1010,11 @@ async def test_swap_reaching_iteration_limit_requires_review(tmp_path: Path) -> 
 
     assert result["completed"] is False
     assert len(gateway.requests) == 3
+    assert gateway.requests[1].adaptive_instruction == (
+        "MULTIMODAL REVIEW REVISED EDIT PLAN:\n"
+        "Keep every immutable constraint and correct only the requested face."
+    )
+    assert "SOURCE-AWARE EDIT PLAN" not in gateway.requests[1].adaptive_instruction
     assert job["status"] == JobStatus.NEEDS_REVIEW
     assert job["phase"] == "needs_review"
     assert job["current_iteration"] == 3
@@ -920,7 +1027,7 @@ def test_asset_resolver_rejects_file_outside_asset_root(tmp_path: Path) -> None:
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     outside = tmp_path / "secret.txt"
-    outside.write_text("secret")
+    outside.write_text("secret", encoding="utf-8")
 
     with pytest.raises(UnsafeAssetPath):
         AssetResolver(asset_root).for_remote(outside.resolve().as_uri())
@@ -1065,6 +1172,44 @@ async def test_validation_fails_when_two_quality_reviewers_are_not_configured(
     assert job["status"] == JobStatus.FAILED
     assert job["error_code"] == "provider_not_configured"
     assert "two distinct quality reviewer models" in job["error_message"]
+
+
+@pytest.mark.anyio
+async def test_local_source_gate_skips_paid_reviewers_when_canvas_is_invalid(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class CountingValidator:
+        def __init__(self, provider: str):
+            self.provider = provider
+
+        async def validate(self, request):
+            calls.append(self.provider)
+            raise AssertionError("hard local failures must not reach paid reviewers")
+
+    repository, batch, executor = prepare_validation(
+        tmp_path,
+        quality_validators=(
+            CountingValidator("review-model-a"),
+            CountingValidator("review-model-b"),
+        ),
+    )
+    result_asset = repository.list_assets(batch["id"], "result")[0]
+    result_path = executor.assets.local_path(result_asset["storage_uri"])
+    assert result_path is not None
+    Image.new("RGB", (32, 32), "white").save(result_path, format="JPEG")
+
+    result = await executor.execute_stage(batch["id"], JobStage.VALIDATE)
+    job = repository.latest_stage_jobs(batch["id"], JobStage.VALIDATE)[0]
+
+    assert result["completed"] is False
+    assert result["requires_review"] is True
+    assert calls == []
+    assert job["status"] == JobStatus.NEEDS_REVIEW
+    assert job["output"]["provider"] == "local-source-comparison"
+    assert job["output"]["checks"]["canvas_dimensions_match"] is False
+    assert job["output"]["reviewer_verdicts"] == []
 
 
 @pytest.mark.anyio

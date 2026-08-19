@@ -3,11 +3,16 @@ import {
   CloudUploadOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  EditOutlined,
+  FileImageOutlined,
   LoadingOutlined,
   PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   RetweetOutlined,
+  SafetyCertificateOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
   WarningFilled,
 } from '@ant-design/icons'
 import {
@@ -40,7 +45,7 @@ import {
   type UploadFile,
 } from 'antd'
 import { motion } from 'motion/react'
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 
 import { apiJson, personaApi, postJson, upload } from '../api'
 import { fileFromUpload, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../imageFiles'
@@ -129,7 +134,45 @@ function jobProgressPercent(job: Job) {
 
 const stepKeys = ['upload', 'analysis', 'task', 'jobs', 'results'] as const
 
-function statusColor(status: string) {
+const stepMeta = {
+  upload: {
+    title: '上传素材',
+    shortTitle: '素材',
+    description: '原始图片',
+    icon: <FileImageOutlined />,
+  },
+  analysis: {
+    title: '人物分析',
+    shortTitle: '人物',
+    description: '提取与融合',
+    icon: <TeamOutlined />,
+  },
+  task: {
+    title: '任务设置',
+    shortTitle: '约束',
+    description: '要求与授权',
+    icon: <EditOutlined />,
+  },
+  jobs: {
+    title: '任务循环',
+    shortTitle: '执行',
+    description: '生成与复核',
+    icon: <ThunderboltOutlined />,
+  },
+  results: {
+    title: '结果验收',
+    shortTitle: '验收',
+    description: '对比与交付',
+    icon: <SafetyCertificateOutlined />,
+  },
+} satisfies Record<(typeof stepKeys)[number], {
+  title: string
+  shortTitle: string
+  description: string
+  icon: ReactNode
+}>
+
+function statusColor(status: string): 'success' | 'error' | 'warning' | 'processing' | 'default' {
   if (status === 'completed' || status === 'succeeded') return 'success'
   if (status === 'failed') return 'error'
   if (status === 'needs_review' || status === 'review') return 'warning'
@@ -154,6 +197,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   const [loading, setLoading] = useState(false)
   const [acting, setActing] = useState(false)
   const [sourceFiles, setSourceFiles] = useState<UploadFile[]>([])
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number }>()
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [removingIdentityId, setRemovingIdentityId] = useState<string>()
   const [identityLabel, setIdentityLabel] = useState('')
@@ -258,15 +302,40 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
 
   const uploadSources = async () => {
     if (!batchId || !sourceFiles.length) return
-    const files = sourceFiles.map(fileFromUpload)
+    const selectedFiles = [...sourceFiles]
+    const files = selectedFiles.map(fileFromUpload)
     if (files.some((file) => !file)) {
       message.error('部分图片未能读取，请移除后重新选择')
       return
     }
     setActing(true)
+    setUploadProgress({ completed: 0, total: files.length })
     try {
-      for (const file of files) {
-        await upload(`/batches/${batchId}/images`, 'image', file as File)
+      let nextFileIndex = 0
+      let firstUploadError: unknown
+      const failedFileUids = new Set<string>()
+      const worker = async () => {
+        while (nextFileIndex < files.length) {
+          const fileIndex = nextFileIndex
+          nextFileIndex += 1
+          try {
+            await upload(`/batches/${batchId}/images`, 'image', files[fileIndex] as File)
+          } catch (error) {
+            firstUploadError ??= error
+            failedFileUids.add(selectedFiles[fileIndex].uid)
+          } finally {
+            setUploadProgress((current) => current
+              ? { ...current, completed: current.completed + 1 }
+              : current)
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(4, files.length) }, () => worker()))
+      if (firstUploadError) {
+        setSourceFiles(selectedFiles.filter((file) => failedFileUids.has(file.uid)))
+        const succeeded = files.length - failedFileUids.size
+        const detail = firstUploadError instanceof Error ? firstUploadError.message : '上传失败'
+        throw new Error(`${succeeded} 张已上传，${failedFileUids.size} 张失败；列表中仅保留失败项。${detail}`)
       }
       setSourceFiles([])
       message.loading({ content: '素材已上传，正在提取并融合人物…', key: 'upload-analysis', duration: 1.5 })
@@ -280,6 +349,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
       await Promise.all([refresh(), onChanged()])
     } finally {
       setActing(false)
+      setUploadProgress(undefined)
     }
   }
 
@@ -709,7 +779,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
 
   const assetTab = (
     <div className="tab-stack">
-      <Card className="subtle-card" title="原始图片" extra={<Tag>{sources.length} 张</Tag>}>
+      <Card className="subtle-card source-card" title="原始图片" extra={<Tag>{sources.length} 张</Tag>}>
         {draftOnly && (
           <div className="batch-upload-row">
             <Upload.Dragger
@@ -726,11 +796,25 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
               onChange={({ fileList }) => setSourceFiles(fileList)}
             >
               <CloudUploadOutlined />
-              <p>JPG / PNG / WebP，支持多选</p>
+              <p className="upload-title">拖放原始图片，或点击选择</p>
+              <p className="upload-hint">JPG / PNG / WebP · 最多 4 张同时上传</p>
             </Upload.Dragger>
-            <Button type="primary" icon={<CloudUploadOutlined />} disabled={!sourceFiles.length} loading={acting} onClick={uploadSources}>
-              上传并分析 {sourceFiles.length || ''}
-            </Button>
+            <div className="upload-action-panel">
+              <div className="upload-selection-count">
+                <strong>{sourceFiles.length}</strong>
+                <span>张待上传</span>
+              </div>
+              {uploadProgress && (
+                <Progress
+                  percent={Math.round((uploadProgress.completed / uploadProgress.total) * 100)}
+                  size="small"
+                  showInfo={false}
+                />
+              )}
+              <Button type="primary" icon={<CloudUploadOutlined />} disabled={!sourceFiles.length} loading={acting} onClick={uploadSources}>
+                {uploadProgress ? `${uploadProgress.completed}/${uploadProgress.total}` : '上传并分析'}
+              </Button>
+            </div>
           </div>
         )}
         <AssetGallery assets={sources} empty="尚未上传原图" removable={draftOnly} removingId={removingAssetId} onRemove={removeAsset} showCodes />
@@ -877,7 +961,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   )
 
   const analysisStep = (
-    <Card className="subtle-card" title="人物提取与融合" extra={<Tag color={analysisVerified ? 'success' : 'warning'}>{batch.persons.length} 人</Tag>}>
+    <Card className="subtle-card analysis-card" title="人物提取与融合" extra={<Tag color={analysisVerified ? 'success' : 'warning'}>{batch.persons.length} 人</Tag>}>
       {analysisComplete || batch.persons.length
         ? fusionPanel
         : <Empty description={batch.status === 'analyzing' ? '正在提取并融合人物' : '上传素材后自动进行人物分析'} />}
@@ -944,7 +1028,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
         )}
       </div>
       {specEditable && (
-        <Space wrap>
+        <div className="task-action-row">
           <Button onClick={() => saveTaskSpec()} loading={acting}>保存任务要求</Button>
           <Button
             icon={compiledContract ? <ReloadOutlined /> : <CheckCircleFilled />}
@@ -963,7 +1047,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
           >
             开始任务循环
           </Button>
-        </Space>
+        </div>
       )}
     </Card>
   )
@@ -1299,7 +1383,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   )
 
   const resultTab = (
-    <Card className="subtle-card" title="处理结果" extra={<Tag color={results.length ? 'success' : 'default'}>{results.length} 张</Tag>}>
+    <Card className="subtle-card results-card" title="处理结果" extra={<Tag color={results.length ? 'success' : 'default'}>{results.length} 张</Tag>}>
       {results.length
         ? <ResultComparisonGallery sources={sources} results={results} jobs={batch.latest_jobs} />
         : <Empty description="任务循环完成后在这里查看结果" />}
@@ -1308,7 +1392,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
 
   const jobTab = (
     <div className="tab-stack">
-      <Row gutter={[12, 12]}>
+      <Row className="task-progress-grid" gutter={[10, 10]}>
         {Object.entries(progress?.stages ?? {}).map(([stage, counts]) => (
           <Col xs={24} md={8} key={stage}>
             <Card className="stat-card">
@@ -1319,7 +1403,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
           </Col>
         ))}
       </Row>
-      <Card className="subtle-card" title="任务记录">
+      <Card className="subtle-card job-list-card" title="任务记录" extra={<Tag>{batch.latest_jobs.length} 项</Tag>}>
         <List
           dataSource={batch.latest_jobs}
           locale={{ emptyText: '暂无任务' }}
@@ -1439,34 +1523,61 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
     jobs: jobTab,
     results: resultTab,
   }[activeStep]
+  const activeStepIndex = stepKeys.indexOf(activeStep)
+  const activeStepMeta = stepMeta[activeStep]
+  const runningJobs = batch.latest_jobs.filter((job) => ['queued', 'running'].includes(job.status)).length
 
   return (
     <motion.div className="batch-workspace" key={batch.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
       <div className="batch-header">
-        <div>
-          <Space><span className="eyebrow">人物编辑任务</span><Tag color={statusColor(batch.status)}>{statusLabels[batch.status] ?? batch.status}</Tag></Space>
-          <h1>{batch.name}</h1>
+        <div className="batch-heading-copy">
+          <div className="batch-status-line">
+            <span className="eyebrow">人物编辑任务</span>
+            <Badge status={statusColor(batch.status)} text={statusLabels[batch.status] ?? batch.status} />
+          </div>
+          <h1 title={batch.name}>{batch.name}</h1>
+          <div className="batch-summary" aria-label="任务素材概览">
+            <span><strong>{sources.length}</strong> 原图</span>
+            <span><strong>{batch.persons.length}</strong> 人物</span>
+            <span><strong>{batch.identities.length}</strong> 目标</span>
+            <span><strong>{results.length}</strong> 结果</span>
+            {!!runningJobs && <span className="summary-running"><LoadingOutlined /> {runningJobs} 执行中</span>}
+          </div>
         </div>
-        <Space>
+        <div className="batch-header-actions">
           <Button icon={<ReloadOutlined />} loading={loading} onClick={() => refresh()}>刷新</Button>
-          {primaryAction && <Button type="primary" icon={<PlayCircleOutlined />} loading={acting} disabled={batch.status === 'draft' && !sources.length} onClick={() => primaryAction.path.endsWith('/task/run') ? startTaskLoop() : runAction(primaryAction.path, primaryAction.success)}>{primaryAction.label}</Button>}
-        </Space>
+          {primaryAction && <Button className="batch-primary-action" type="primary" icon={<PlayCircleOutlined />} loading={acting} disabled={batch.status === 'draft' && !sources.length} onClick={() => primaryAction.path.endsWith('/task/run') ? startTaskLoop() : runAction(primaryAction.path, primaryAction.success)}>{primaryAction.label}</Button>}
+        </div>
       </div>
 
-      <Card className="pipeline-card">
+      <section className="pipeline-card" aria-label="任务流程">
+        <div className="pipeline-context">
+          <span>第 {activeStepIndex + 1} 步</span>
+          <strong>{activeStepMeta.title}</strong>
+          <small>{activeStepMeta.description}</small>
+        </div>
         <Steps
-          current={stepKeys.indexOf(activeStep)}
+          current={activeStepIndex}
+          responsive={false}
+          size="small"
           onChange={(index) => setActiveStep(stepKeys[index])}
           status={batch.status === 'failed' ? 'error' : batch.status === 'completed' ? 'finish' : 'process'}
-          items={[
-            { title: '上传素材' },
-            { title: '人物分析', disabled: !sources.length },
-            { title: '任务设置', disabled: !analysisComplete },
-            { title: '任务循环', disabled: !batch.latest_jobs.length },
-            { title: '结果验收', disabled: !results.length },
-          ]}
+          items={stepKeys.map((key) => ({
+            title: stepMeta[key].shortTitle,
+            description: stepMeta[key].description,
+            icon: stepMeta[key].icon,
+            disabled: key === 'analysis'
+              ? !sources.length
+              : key === 'task'
+                ? !analysisComplete
+                : key === 'jobs'
+                  ? !batch.latest_jobs.length
+                  : key === 'results'
+                    ? !results.length
+                    : false,
+          }))}
         />
-      </Card>
+      </section>
 
       {!!failedJobs.length && (
         <Card className="warning-strip" size="small">

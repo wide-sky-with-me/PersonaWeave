@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,7 +20,19 @@ from personaweave.providers.yunwu import (
     enforce_image_edit_review,
     image_edit_review_passes,
     _VisualValidationPayload,
+    _parse_json_object,
 )
+
+
+def test_json_parser_accepts_fenced_json_with_gateway_suffix() -> None:
+    assert _parse_json_object(
+        '```json\n{"groups": []}\n``` trailing gateway text'
+    ) == {"groups": []}
+
+
+def test_json_parser_rejects_incomplete_object() -> None:
+    with pytest.raises(ValueError, match="complete JSON object"):
+        _parse_json_object('{"groups": [')
 
 
 @pytest.mark.anyio
@@ -74,6 +88,84 @@ def test_visual_provider_accepts_an_absolute_endpoint() -> None:
     )
 
     assert provider.endpoint == "https://gateway.example.test/chat"
+
+
+@pytest.mark.anyio
+async def test_large_person_clustering_preserves_unmentioned_faces_as_singletons(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1",
+        "test-key",
+        "vision-model",
+    )
+    observations = [
+        {"code": f"I{index:02d}-F01", "crop_uri": f"data:image/png;base64,{index}"}
+        for index in range(1, 26)
+    ]
+
+    async def fake_completion(_content):
+        return {
+            "duplicate_groups": [{
+                "members": ["I01-F01", "I25-F01"],
+                "confidence": 0.92,
+            }],
+            "uncertain_codes": ["I02-F01"],
+        }
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    assignments = await provider.cluster_person_observations(observations)
+
+    assert set(assignments) == {item["code"] for item in observations}
+    assert assignments["I01-F01"] == assignments["I25-F01"]
+    assert assignments["I02-F01"] == ("vlm:I02-F01", 0.0)
+    assert assignments["I03-F01"] == ("vlm:I03-F01", 0.5)
+
+
+@pytest.mark.anyio
+async def test_large_appearance_analysis_is_strictly_chunked(monkeypatch) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1",
+        "test-key",
+        "vision-model",
+    )
+    observations = [
+        {"code": f"I01-F{index:02d}", "bbox": {"x": index, "y": 0, "width": 1, "height": 1}}
+        for index in range(1, 26)
+    ]
+    chunk_sizes = []
+
+    async def fake_completion(content):
+        text = content[0]["text"]
+        encoded = text.split("OBSERVATIONS: ", 1)[1].split("\nReturn JSON", 1)[0]
+        chunk = json.loads(encoded)
+        chunk_sizes.append(len(chunk))
+        appearance = {
+            "apparent_age": "adult",
+            "face_features": "neutral",
+            "hair": "unclear",
+            "eyewear": "none",
+            "accessories": "none",
+            "body": "unclear",
+            "clothing": "unclear",
+            "pose": "front",
+            "lighting_occlusion": "even",
+        }
+        return {
+            "people": [
+                {"code": item["code"], "appearance": appearance}
+                for item in chunk
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    result = await provider.analyze_person_appearances(
+        source_uri="data:image/png;base64,source",
+        observations=observations,
+    )
+
+    assert chunk_sizes == [12, 12, 1]
+    assert set(result) == {item["code"] for item in observations}
 
 
 def test_visual_payload_accepts_exact_boolean_strings() -> None:

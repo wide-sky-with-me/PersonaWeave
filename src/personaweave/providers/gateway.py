@@ -101,11 +101,16 @@ class InferenceGateway:
             request.model_dump_json(
                 exclude={"asset_uri"},
                 exclude_computed_fields=True,
+                exclude_none=True,
             ).encode()
         ).hexdigest()[:12]
         data = await self._post(
             "/v1/analyze-faces",
-            request.model_dump(mode="json", exclude_computed_fields=True),
+            request.model_dump(
+                mode="json",
+                exclude_computed_fields=True,
+                exclude_none=True,
+            ),
             f"analyze:{request.batch_id}:{request.asset_id}:{request_digest}",
         )
         return AnalysisResult.model_validate(data)
@@ -115,11 +120,16 @@ class InferenceGateway:
             request.model_dump_json(
                 exclude={"asset_uri"},
                 exclude_computed_fields=True,
+                exclude_none=True,
             ).encode()
         ).hexdigest()[:12]
         data = await self._post(
             "/v1/swap-face",
-            request.model_dump(mode="json", exclude_computed_fields=True),
+            request.model_dump(
+                mode="json",
+                exclude_computed_fields=True,
+                exclude_none=True,
+            ),
             f"swap:{request.batch_id}:{request.asset_id}:{request.iteration}:{request_digest}",
         )
         return SwapResult.model_validate(data)

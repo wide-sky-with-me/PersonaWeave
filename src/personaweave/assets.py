@@ -4,6 +4,7 @@ import hashlib
 import mimetypes
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 
 
 class UnsafeAssetPath(ValueError):
@@ -18,7 +19,15 @@ class AssetResolver:
         parsed = urlparse(uri)
         if parsed.scheme != "file":
             return None
-        path = Path(unquote(parsed.path)).resolve()
+        raw_path = unquote(parsed.path)
+        if parsed.netloc:
+            raw_path = f"//{parsed.netloc}{raw_path}"
+        raw_path = url2pathname(raw_path)
+        # file:///C:/... is represented with a leading slash by urlparse,
+        # while WindowsPath expects C:/... without that URL separator.
+        if len(raw_path) >= 3 and raw_path[0] in "/\\" and raw_path[2] == ":":
+            raw_path = raw_path[1:]
+        path = Path(raw_path).resolve()
         if not path.is_relative_to(self.asset_root):
             raise UnsafeAssetPath("local asset is outside the configured asset root")
         return path

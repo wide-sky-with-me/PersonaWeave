@@ -616,6 +616,8 @@ class SwapOperation(BaseModel):
             and self.source_reference_coverage.requires_manual_review
             else frozenset()
         )
+        if self.review_reasons and ReviewReason.MASK_UNCERTAIN in self.review_reasons:
+            expected_reference = expected_reference | frozenset({ReviewReason.MASK_UNCERTAIN})
         if self.review_reasons != expected_reference:
             raise ValueError("swap operation review reasons do not match source evidence")
         return self
@@ -664,10 +666,21 @@ def project_formal_swap_operations(
             ),
             None,
         )
-        review_reasons = (
-            frozenset({ReviewReason.REFERENCE_INSUFFICIENCY})
-            if coverage is not None and coverage.requires_manual_review
-            else frozenset()
+        review_reasons = frozenset(
+            {
+                *(
+                    {ReviewReason.REFERENCE_INSUFFICIENCY}
+                    if coverage is not None and coverage.requires_manual_review
+                    else set()
+                ),
+                *(
+                    {ReviewReason.MASK_UNCERTAIN}
+                    if source.authorization_mask is not None
+                    and ReviewReason.MASK_UNCERTAIN
+                    in source.authorization_mask.review_reasons
+                    else set()
+                ),
+            }
         )
         projected.append(
             SwapOperation(
@@ -793,7 +806,7 @@ class SwapRequest(BaseModel):
     image_api_mode: Literal["json_generations", "multipart_edits"] = "multipart_edits"
     image_api_path: str = "/images/edits"
     image_output_size: str = "1024x1024"
-    image_response_format: Literal["url", "b64_json"] = "url"
+    image_response_format: Literal["url", "b64_json"] | None = None
     operation: Literal["swap_face"] = "swap_face"
     compiled_contract: CompiledBatchContract | None = None
     contract_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -896,6 +909,12 @@ class SwapRequest(BaseModel):
             for operation in self.replacements
             for reason in operation.review_reasons
         )
+        if (
+            source_evidence.authorization_mask is not None
+            and ReviewReason.MASK_UNCERTAIN
+            in source_evidence.authorization_mask.review_reasons
+        ):
+            expected_reasons = expected_reasons | frozenset({ReviewReason.MASK_UNCERTAIN})
         if self.review_reasons != expected_reasons:
             raise ValueError("swap request review reasons do not match source operations")
         return self

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/use_wsl_uv_env.sh"
+
 smoke_port="${PERSONAWEAVE_COMFY_SMOKE_PORT:-8766}"
 smoke_db="/tmp/personaweave-comfy-smoke-${smoke_port}.sqlite3"
 smoke_log="/tmp/personaweave-comfy-smoke-${smoke_port}.log"

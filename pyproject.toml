@@ -33,3 +33,5 @@ packages = ["src/personaweave"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+cache_dir = ".test-tmp/pytest-cache"
+addopts = "--basetemp=.test-tmp/pytest-tmp"

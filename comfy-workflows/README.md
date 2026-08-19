@@ -3,8 +3,8 @@
 This directory contains validated ComfyUI API-format workflow specifications:
 
 - `analyze.json` — active local MediaPipe detection workflow
-- `swap.json`
-- `validate.json`
+- optional `swap.json` override
+- optional `validate.json` override
 
 Each file wraps the native API-format prompt with metadata used by the gateway:
 
@@ -51,12 +51,13 @@ and PNG encoding before upload, then restores source pixels outside that same
 canonical raster after generation. The multipart provider mask is a
 deterministic resized/inverted derivative, not the canonical evidence artifact.
 
-The missing `swap.json` and `validate.json` files are intentional: the gateway
-must remain not-ready until qualified identity replacement and validation
-models are selected. The files under `examples/` demonstrate the binding shape but reference
-illustrative `PersonaWeave*` custom nodes. They are intentionally not copied to
-the active directory: an uninstalled node must never make the health endpoint
-claim that a production workflow is ready.
+The missing `swap.json` and `validate.json` files are intentional. The default
+formal path builds a guarded dynamic graph using
+`PersonaWeaveYunwuMaskedImageEdit`, and the application performs source
+comparison plus two independent Yunwu reviews. `/ready` verifies those dynamic
+node requirements. Files under `examples/` demonstrate optional binding shapes;
+when a static override is activated, readiness validates all referenced node
+classes and rejects an unmasked or non-multipart formal graph.
 
 Export the real workflow using ComfyUI's **Save (API Format)** option, add the
 wrapper fields above, replace the appropriate fixed widget inputs with

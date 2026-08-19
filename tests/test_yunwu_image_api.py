@@ -68,3 +68,27 @@ def test_json_generation_payload_rejects_more_than_ten_images() -> None:
             image_uris=[f"https://example.com/{index}.png" for index in range(11)],
             size="2K",
         )
+
+
+@pytest.mark.parametrize("model", ["gpt-image-1", "gpt-image-2"])
+def test_multipart_edit_payload_omits_unsupported_optional_format(model: str) -> None:
+    assert MODULE.multipart_edit_data(
+        model=model,
+        prompt="edit only the authorized region",
+        size="1024x1024",
+    ) == {
+        "model": model,
+        "prompt": "edit only the authorized region",
+        "n": "1",
+        "size": "1024x1024",
+    }
+
+
+def test_multipart_edit_payload_can_request_format_for_compatible_models() -> None:
+    payload = MODULE.multipart_edit_data(
+        model="compatible-image-model",
+        prompt="edit only the authorized region",
+        size="2K",
+        response_format="url",
+    )
+    assert payload["response_format"] == "url"

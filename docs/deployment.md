@@ -78,11 +78,13 @@ gateway-wide concurrency bound. Set
 The workflow binding format and non-runnable examples are documented in
 `comfy-workflows/README.md`. Do not activate an example until the exact node
 classes and model files are present on the selected ComfyUI backend.
-`GET /health` reports configuration without contacting the backend, while
-`GET /ready` returns success only when the backend URL and all three active
-workflow files are configured and every referenced `class_type` exists in the
-backend's live `/object_info` response. Container readiness uses the stricter
-endpoint.
+`GET /health` reports configuration without contacting the backend. `GET
+/ready` contacts the backend, requires both analysis workflows, and verifies
+every node class needed by the active generation path against live
+`/object_info`. A missing static `swap.json` selects the guarded dynamic masked
+multipart graph. A missing `validate.json` selects application-side source
+comparison and dual Yunwu reviewers. Optional static workflows are also
+validated when present. Container readiness uses this stricter endpoint.
 
 ## Model and license qualification
 
