@@ -244,8 +244,14 @@ button, input, textarea, select { font: inherit; }
 .person-occurrences { display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; }
 .person-occurrences .ant-image { flex: none; border-radius: 6px; overflow: hidden; border: 1px solid #ddd; }
 .person-occurrences img { object-fit: cover; }
-.person-occurrence { display: grid; flex: none; justify-items: center; }
+.person-occurrence { display: grid; width: 112px; flex: none; align-content: start; justify-items: center; gap: 3px; }
 .person-occurrence .ant-btn { height: 20px; padding: 0; font-size: 10px; }
+.person-occurrence.failed .ant-image { border-color: #ff7875; box-shadow: 0 0 0 1px rgb(255 77 79 / 12%); }
+.person-occurrence.occluded .ant-image { border-color: #faad14; box-shadow: 0 0 0 1px rgb(250 173 20 / 16%); }
+.person-occurrence-code { width: 100%; overflow: hidden; font-size: 10px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.person-occurrence-reason { min-height: 30px; overflow: hidden; font-size: 10px; line-height: 15px; text-align: center; }
+.person-occurrence-reason.source-occlusion { color: #8c5a00; }
+.person-occurrence-actions { display: grid; width: 100%; justify-items: center; gap: 1px; }
 .mapping-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fafafa; color: #717171; font-size: 11px; }
 .manual-face-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
 .manual-face-source { width: 132px; flex: none; overflow: hidden; padding: 0; background: #fff; border: 1px solid #d9d9d9; border-radius: 7px; cursor: pointer; text-align: left; transition: border-color .16s, transform .16s; }
@@ -535,9 +541,20 @@ button, input, textarea, select { font: inherit; }
   .upload-action-panel .ant-progress { align-self: end; }
   .asset-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fusion-grid, .result-comparison-grid, .identity-grid, .mapping-grid { grid-template-columns: minmax(0, 1fr); }
+  .analysis-card .ant-alert { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; }
+  .analysis-card .ant-alert-icon { grid-column: 1; }
+  .analysis-card .ant-alert-content { grid-column: 2; min-width: 0; }
+  .analysis-card .ant-alert-action { grid-column: 2; width: 100%; margin-top: 8px; margin-inline-start: 0; }
+  .analysis-card .ant-alert-action > .ant-space { display: flex; flex-wrap: wrap; }
+  .analysis-card .ant-alert-action .ant-btn { max-width: 100%; white-space: normal; }
+  .analysis-card .ant-alert-description { overflow-wrap: anywhere; }
+  .fusion-card .ant-card-head-wrapper { align-items: flex-start; flex-direction: column; gap: 5px; padding-block: 8px; }
+  .fusion-card .ant-card-head-title, .fusion-card .ant-card-extra { width: 100%; padding: 0; }
+  .fusion-card .ant-card-extra > .ant-space { width: 100%; flex-wrap: wrap; }
   .mapping-toolbar { align-items: stretch; flex-direction: column; }
   .mapping-toolbar .ant-space { width: 100%; }
-  .mapping-toolbar .ant-btn { flex: 1; }
+  .mapping-toolbar .ant-space-item { min-width: 0; flex: 1 1 calc(50% - 4px); }
+  .mapping-toolbar .ant-btn { width: 100%; white-space: normal; }
   .task-spec-card .ant-card-head { align-items: flex-start; }
   .task-spec-card .ant-card-head-wrapper { align-items: flex-start; flex-direction: column; gap: 2px; padding-block: 8px; }
   .task-spec-card .ant-card-head-title, .task-spec-card .ant-card-extra { padding: 0; }

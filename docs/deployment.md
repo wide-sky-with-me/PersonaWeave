@@ -104,7 +104,8 @@ return or retain the authorized face masks and run pixel-difference checks.
 ## Container deployment
 
 `compose.yaml` runs the control plane and gateway as separate processes from one
-portable image. Before starting it, provide:
+portable image. It can also build the pinned ComfyUI GPU backend through the
+optional `local-gpu` profile. Before starting it, provide:
 
 ```text
 PERSONAWEAVE_GATEWAY_SHARED_KEY=generate-a-long-random-value
@@ -116,9 +117,22 @@ PERSONAWEAVE_YUNWU_REVIEWER_MODEL_B=second-distinct-visual-review-model
 PERSONAWEAVE_COMFY_WORKFLOW_DIR=/absolute/path/to/validated/workflows
 ```
 
-Then run `docker compose up --build`. SQLite databases and generated assets use
-named volumes; workflow files are mounted read-only so the same container image
-can move between ComfyUI providers.
+For an externally managed ComfyUI or the base service supplied by the main
+branch, set `PERSONAWEAVE_COMFY_BACKEND_URL` and run
+`docker compose up --build`.
+
+For the repository-owned GPU container, omit the external backend URL and run
+`docker compose --profile local-gpu up --build`.
+
+SQLite databases and generated assets use named volumes; workflow files are
+mounted read-only so the same container image can move between ComfyUI
+providers. The GPU container uses Docker-managed volumes for models, inputs and
+outputs, declares `gpus: all`, and defaults to a 12 GB host-memory limit and 1
+GB shared memory. Configure these through `PERSONAWEAVE_COMFY_MEMORY_LIMIT` and
+`PERSONAWEAVE_COMFY_SHM_SIZE`.
+
+On Windows, Docker Desktop may use WSL2 internally; PersonaWeave does not start
+or manage a separate WSL ComfyUI process in this mode.
 
 Formal final validation requires both reviewer model variables. The model IDs
 must be distinct; partial configuration or the same ID in both variables is

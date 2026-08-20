@@ -4,15 +4,48 @@ PersonaWeave deliberately does not bind its domain model to ComfyUI node names.
 A hosted ComfyUI deployment, commercial API, or custom GPU service can implement
 the following HTTP contract.
 
-## `POST /v1/analyze-faces`
+## Optional legacy/local `POST /v1/analyze-faces`
 
-Input contains one source asset URI. Output must include stable face IDs,
+This endpoint is not the default batch-analysis path. It remains available for
+local diagnostics, face-region preview, and strict-mask assistance. Input
+contains one source asset URI. Output must include stable face IDs,
 pixel-space bounding boxes, detection confidence, and an optional batch-level
 person cluster key. An uncertain cluster must set `needs_confirmation=true`.
 
-The provider must not guess a person's identity from appearance or descriptive
+Default person discovery and proposed cross-image grouping are performed by the
+configured multimodal model over the complete source set. That result must still
+obey the same fail-closed rule: the provider must not guess a person's identity from appearance or descriptive
 attributes. Face embeddings and clustering are evidence for a proposed grouping;
 the user confirms the grouping.
+
+The batch result's coarse boxes are not authoritative geometry. Each occurrence
+is expanded into an application-generated zoom tile with an independent 0-1000
+grid. Tiles are supplied as independent images rather than concatenated into a
+wide panel. Low-confidence or degenerate coordinate results do not replace the
+original coarse anchor, and repair localization starts again from that anchor
+with broader context. Tile-relative boxes are mapped back to the source and converted to a
+deterministic, unpadded face-crop board for multimodal review. Hair, hats,
+natural occlusion, and limited collar/shoulder context are acceptable when the
+intended face is complete, dominant, and usable. Passed occurrences are frozen;
+only failed occurrences enter one coordinate relocalization. A remaining,
+explicit single-edge clipping issue may receive one deterministic directional
+expansion followed by a final review. Every attempt's box and verdict remains in
+the analysis job output. Severe identity-blocking occlusion or a failed final
+review keeps the source in manual review and prevents automatic analysis
+confirmation. Grid drawing and cropping are local pixel operations, not local
+face detection.
+
+During analysis confirmation, a targeted Pxx re-localization may rerun this
+geometry workflow for only that person's existing occurrences across source
+images. It updates boxes and audit history but must not change grouping or
+create/remove occurrences. Concurrent targeted re-localizations for the same
+batch are rejected to prevent stale coordinate writes. An unresolved occurrence
+must expose its latest reviewed crop and accept exactly one explicit user
+resolution: `manual_bbox`, `keep_original`, or `accept_occlusion` when the
+provider has classified a source-inherent major occlusion, source-boundary cut,
+or unusable source face. `manual_bbox` is bounds-checked and rejected when it
+overlaps another occurrence. `keep_original` remains visible contract evidence
+but is excluded from the editable face IDs for that source.
 
 ## `POST /v1/swap-face`
 

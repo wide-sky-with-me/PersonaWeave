@@ -4,7 +4,94 @@ PersonaWeave uses ComfyUI as a replaceable execution engine. Batch state,
 identity mapping, confirmation, retries, and audit history remain in the
 PersonaWeave control plane.
 
-## Install and run
+## Docker GPU service
+
+Docker is the default local runtime. It keeps ComfyUI, CUDA Python packages,
+model caches and outputs inside Docker-managed storage instead of launching a
+project-owned WSL environment.
+
+Prerequisites:
+
+- Docker Desktop with the Linux container engine running;
+- NVIDIA GPU support exposed by Docker Desktop;
+- a recent NVIDIA driver visible to `docker run --gpus all`.
+
+Start the complete local stack with:
+
+```powershell
+$env:PERSONAWEAVE_GATEWAY_SHARED_KEY = "replace-with-a-long-random-value"
+$env:PERSONAWEAVE_YUNWU_API_KEY = "provider-key"
+docker compose --profile local-gpu up --build
+```
+
+The `comfy-backend` profile builds `infra/comfyui/Dockerfile`, pins the ComfyUI
+commit and CUDA PyTorch index, verifies the MediaPipe model SHA-256, and exposes
+ComfyUI only on `127.0.0.1:8188`. The gateway reaches it over the Compose network
+at `http://comfy-backend:8188`.
+
+Defaults are deliberately bounded for an 8 GB laptop GPU and 16 GB host:
+
+```text
+PERSONAWEAVE_COMFY_MEMORY_LIMIT=12g
+PERSONAWEAVE_COMFY_SHM_SIZE=1gb
+PERSONAWEAVE_COMFY_RESERVE_VRAM_GB=0.8
+```
+
+Adjust the memory limit below the RAM assigned to Docker Desktop. Docker on
+Windows may still use the Docker Desktop WSL2 backend internally, but the
+project no longer starts its own long-lived WSL processes. Container memory,
+cache and lifecycle remain under Docker's controls.
+
+### Slow or intermittent image builds
+
+The CUDA PyTorch wheel set is several gigabytes. The image therefore sets a
+600-second `uv` HTTP timeout, retries failed transfers five times, limits
+concurrent downloads to two, and retains completed wheels in a BuildKit cache.
+These settings avoid restarting the complete download after one slow wheel.
+
+On Windows, Clash/Mihomo TUN fake-IP mode can resolve public registries into
+`198.18.0.0/15`. Docker Desktop's `system` proxy mode may still report that no
+HTTPS proxy is configured when the Windows system proxy toggle is off. In that
+state Docker connects to the fake IP through its transparent proxy path; a TUN
+reload can then surface as GHCR `EOF`, Debian `502 Bad Gateway`, or `uv` wheel
+timeouts. Check both paths before changing the Dockerfile:
+
+```powershell
+curl.exe -I https://ghcr.io/v2/
+curl.exe -I --proxy http://127.0.0.1:7897 https://ghcr.io/v2/
+docker info
+```
+
+If the explicit proxy succeeds while Docker builds fail, either enable Clash's
+Windows system proxy or configure Docker Desktop's HTTP/HTTPS proxy explicitly
+to the host proxy port. Keep TUN mode stable during the first build. A plain
+build retry is sufficient after connectivity recovers because the `uv` cache
+preserves completed wheels.
+
+The named volumes `comfy-models`, `comfy-input` and `comfy-output` survive
+container replacement. `docker compose --profile local-gpu down` stops the
+stack without deleting them. Adding `--volumes` also deletes cached models and
+Comfy outputs, so that must be an explicit maintenance decision.
+
+### Reuse a base inference service
+
+When the main branch or another deployment supplies ComfyUI, do not enable the
+`local-gpu` profile. Point the gateway at that service instead:
+
+```powershell
+$env:PERSONAWEAVE_COMFY_BACKEND_URL = "https://comfy.internal.example"
+$env:PERSONAWEAVE_COMFY_BACKEND_API_PREFIX = "/api"
+docker compose up --build
+```
+
+For a self-hosted service with root-level API routes, leave
+`PERSONAWEAVE_COMFY_BACKEND_API_PREFIX` empty. The provider must contain the
+PersonaWeave custom nodes and pass the gateway `/ready` node-class checks.
+
+## Legacy direct install
+
+The direct WSL setup below remains only as a compatibility/debugging path. It
+is not used by the Docker Compose stack.
 
 ```bash
 bash scripts/setup_local_comfy.sh
@@ -17,7 +104,7 @@ The pinned checkout and its isolated Python environment live under
 `.runtime/ComfyUI`, which is intentionally ignored. The reproducible commit and
 PyTorch index are stored in `infra/comfyui/versions.env`. The project-owned
 custom nodes are linked from `comfy-nodes/PersonaWeave`. Setup also installs the
-5.42 MB Apache-2.0 MediaPipe face-landmarker package published by Comfy-Org and
+optional 5.42 MB Apache-2.0 MediaPipe face-landmarker package published by Comfy-Org and
 verifies its pinned SHA-256 before activation.
 
 The local server listens only on `127.0.0.1:8188`. The launch script reserves
@@ -39,7 +126,7 @@ Use a consented photo to exercise the real local face detector:
 bash scripts/probe_local_face_analysis.sh /path/to/photo.jpg
 ```
 
-The active analysis workflow uses overlapping 1024-pixel tiles so small faces
+This optional local diagnostic workflow uses overlapping 1024-pixel tiles so small faces
 in the project's 5568-by-3712 activity photos are not lost by whole-image
 downscaling. Tile detections are mapped back to source coordinates and deduped
 with NMS. This outputs bounding boxes only. It deliberately marks every detected face as
@@ -49,6 +136,22 @@ The same path can be checked end-to-end through the gateway with:
 ```bash
 bash scripts/probe_local_gateway_analysis.sh /path/to/photo.jpg
 ```
+
+The product's default batch analysis does not call this workflow. It sends the
+complete original-image set to the configured multimodal model in one logical
+analysis request so person discovery, visible context extraction, and proposed
+cross-image grouping share the same evidence. Every proposed Pxx remains subject
+to user confirmation; uncertain matches stay separate. Local code then expands
+each coarse occurrence into a separately labeled zoom tile with its own 0-1000
+grid. A multimodal pass localizes the face inside each tile, maps the result back
+to the source, and reviews the exact deterministic crop without review-only
+padding. A crop may include hair, hats, natural occlusion, and limited
+collar/shoulder context as long as the intended face remains complete and
+dominant. Passed faces are frozen and only failed faces may be relocalized once.
+After that, a single clearly clipped edge may receive one deterministic
+directional expansion and final multimodal review. Severe identity-blocking
+occlusion remains a manual-review condition. Local code draws grids and crops
+pixels only; it does not detect or classify faces in this default path.
 
 After explicitly approving a potentially billable provider call, run the
 synthetic Yunwu image-edit contract probe with:

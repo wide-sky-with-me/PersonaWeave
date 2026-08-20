@@ -9,7 +9,16 @@ from personaweave.storage import Repository
 
 
 settings = get_settings()
-repository = Repository(settings.database_path, formal_mask_root=settings.asset_root)
+legacy_asset_roots = (
+    (settings.asset_legacy_root,)
+    if settings.asset_legacy_root is not None
+    else ()
+)
+repository = Repository(
+    settings.database_path,
+    formal_mask_root=settings.asset_root,
+    formal_mask_read_roots=legacy_asset_roots,
+)
 repository.initialize()
 repository.recover_interrupted_jobs()
 repository.reconcile_terminal_batch_failures()

@@ -80,10 +80,29 @@ export type PersonMapping = {
 export type FaceOccurrence = {
   id: string
   asset_id: string
+  external_face_id: string
   bbox: { x: number; y: number; width: number; height: number }
   detection_confidence: number
   identity_confidence?: number | null
   needs_confirmation: boolean
+  analysis_resolution?: 'manual_bbox' | 'keep_original' | 'accept_occlusion' | null
+  latest_localization_attempt?: {
+    occurrence_code: string
+    attempt: number
+    bbox: { x: number; y: number; width: number; height: number }
+    confidence: number
+    full_face_visible: boolean
+    crop_contains_all_source_visible_face?: boolean
+    matches_expected_occurrence?: boolean
+    source_face_condition?: 'complete' | 'minor_occlusion' | 'major_occlusion' | 'source_boundary' | 'unusable'
+    face_centered: boolean
+    tight_face_crop: boolean
+    accepted: boolean
+    boundary_issue?: string
+    unrecoverable_occlusion?: boolean
+    reason: string
+  } | null
+  localization_preview_url?: string | null
   appearance: {
     apparent_age?: string
     face_features?: string
@@ -268,6 +287,28 @@ export type Job = {
       requires_manual_review: boolean
       summary: string
     } | null
+    localization_attempts?: Array<{
+      occurrence_code: string
+      attempt: number
+      bbox: { x: number; y: number; width: number; height: number }
+      confidence: number
+      full_face_visible: boolean
+      crop_contains_all_source_visible_face?: boolean
+      matches_expected_occurrence?: boolean
+      source_face_condition?: 'complete' | 'minor_occlusion' | 'major_occlusion' | 'source_boundary' | 'unusable'
+      face_centered: boolean
+      tight_face_crop: boolean
+      accepted: boolean
+      boundary_issue?:
+        | 'none'
+        | 'top_clipped'
+        | 'bottom_clipped'
+        | 'left_clipped'
+        | 'right_clipped'
+        | 'multiple_clipped'
+      unrecoverable_occlusion?: boolean
+      reason: string
+    }>
   }
 }
 
@@ -280,6 +321,7 @@ export type Batch = BatchSummary & {
   contract_hash: string | null
   confirmed_at: string | null
   requires_manual_review: boolean
+  analysis_review_issues: string[]
   compiled_contract: CompiledContract | null
 }
 

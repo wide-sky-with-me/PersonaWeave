@@ -41,26 +41,30 @@ pnpm build
 
 ## Local ComfyUI execution
 
-The GTX 1650 development path uses a pinned ComfyUI checkout and a separate uv
-environment under the ignored `.runtime/` directory:
+The default local GPU path packages the pinned ComfyUI backend and
+PersonaWeave custom nodes as a Docker service:
 
-```bash
-bash scripts/setup_local_comfy.sh
-bash scripts/run_local_comfy.sh
+```powershell
+$env:PERSONAWEAVE_GATEWAY_SHARED_KEY = "replace-with-a-long-random-value"
+$env:PERSONAWEAVE_YUNWU_API_KEY = "provider-key"
+docker compose --profile local-gpu up --build
 ```
 
-See `docs/local-comfy.md` for the port, GPU compatibility flags, model-license
-gate, Yunwu masked image-edit boundary, and readiness probe.
+ComfyUI listens only on `127.0.0.1:8188`; the gateway uses the internal Compose
+service address. Models, inputs and outputs live in Docker-managed named
+volumes. The GPU container defaults to a 12 GB host-memory limit, 1 GB shared
+memory and 0.8 GB reserved VRAM.
 
-Run the local UI stack in three terminals:
+When an existing main-branch or hosted inference service is available, omit the
+`local-gpu` profile and set `PERSONAWEAVE_COMFY_BACKEND_URL` before running
+`docker compose up --build`. This keeps the control plane and gateway portable
+without starting another GPU backend.
 
-```bash
-bash scripts/run_local_comfy.sh
-bash scripts/run_local_comfy_gateway.sh
-bash scripts/run_local_app.sh
-```
+See `docs/local-comfy.md` for Docker resource controls, GPU compatibility,
+volume lifecycle, the legacy direct WSL debugging path, model-license gates,
+the Yunwu masked image-edit boundary, and readiness probes.
 
-Open `http://127.0.0.1:8100/app/` and use **快速编辑**. The source image is
+Open `http://127.0.0.1:8000/app/` and use **快速编辑**. The source image is
 always required. Add a reference photo to replace all detected faces with that
 identity, or omit it and describe one consistent fictional identity in text.
 Each click may incur a Yunwu image-edit charge and sends the selected images to
@@ -141,18 +145,47 @@ photos improve identity consistency but remain optional for text-only edits.
 
 ## Remote providers
 
-- The configured Yunwu visual model acts as an OpenAI-compatible multimodal
-  planner and inspection/QA provider. In model-native preview it plans the
+- The configured Yunwu visual model is the default whole-batch person-analysis,
+  cross-image grouping, planning, and inspection/QA provider. It receives the
+  complete source set together, returns visible-person boxes and proposed
+  same-person groups, and leaves every grouping awaiting user confirmation.
+  Low-confidence matches are kept as separate people instead of being guessed.
+  Coarse batch boxes are then expanded into separately labeled, enlarged person
+  tiles. Each tile is sent as an independent image with its own deterministic
+  0-1000 coordinate grid, avoiding coordinate confusion from a compressed
+  multi-panel strip. Low-confidence, degenerate, or implausibly thin boxes are
+  rejected instead of replacing the coarse anchor. A failed second pass returns
+  to that original anchor with broader context rather than zooming further into
+  a bad result. PersonaWeave maps accepted tile coordinates back to the source, crops without a
+  local detector, and asks the visual model whether the exact crop contains a
+  complete, usable face. Hair, hats, natural occlusion, and a small amount of
+  collar or shoulder context are allowed. Passed faces are frozen; failed faces
+  may receive one relocalization. If that result has one clearly clipped edge,
+  local geometry performs one directional boundary expansion and requests a
+  final visual review. Severe identity-blocking occlusion and unresolved crops
+  remain visible as manual-review requirements. Every attempt's box and verdict
+  is retained in the analysis job output. During person confirmation, any Pxx
+  can be re-localized across only its existing source occurrences without
+  regrouping the batch. A remaining per-image occurrence can then be resolved
+  explicitly by correcting its face box, keeping that person unchanged in the
+  affected source, or acknowledging a source-inherent major occlusion. These
+  decisions are persisted per occurrence; `keep_original` is excluded from the
+  editable face set when the immutable task contract is compiled. Failed
+  analysis batches may be re-queued directly instead of requiring a second
+  manual action.
+  In model-native preview it plans the
   whole-image edit before the independently configured image model runs, then
   compares source and result. A failed
   advisory check can feed a bounded next iteration, while a passing check stops
   early. Each iteration regenerates from the original source; review outages and
   provider errors stop instead of retrying. The default maximum is three rounds,
   and the request may select between one and ten rounds.
-  It is not treated as a biometric identity oracle.
-- Local tiled MediaPipe detection is active. Durable clustering and production
-  face replacement continue to use the provider-neutral inference gateway
-  contract in `docs/provider-contract.md`.
+  It does not name people or establish real-world identity.
+- Local tiled MediaPipe detection is optional tooling for face-region preview,
+  diagnostics, and strict-mask assistance. It is not a prerequisite or fallback
+  for the default person-analysis stage. Production face replacement continues
+  to use the provider-neutral inference gateway contract in
+  `docs/provider-contract.md`.
 - A hosted ComfyUI instance can sit behind that gateway. This prevents its node
   names and workflow JSON from leaking into the product domain.
 - The included `personaweave-comfy-gateway` process implements that adapter and

@@ -12,8 +12,15 @@ class UnsafeAssetPath(ValueError):
 
 
 class AssetResolver:
-    def __init__(self, asset_root: Path):
+    def __init__(
+        self,
+        asset_root: Path,
+        read_roots: tuple[Path, ...] = (),
+    ):
         self.asset_root = asset_root.resolve()
+        self.read_roots = tuple(
+            dict.fromkeys((self.asset_root, *(root.resolve() for root in read_roots)))
+        )
 
     def local_path(self, uri: str) -> Path | None:
         parsed = urlparse(uri)
@@ -28,8 +35,8 @@ class AssetResolver:
         if len(raw_path) >= 3 and raw_path[0] in "/\\" and raw_path[2] == ":":
             raw_path = raw_path[1:]
         path = Path(raw_path).resolve()
-        if not path.is_relative_to(self.asset_root):
-            raise UnsafeAssetPath("local asset is outside the configured asset root")
+        if not any(path.is_relative_to(root) for root in self.read_roots):
+            raise UnsafeAssetPath("local asset is outside the configured asset roots")
         return path
 
     def for_remote(self, uri: str, media_type: str | None = None) -> str:

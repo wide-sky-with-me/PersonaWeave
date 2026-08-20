@@ -992,6 +992,154 @@ def test_analysis_always_pauses_for_mapping_confirmation(repository: Repository)
     assert person["faces"][0]["needs_confirmation"] == 1
 
 
+@pytest.mark.anyio
+async def test_failed_active_localization_can_be_resolved_for_one_occurrence(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("localization review")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    service.start_analysis(batch["id"])
+    service.complete_analysis(
+        batch["id"],
+        [{
+            "asset_id": source["id"],
+            "provider": "fake",
+            "faces": [{
+                "external_face_id": "I01-V01",
+                "bbox": {"x": 10, "y": 20, "width": 80, "height": 4},
+                "detection_confidence": 0.02,
+                "suggested_person_key": "cluster-a",
+                "identity_confidence": 0.98,
+                "needs_confirmation": True,
+            }],
+            "detection_audit": {
+                "available": True,
+                "complete": True,
+                "detected_face_count": 1,
+                "visible_face_count": 1,
+                "requires_manual_review": True,
+                "summary": "crop review failed",
+            },
+            "localization_attempts": [{
+                "occurrence_code": "I01-V01",
+                "attempt": 2,
+                "bbox": {"x": 10, "y": 20, "width": 80, "height": 4},
+                "confidence": 0.02,
+                "full_face_visible": False,
+                "face_centered": False,
+                "tight_face_crop": False,
+                "accepted": False,
+                "boundary_issue": "multiple_clipped",
+                "unrecoverable_occlusion": False,
+                "reason": "only a thin facial strip is visible",
+            }],
+        }],
+    )
+
+    current = repository.get_batch(batch["id"])
+    assert current["requires_manual_review"] is True
+    assert current["analysis_review_issues"] == [
+        "I01-V01: only a thin facial strip is visible"
+    ]
+    with pytest.raises(ValueError, match="人物分析仍有未解决问题"):
+        await service.compile_task_contract(batch["id"])
+
+    person = repository.list_persons(batch["id"])[0]
+    face = person["faces"][0]
+    repository.resolve_face_occurrence(
+        batch["id"],
+        face["id"],
+        "keep_original",
+    )
+    resolved = repository.get_batch(batch["id"])
+    assert resolved["requires_manual_review"] is False
+    assert resolved["analysis_review_issues"] == []
+    remaining = repository.list_persons(batch["id"])
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == person["id"]
+    assert remaining[0]["faces"][0]["analysis_resolution"] == "keep_original"
+
+
+def test_analysis_reports_overlapping_occurrences_as_duplicate_source_faces(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("duplicate source face")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    service.start_analysis(batch["id"])
+    service.complete_analysis(batch["id"], [{
+        "asset_id": source["id"],
+        "provider": "fake",
+        "faces": [
+            {
+                "external_face_id": "I01-V01",
+                "bbox": {"x": 10, "y": 10, "width": 30, "height": 40},
+                "detection_confidence": 0.99,
+                "suggested_person_key": "person-a",
+                "identity_confidence": 0.98,
+            },
+            {
+                "external_face_id": "I01-V02",
+                "bbox": {"x": 12, "y": 12, "width": 30, "height": 40},
+                "detection_confidence": 0.97,
+                "suggested_person_key": "person-b",
+                "identity_confidence": 0.96,
+            },
+        ],
+    }])
+
+    issues = repository.get_batch(batch["id"])["analysis_review_issues"]
+
+    assert len(issues) == 2
+    assert all("重复定位" in issue for issue in issues)
+    assert any(issue.startswith("I01-V01:") and "@I01-V02" in issue for issue in issues)
+    assert any(issue.startswith("I01-V02:") and "@I01-V01" in issue for issue in issues)
+
+
+
+def test_keep_original_occurrence_is_protected_without_disabling_person() -> None:
+    operation = CompiledOperation(
+        person_id="person-1",
+        person_code="P01",
+        action=MappingAction.EDIT,
+        permissions=AttributePermission(
+            editable=["face_features"],
+            protected=sorted(HEAD_ATTRIBUTES - {"face_features"}),
+        ),
+    )
+    editable = CompiledFaceEvidence(
+        face_instance_id="face-edit",
+        person_id="person-1",
+        person_code="P01",
+        bbox={"x": 1, "y": 1, "width": 20, "height": 20},
+        source_appearance={},
+    )
+    protected = CompiledFaceEvidence(
+        face_instance_id="face-keep",
+        person_id="person-1",
+        person_code="P01",
+        bbox={"x": 30, "y": 1, "width": 20, "height": 20},
+        source_appearance={},
+        analysis_resolution="keep_original",
+    )
+
+    contract = CompiledBatchContract(
+        task_instruction="edit @P01",
+        max_iterations=1,
+        operations=[operation],
+        source_assets=[SourceAssetEvidence(
+            asset_id="source-1",
+            code="I01",
+            sha256="a" * 64,
+            faces=[editable, protected],
+            editable_face_instance_ids=["face-edit"],
+        )],
+    )
+
+    assert contract.source_assets[0].editable_face_instance_ids == ["face-edit"]
+
+
 def test_every_detected_person_requires_a_mapping(repository: Repository) -> None:
     batch = repository.create_batch("people")
     source = add_source(repository, batch["id"])
@@ -1679,6 +1827,25 @@ def test_rerun_analysis_preserves_history_and_never_reuses_person_codes(
         }],
     }])
     assert repository.list_persons(batch["id"])[0]["display_code"] == "P02"
+
+
+def test_rerun_analysis_can_recover_a_failed_analysis_batch(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("failed analysis")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    jobs = service.start_analysis(batch["id"])
+    repository.fail_job(jobs[0]["id"], "provider_unavailable", "temporary outage")
+    repository.set_batch_status(batch["id"], BatchStatus.FAILED)
+
+    retried = service.reset_analysis(batch["id"])
+
+    assert len(retried) == 1
+    assert retried[0]["item_key"] == source["id"]
+    assert retried[0]["attempt"] == 2
+    assert retried[0]["status"] == JobStatus.QUEUED
+    assert repository.get_batch(batch["id"])["status"] == BatchStatus.ANALYZING
 
 
 def test_confirmed_contract_is_required_and_propagated_to_one_source_job(

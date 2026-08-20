@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 from urllib.parse import quote
 
@@ -31,6 +31,8 @@ from personaweave.domain import (
     SwapResult,
     JobStage,
     BatchStatus,
+    bbox_iou,
+    source_face_condition_requires_review,
 )
 from personaweave.assets import AssetResolver
 from personaweave.executor import PipelineExecutor, StageExecutionError
@@ -68,6 +70,11 @@ class PersonSplitRequest(BaseModel):
 class ManualFaceCreate(BaseModel):
     bbox: BoundingBox
     person_id: str | None = None
+
+
+class FaceOccurrenceResolution(BaseModel):
+    action: Literal["manual_bbox", "keep_original", "accept_occlusion"]
+    bbox: BoundingBox | None = None
 
 
 class IdentityCreate(BaseModel):
@@ -334,6 +341,7 @@ def public_batch_evidence(batch: dict) -> dict:
             "contract_hash",
             "confirmed_at",
             "requires_manual_review",
+            "analysis_review_issues",
             "deleted_at",
             "created_at",
             "updated_at",
@@ -365,7 +373,10 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         settings.inference_api_key,
         settings.formal_image_timeout_seconds,
     )
-    vision_client = httpx.AsyncClient(timeout=settings.multimodal_timeout_seconds)
+    vision_client = httpx.AsyncClient(
+        timeout=settings.multimodal_timeout_seconds,
+        transport=httpx.AsyncHTTPTransport(retries=2),
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -410,7 +421,14 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         if reviewer_a.configured and reviewer_b.configured
         else None
     )
-    asset_resolver = AssetResolver(settings.asset_root)
+    asset_resolver = AssetResolver(
+        settings.asset_root,
+        (
+            (settings.asset_legacy_root,)
+            if settings.asset_legacy_root is not None
+            else ()
+        ),
+    )
     workflow = WorkflowService(
         repository,
         settings.formal_image_model,
@@ -498,6 +516,24 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
                 **face,
                 "needs_confirmation": bool(face.get("needs_confirmation", True)),
                 "crop_url": f"/api/v1/faces/{face['id']}/crop",
+                "localization_preview_url": (
+                    f"/api/v1/faces/{face['id']}/localization-preview"
+                    if face.get("latest_localization_attempt")
+                    and (
+                        not face["latest_localization_attempt"].get("accepted")
+                        or source_face_condition_requires_review(
+                            face["latest_localization_attempt"].get(
+                                "source_face_condition"
+                            ),
+                            legacy_unrecoverable_occlusion=bool(
+                                face["latest_localization_attempt"].get(
+                                    "unrecoverable_occlusion"
+                                )
+                            ),
+                        )
+                    )
+                    else None
+                ),
             }
             for face in person.get("faces", [])
         ]
@@ -548,7 +584,10 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         result["error_retryable"] = provider_error_retryable(job.get("error_code"))
         if job.get("stage") == JobStage.ANALYZE and job.get("output"):
             result["output"] = {
-                "detection_audit": job["output"].get("detection_audit")
+                "detection_audit": job["output"].get("detection_audit"),
+                "localization_attempts": job["output"].get(
+                    "localization_attempts", []
+                ),
             }
         elif job.get("stage") == JobStage.SWAP and job.get("output"):
             result["output"] = {
@@ -631,11 +670,12 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
             "status": "ok",
             "providers": {
                 "inference_gateway": {"configured": gateway.configured},
-                "yunwu_multimodal_qa": {
+                "yunwu_multimodal_analysis": {
                     "configured": yunwu.configured,
                     "model": settings.yunwu_vision_model,
                     "api_mode": settings.yunwu_vision_api_mode,
                     "api_path": settings.yunwu_vision_api_path,
+                    "default_person_analysis": True,
                 },
                 "yunwu_preview_image": {
                     "configured": bool(settings.yunwu_api_key and settings.yunwu_image_model),
@@ -1069,8 +1109,8 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         with Image.open(local_path) as image:
             image.seek(0)
             source = ImageOps.exif_transpose(image)
-            padding_x = round(bbox["width"] * 0.35)
-            padding_y = round(bbox["height"] * 0.35)
+            padding_x = round(bbox["width"] * 0.15)
+            padding_y = round(bbox["height"] * 0.15)
             left = max(0, bbox["x"] - padding_x)
             top = max(0, bbox["y"] - padding_y)
             right = min(source.width, bbox["x"] + bbox["width"] + padding_x)
@@ -1083,6 +1123,51 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
             content=output.getvalue(),
             media_type="image/jpeg",
             headers={"Cache-Control": "private, max-age=3600"},
+        )
+
+    @router.get("/faces/{face_id}/localization-preview")
+    def get_face_localization_preview(face_id: str) -> Response:
+        try:
+            face = repository.get_face(face_id)
+            asset = repository.get_asset(face["asset_id"])
+        except KeyError:
+            raise HTTPException(404, "face localization preview not found") from None
+        attempt = face.get("latest_localization_attempt")
+        if not attempt or (
+            attempt.get("accepted")
+            and not source_face_condition_requires_review(
+                attempt.get("source_face_condition"),
+                legacy_unrecoverable_occlusion=bool(
+                    attempt.get("unrecoverable_occlusion")
+                ),
+            )
+        ):
+            raise HTTPException(404, "failed localization candidate not found")
+        try:
+            local_path = asset_resolver.local_path(asset["storage_uri"])
+        except ValueError as error:
+            raise HTTPException(403, "asset path is outside configured storage") from error
+        if local_path is None or not local_path.is_file():
+            raise HTTPException(404, "face crop source is unavailable")
+        bbox = attempt["bbox"]
+        with Image.open(local_path) as image:
+            image.seek(0)
+            source = ImageOps.exif_transpose(image)
+            padding_x = round(bbox["width"] * 0.15)
+            padding_y = round(bbox["height"] * 0.15)
+            crop = source.crop((
+                max(0, bbox["x"] - padding_x),
+                max(0, bbox["y"] - padding_y),
+                min(source.width, bbox["x"] + bbox["width"] + padding_x),
+                min(source.height, bbox["y"] + bbox["height"] + padding_y),
+            )).convert("RGB")
+            crop.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            crop.save(output, format="JPEG", quality=90, optimize=True)
+        return Response(
+            content=output.getvalue(),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, no-store"},
         )
 
     @router.post("/batches", status_code=201)
@@ -1746,6 +1831,22 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         except (InvalidTransition, StageExecutionError) as error:
             raise HTTPException(409, str(error)) from error
 
+    @router.post("/batches/{batch_id}/persons/{person_id}/relocalize")
+    async def relocalize_person(batch_id: str, person_id: str) -> dict:
+        try:
+            return await executor.relocalize_person(batch_id, person_id)
+        except KeyError:
+            raise HTTPException(404, "batch or person not found") from None
+        except ProviderNotConfigured as error:
+            raise HTTPException(503, str(error)) from error
+        except ValidationError as error:
+            raise HTTPException(
+                409,
+                "云端模型返回的人物定位复核结构不符合要求，请重试。",
+            ) from error
+        except (InvalidTransition, ValueError) as error:
+            raise HTTPException(409, str(error)) from error
+
     @router.delete("/batches/{batch_id}/persons/{person_id}", status_code=204)
     def delete_person(batch_id: str, person_id: str) -> Response:
         try:
@@ -1789,6 +1890,67 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
         except (KeyError, ValueError) as error:
             raise HTTPException(400, str(error)) from error
 
+    @router.put("/batches/{batch_id}/faces/{face_id}/resolution")
+    def resolve_face_occurrence(
+        batch_id: str,
+        face_id: str,
+        payload: FaceOccurrenceResolution,
+    ) -> dict:
+        try:
+            face = repository.get_face(face_id)
+            if face["batch_id"] != batch_id:
+                raise KeyError(face_id)
+            bbox = payload.bbox
+            if payload.action == "manual_bbox":
+                if bbox is None:
+                    raise ValueError("manual_bbox requires bbox")
+                asset = repository.get_asset(face["asset_id"])
+                path = asset_resolver.local_path(asset["storage_uri"])
+                if path is None or not path.is_file():
+                    raise ValueError("source image is not locally available")
+                with Image.open(path) as image:
+                    width, height = ImageOps.exif_transpose(image).size
+                if bbox.x + bbox.width > width or bbox.y + bbox.height > height:
+                    raise ValueError("manual face bbox exceeds source image bounds")
+                for existing in repository.list_faces_for_asset(face["asset_id"]):
+                    if existing["id"] == face_id:
+                        continue
+                    other = BoundingBox.model_validate(existing["bbox"])
+                    if bbox_iou(bbox, other) >= 0.35:
+                        raise ValueError("manual face overlaps another detection")
+            elif bbox is not None:
+                raise ValueError(f"{payload.action} must not include bbox")
+            if payload.action == "accept_occlusion":
+                attempt = face.get("latest_localization_attempt")
+                if not attempt or not source_face_condition_requires_review(
+                    attempt.get("source_face_condition"),
+                    legacy_unrecoverable_occlusion=bool(
+                        attempt.get("unrecoverable_occlusion")
+                    ),
+                ):
+                    raise ValueError(
+                        "accept_occlusion requires a confirmed source-image occlusion"
+                    )
+            resolved = repository.resolve_face_occurrence(
+                batch_id,
+                face_id,
+                payload.action,
+                bbox.model_dump(mode="json") if bbox is not None else None,
+            )
+            person = next(
+                item
+                for item in repository.list_persons(batch_id)
+                if item["id"] == resolved["person_id"]
+            )
+            return {
+                "person": public_person(person),
+                "analysis_review_issues": repository.analysis_review_issues(batch_id),
+            }
+        except KeyError:
+            raise HTTPException(404, "batch or face occurrence not found") from None
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
     @router.post("/batches/{batch_id}/assets/{asset_id}/faces", status_code=201)
     def add_manual_face(
         batch_id: str,
@@ -1815,17 +1977,7 @@ def build_router(repository: Repository, settings: Settings) -> APIRouter:
                 raise ValueError("manual face bbox exceeds source image bounds")
             for existing in repository.list_faces_for_asset(asset_id):
                 other = BoundingBox.model_validate(existing["bbox"])
-                intersection_width = max(
-                    0,
-                    min(bbox.x + bbox.width, other.x + other.width) - max(bbox.x, other.x),
-                )
-                intersection_height = max(
-                    0,
-                    min(bbox.y + bbox.height, other.y + other.height) - max(bbox.y, other.y),
-                )
-                intersection = intersection_width * intersection_height
-                union = bbox.width * bbox.height + other.width * other.height - intersection
-                if union > 0 and intersection / union >= 0.35:
+                if bbox_iou(bbox, other) >= 0.35:
                     raise ValueError("manual face overlaps an existing detection")
             return public_person(repository.add_manual_face(
                 batch_id,

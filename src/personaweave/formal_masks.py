@@ -141,6 +141,118 @@ def _validate_polygon(points: list[Any], *, contour: SemanticMaskContour, width:
     return _normalize_contour_points(points, width, height)
 
 
+def repair_missing_editable_face_center_coverage(
+    *,
+    proposal: SemanticMaskProposal,
+    editable_faces: list[FormalMaskFaceScope],
+    width: int,
+    height: int,
+) -> SemanticMaskProposal:
+    """Add bounded, review-required center patches for unambiguous geometry slips."""
+    include_mask = Image.new("L", (width, height), 0)
+    include_draw = ImageDraw.Draw(include_mask)
+    for contour in proposal.contours:
+        if contour.operation != "include":
+            continue
+        poly = _validate_polygon(
+            contour.points,
+            contour=contour,
+            width=width,
+            height=height,
+        )
+        include_draw.polygon(poly, fill=255)
+
+    repairs: list[SemanticMaskContour] = []
+    x_denominator = max(1, width - 1)
+    y_denominator = max(1, height - 1)
+    for face in editable_faces:
+        center_x = min(width - 1, int(face.bbox.x + face.bbox.width / 2))
+        center_y = min(height - 1, int(face.bbox.y + face.bbox.height / 2))
+        if include_mask.getpixel((center_x, center_y)) != 0:
+            continue
+        half_width = max(1, round(face.bbox.width * 0.15))
+        half_height = max(1, round(face.bbox.height * 0.15))
+        left = max(face.bbox.x, center_x - half_width)
+        top = max(face.bbox.y, center_y - half_height)
+        right = min(face.bbox.x + face.bbox.width - 1, center_x + half_width)
+        bottom = min(face.bbox.y + face.bbox.height - 1, center_y + half_height)
+        contour = SemanticMaskContour(
+            operation="include",
+            face_instance_id=face.face_instance_id,
+            person_id=face.person_id,
+            person_code=face.person_code,
+            permissions=face.permissions,
+            points=[
+                {"x": left / x_denominator, "y": top / y_denominator},
+                {"x": right / x_denominator, "y": top / y_denominator},
+                {"x": right / x_denominator, "y": bottom / y_denominator},
+                {"x": left / x_denominator, "y": bottom / y_denominator},
+            ],
+            confidence=0.75,
+            evidence=(
+                "Deterministic bounded center-coverage repair inside the confirmed face bbox; "
+                "manual mask review is required."
+            ),
+        )
+        repairs.append(contour)
+        include_draw.polygon(
+            _normalize_contour_points(contour.points, width, height),
+            fill=255,
+        )
+
+    if not repairs:
+        return proposal
+    summary_suffix = (
+        f" Added {len(repairs)} bounded face-center repair contour(s); manual review required."
+    )
+    return proposal.model_copy(update={
+        "contours": [*proposal.contours, *repairs],
+        "confidence": min(proposal.confidence, 0.75),
+        "summary": (proposal.summary + summary_suffix)[:2000],
+        "review_reasons": frozenset({
+            *proposal.review_reasons,
+            ReviewReason.MASK_UNCERTAIN,
+        }),
+    })
+
+
+def constrain_semantic_mask_proposal_to_editable_scope(
+    *,
+    proposal: SemanticMaskProposal,
+    editable_faces: list[FormalMaskFaceScope],
+) -> SemanticMaskProposal:
+    """Drop provider contours outside the exact confirmed editable scope."""
+    editable_by_id = {face.face_instance_id: face for face in editable_faces}
+    retained: list[SemanticMaskContour] = []
+    for contour in proposal.contours:
+        face = editable_by_id.get(contour.face_instance_id)
+        if face is None:
+            continue
+        if (
+            contour.person_id != face.person_id
+            or contour.person_code != face.person_code
+            or contour.permissions != face.permissions
+        ):
+            continue
+        retained.append(contour)
+    dropped = len(proposal.contours) - len(retained)
+    if dropped == 0:
+        return proposal
+    summary_suffix = (
+        f" Dropped {dropped} contour(s) outside the confirmed editable scope; "
+        "manual review required."
+    )
+    return proposal.model_copy(update={
+        "contours": retained,
+        "confidence": min(proposal.confidence, 0.75),
+        "summary": (proposal.summary + summary_suffix)[:2000],
+        "review_reasons": frozenset({
+            *proposal.review_reasons,
+            ReviewReason.MASK_UNCERTAIN,
+        }),
+    })
+
+
 def validate_and_rasterize_semantic_mask(
     *,
     source_path: Path,
@@ -244,14 +356,17 @@ def validate_and_rasterize_semantic_mask(
     digest = hashlib.sha256(png_bytes).hexdigest()
 
     editable_ids = [scope.face_instance_id for scope in editable_faces]
-    review_reasons: ReviewReasonSet = frozenset()
+    review_reasons: ReviewReasonSet = proposal.review_reasons
 
     low_confidence = any(
         contour.confidence < 0.9
         for contour in proposal.contours
     )
     if low_confidence:
-        review_reasons = frozenset({ReviewReason.MASK_UNCERTAIN})
+        review_reasons = frozenset({
+            *review_reasons,
+            ReviewReason.MASK_UNCERTAIN,
+        })
 
     evidence = CanonicalMaskEvidence(
         source_asset_id=source_asset_id,

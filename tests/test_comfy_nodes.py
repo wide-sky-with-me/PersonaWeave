@@ -10,7 +10,11 @@ from PIL import Image
 
 torch = pytest.importorskip("torch")
 sys.path.insert(0, str(Path(__file__).parents[1] / "comfy-nodes"))
-from PersonaWeave.nodes import _fit_mask_to_canvas, _tensor_mask_to_png  # noqa: E402
+from PersonaWeave.nodes import (  # noqa: E402
+    MaskedOriginalComposite,
+    _fit_mask_to_canvas,
+    _tensor_mask_to_png,
+)
 
 
 def test_provider_mask_is_deterministic_fitted_inversion_of_canonical_pixels() -> None:
@@ -66,3 +70,23 @@ def test_provider_mask_is_deterministic_fitted_inversion_of_canonical_pixels() -
 def test_provider_mask_serializer_rejects_an_unfitted_canvas() -> None:
     with pytest.raises(ValueError, match="already match"):
         _tensor_mask_to_png(torch.zeros((1, 2, 2)), width=3, height=2)
+
+
+def test_masked_composite_feathers_inward_without_authorizing_outside_pixels() -> None:
+    original = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+    candidate = torch.ones((1, 64, 64, 3), dtype=torch.float32)
+    mask = torch.zeros((1, 64, 64), dtype=torch.float32)
+    mask[:, 12:52, 12:52] = 1.0
+
+    result, alpha = MaskedOriginalComposite().composite(
+        original,
+        candidate,
+        mask,
+        feather_radius=6.0,
+    )
+
+    assert torch.count_nonzero(result[:, :12, :, :]) == 0
+    assert torch.count_nonzero(result[:, 52:, :, :]) == 0
+    assert alpha[0, 12, 32] < 0.1
+    assert alpha[0, 32, 32] > 0.95
+    assert torch.equal(result[0, :, :, 0], alpha[0])

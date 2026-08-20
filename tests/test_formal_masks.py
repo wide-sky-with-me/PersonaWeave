@@ -40,7 +40,9 @@ from personaweave.formal import (
     GenerationProfile,
 )
 from personaweave.formal_masks import (
+    constrain_semantic_mask_proposal_to_editable_scope,
     FormalMaskFaceScope,
+    repair_missing_editable_face_center_coverage,
     validate_and_rasterize_semantic_mask,
 )
 
@@ -171,6 +173,111 @@ def test_include_contour_must_cover_editable_face_center(tmp_path: Path) -> None
                 ])
             ]),
         )
+
+
+def test_bounded_center_repair_requires_review_and_passes_validation(
+    tmp_path: Path,
+) -> None:
+    source_path = source_image(tmp_path)
+    value = proposal([
+        contour([
+            point(.20, .20),
+            point(.33, .20),
+            point(.33, .50),
+            point(.20, .50),
+        ])
+    ])
+    face = FormalMaskFaceScope(
+        face_instance_id="face-1",
+        person_id="person-1",
+        person_code="P01",
+        bbox=BoundingBox(x=20, y=20, width=30, height=30),
+        permissions=PERMISSIONS,
+    )
+
+    repaired = repair_missing_editable_face_center_coverage(
+        proposal=value,
+        editable_faces=[face],
+        width=100,
+        height=100,
+    )
+    artifact = validate_and_rasterize_semantic_mask(
+        source_path=source_path,
+        proposal=repaired,
+        source_asset_id="source-1",
+        source_asset_code="I01",
+        editable_faces=[face],
+        protected_faces=[],
+    )
+
+    assert len(repaired.contours) == 2
+    assert artifact.review_reasons == frozenset({ReviewReason.MASK_UNCERTAIN})
+    with Image.open(BytesIO(artifact.png_bytes)) as mask:
+        assert mask.getpixel((35, 35)) == 255
+
+
+def test_bounded_center_repair_still_rejects_protected_face_overlap(
+    tmp_path: Path,
+) -> None:
+    source_path = source_image(tmp_path)
+    face = FormalMaskFaceScope(
+        face_instance_id="face-1",
+        person_id="person-1",
+        person_code="P01",
+        bbox=BoundingBox(x=20, y=20, width=30, height=30),
+        permissions=PERMISSIONS,
+    )
+    repaired = repair_missing_editable_face_center_coverage(
+        proposal=proposal([]),
+        editable_faces=[face],
+        width=100,
+        height=100,
+    )
+
+    with pytest.raises(ValueError, match="protected-face pixels"):
+        validate_and_rasterize_semantic_mask(
+            source_path=source_path,
+            proposal=repaired,
+            source_asset_id="source-1",
+            source_asset_code="I01",
+            editable_faces=[face],
+            protected_faces=[BoundingBox(x=34, y=34, width=4, height=4)],
+        )
+
+
+def test_scope_constraint_drops_unconfirmed_contours_and_requires_review(
+    tmp_path: Path,
+) -> None:
+    face = FormalMaskFaceScope(
+        face_instance_id="face-1",
+        person_id="person-1",
+        person_code="P01",
+        bbox=BoundingBox(x=20, y=20, width=30, height=30),
+        permissions=PERMISSIONS,
+    )
+    value = proposal([
+        contour([point(.2, .2), point(.5, .2), point(.5, .5), point(.2, .5)]),
+        contour(
+            [point(.6, .2), point(.7, .2), point(.7, .3), point(.6, .3)],
+            face_id="unconfirmed-face",
+        ),
+    ])
+
+    constrained = constrain_semantic_mask_proposal_to_editable_scope(
+        proposal=value,
+        editable_faces=[face],
+    )
+    artifact = validate_and_rasterize_semantic_mask(
+        source_path=source_image(tmp_path),
+        proposal=constrained,
+        source_asset_id="source-1",
+        source_asset_code="I01",
+        editable_faces=[face],
+        protected_faces=[],
+    )
+
+    assert [item.face_instance_id for item in constrained.contours] == ["face-1"]
+    assert artifact.review_reasons == frozenset({ReviewReason.MASK_UNCERTAIN})
 
 
 @pytest.mark.parametrize(

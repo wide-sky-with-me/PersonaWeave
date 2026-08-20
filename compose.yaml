@@ -22,8 +22,8 @@ services:
     build: .
     command: ["uv", "run", "uvicorn", "personaweave.comfy_gateway:app", "--host", "0.0.0.0", "--port", "8010"]
     environment:
-      PERSONAWEAVE_COMFY_BACKEND_URL: ${PERSONAWEAVE_COMFY_BACKEND_URL:?set PERSONAWEAVE_COMFY_BACKEND_URL}
-      PERSONAWEAVE_COMFY_BACKEND_API_PREFIX: ${PERSONAWEAVE_COMFY_BACKEND_API_PREFIX:-/api}
+      PERSONAWEAVE_COMFY_BACKEND_URL: ${PERSONAWEAVE_COMFY_BACKEND_URL:-http://comfy-backend:8188}
+      PERSONAWEAVE_COMFY_BACKEND_API_PREFIX: ${PERSONAWEAVE_COMFY_BACKEND_API_PREFIX:-}
       PERSONAWEAVE_COMFY_BACKEND_API_KEY: ${PERSONAWEAVE_COMFY_BACKEND_API_KEY:-}
       PERSONAWEAVE_COMFY_GATEWAY_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:?set PERSONAWEAVE_GATEWAY_SHARED_KEY}
       PERSONAWEAVE_COMFY_WORKFLOW_DIR: /app/comfy-workflows
@@ -37,7 +37,42 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    depends_on:
+      comfy-backend:
+        condition: service_healthy
+        required: false
+
+  comfy-backend:
+    profiles: ["local-gpu"]
+    build:
+      context: .
+      dockerfile: infra/comfyui/Dockerfile
+      args:
+        COMFYUI_REF: ${PERSONAWEAVE_COMFYUI_REF:-b323a345bbbfb2f3a95b5b73b68eb7919a26515e}
+        PYTORCH_INDEX_URL: ${PERSONAWEAVE_PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
+        MEDIAPIPE_FACE_MODEL_URL: ${PERSONAWEAVE_MEDIAPIPE_FACE_MODEL_URL:-https://huggingface.co/Comfy-Org/mediapipe/resolve/main/detection/mediapipe_face_fp32.safetensors}
+        MEDIAPIPE_FACE_MODEL_SHA256: ${PERSONAWEAVE_MEDIAPIPE_FACE_MODEL_SHA256:-a98c4806081d40eba35102a0f6dc0000c2e1388b72cf24e691703d0605bd888a}
+    environment:
+      PERSONAWEAVE_YUNWU_API_KEY: ${PERSONAWEAVE_YUNWU_API_KEY:-}
+      PERSONAWEAVE_YUNWU_BASE_URL: ${PERSONAWEAVE_YUNWU_BASE_URL:-https://yunwu.ai/v1}
+      PERSONAWEAVE_YUNWU_IMAGE_TIMEOUT_SECONDS: ${PERSONAWEAVE_YUNWU_IMAGE_TIMEOUT_SECONDS:-600}
+      PERSONAWEAVE_FORMAL_IMAGE_TIMEOUT_SECONDS: ${PERSONAWEAVE_FORMAL_IMAGE_TIMEOUT_SECONDS:-600}
+      PERSONAWEAVE_COMFY_RESERVE_VRAM_GB: ${PERSONAWEAVE_COMFY_RESERVE_VRAM_GB:-0.8}
+      PERSONAWEAVE_COMFY_DISABLE_CUDA_MALLOC: ${PERSONAWEAVE_COMFY_DISABLE_CUDA_MALLOC:-1}
+    ports:
+      - "127.0.0.1:${PERSONAWEAVE_COMFY_HOST_PORT:-8188}:8188"
+    volumes:
+      - comfy-models:/opt/ComfyUI/models
+      - comfy-input:/opt/ComfyUI/input
+      - comfy-output:/opt/ComfyUI/output
+    gpus: all
+    shm_size: ${PERSONAWEAVE_COMFY_SHM_SIZE:-1gb}
+    mem_limit: ${PERSONAWEAVE_COMFY_MEMORY_LIMIT:-12g}
+    restart: unless-stopped
 
 volumes:
   control-data:
   gateway-data:
+  comfy-models:
+  comfy-input:
+  comfy-output:

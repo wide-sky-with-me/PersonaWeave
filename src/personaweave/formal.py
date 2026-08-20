@@ -39,8 +39,10 @@ from personaweave.domain import (
 )
 from personaweave.formal_masks import (
     CompiledMaskArtifact,
+    constrain_semantic_mask_proposal_to_editable_scope,
     FormalCompilationResult,
     FormalMaskFaceScope,
+    repair_missing_editable_face_center_coverage,
     validate_and_rasterize_semantic_mask,
 )
 
@@ -78,6 +80,7 @@ class FormalFaceSnapshot:
     person_id: str
     bbox: BoundingBox
     appearance: PersonAppearance
+    analysis_resolution: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +113,7 @@ def _compiled_face_evidence(
             person_code=people[face.person_id].code,
             bbox=face.bbox,
             source_appearance=face.appearance,
+            analysis_resolution=face.analysis_resolution,
         )
         for face in source.faces
     ]
@@ -551,7 +555,10 @@ class FormalContractCompiler:
                         ),
                     )
                     for face in source.faces
-                    if face.person_id == person.id
+                    if (
+                        face.person_id == person.id
+                        and face.analysis_resolution != "keep_original"
+                    )
                 ]
                 if occurrences:
                     coverage_jobs.append(compile_coverage(
@@ -615,14 +622,38 @@ class FormalContractCompiler:
                     protected_people=protected_people,
                     identity_evidence=identity_payloads,
                 )
-            rasterized = validate_and_rasterize_semantic_mask(
-                source_path=source_path,
+            proposal = constrain_semantic_mask_proposal_to_editable_scope(
                 proposal=proposal,
-                source_asset_id=source.id,
-                source_asset_code=source.code,
                 editable_faces=editable_scopes,
-                protected_faces=protected_faces,
             )
+            try:
+                rasterized = validate_and_rasterize_semantic_mask(
+                    source_path=source_path,
+                    proposal=proposal,
+                    source_asset_id=source.id,
+                    source_asset_code=source.code,
+                    editable_faces=editable_scopes,
+                    protected_faces=protected_faces,
+                )
+            except ValueError as error:
+                if str(error) != "include contour does not cover editable face center":
+                    raise
+                with Image.open(source_path) as source_image:
+                    width, height = source_image.size
+                proposal = repair_missing_editable_face_center_coverage(
+                    proposal=proposal,
+                    editable_faces=editable_scopes,
+                    width=width,
+                    height=height,
+                )
+                rasterized = validate_and_rasterize_semantic_mask(
+                    source_path=source_path,
+                    proposal=proposal,
+                    source_asset_id=source.id,
+                    source_asset_code=source.code,
+                    editable_faces=editable_scopes,
+                    protected_faces=protected_faces,
+                )
             mask_evidence = CanonicalMaskEvidence(
                 source_asset_id=source.id,
                 source_asset_code=source.code,
@@ -664,7 +695,10 @@ class FormalContractCompiler:
             for face in source.faces:
                 person = people[face.person_id]
                 operation = operations_by_person[person.id]
-                editable = operation.action is not MappingAction.KEEP
+                editable = (
+                    operation.action is not MappingAction.KEEP
+                    and face.analysis_resolution != "keep_original"
+                )
                 face_payloads.append(
                     {
                         "face_instance_id": face.id,
@@ -681,7 +715,8 @@ class FormalContractCompiler:
                             "width": source_width,
                             "height": source_height,
                         },
-                        "action": operation.action.value,
+                        "action": operation.action.value if editable else "keep",
+                        "analysis_resolution": face.analysis_resolution,
                         "editable_attributes": list(operation.permissions.editable),
                         "protected_attributes": list(operation.permissions.protected),
                     }

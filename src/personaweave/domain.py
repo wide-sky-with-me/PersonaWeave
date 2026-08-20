@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 from enum import StrEnum
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
@@ -31,12 +31,61 @@ class MappingAction(StrEnum):
     EDIT = "edit"
     KEEP = "keep"
 
+
+def bbox_iou(left: Any, right: Any) -> float:
+    """Return intersection-over-union for bbox models or JSON-style mappings."""
+    def value(box: Any, key: str) -> float:
+        return float(box[key] if isinstance(box, dict) else getattr(box, key))
+
+    left_x = value(left, "x")
+    left_y = value(left, "y")
+    left_width = value(left, "width")
+    left_height = value(left, "height")
+    right_x = value(right, "x")
+    right_y = value(right, "y")
+    right_width = value(right, "width")
+    right_height = value(right, "height")
+    intersection_width = max(
+        0.0,
+        min(left_x + left_width, right_x + right_width) - max(left_x, right_x),
+    )
+    intersection_height = max(
+        0.0,
+        min(left_y + left_height, right_y + right_height) - max(left_y, right_y),
+    )
+    intersection = intersection_width * intersection_height
+    union = left_width * left_height + right_width * right_height - intersection
+    return intersection / union if union > 0 else 0.0
+
 class ReviewReason(StrEnum):
     REFERENCE_INSUFFICIENCY = "reference_insufficiency"
     MASK_UNCERTAIN = "mask_uncertain"
 
 
 ReviewReasonSet: TypeAlias = frozenset[ReviewReason]
+
+SourceFaceCondition: TypeAlias = Literal[
+    "complete",
+    "minor_occlusion",
+    "major_occlusion",
+    "source_boundary",
+    "unusable",
+]
+SOURCE_FACE_CONDITIONS_REQUIRING_REVIEW = frozenset({
+    "major_occlusion",
+    "source_boundary",
+    "unusable",
+})
+
+
+def source_face_condition_requires_review(
+    condition: object,
+    *,
+    legacy_unrecoverable_occlusion: bool = False,
+) -> bool:
+    if condition is None:
+        return legacy_unrecoverable_occlusion
+    return condition in SOURCE_FACE_CONDITIONS_REQUIRING_REVIEW
 
 
 
@@ -216,6 +265,11 @@ class CompiledFaceEvidence(BaseModel):
     person_code: str = Field(pattern=r"^P\d+$", max_length=40)
     bbox: BoundingBox
     source_appearance: PersonAppearance
+    analysis_resolution: Literal[
+        "manual_bbox",
+        "keep_original",
+        "accept_occlusion",
+    ] | None = None
 
 
 class SourceAssetEvidence(BaseModel):
@@ -530,7 +584,10 @@ class CompiledBatchContract(BaseModel):
             expected_editable = [
                 face.face_instance_id
                 for face in source.faces
-                if operations_by_person[face.person_id].action is not MappingAction.KEEP
+                if (
+                    operations_by_person[face.person_id].action is not MappingAction.KEEP
+                    and face.analysis_resolution != "keep_original"
+                )
             ]
             if source.editable_face_instance_ids != expected_editable:
                 raise ValueError(
@@ -567,12 +624,63 @@ class AnalysisRequest(BaseModel):
         return self
 
 
+class FaceLocalizationAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_code: str = Field(min_length=1, max_length=80)
+    attempt: Annotated[int, Field(ge=1, le=4)]
+    bbox: BoundingBox
+    confidence: Annotated[float, Field(ge=0, le=1)]
+    full_face_visible: bool
+    crop_contains_all_source_visible_face: bool = True
+    matches_expected_occurrence: bool = True
+    source_face_condition: SourceFaceCondition = "complete"
+    face_centered: bool
+    tight_face_crop: bool
+    accepted: bool
+    boundary_issue: Literal[
+        "none",
+        "top_clipped",
+        "bottom_clipped",
+        "left_clipped",
+        "right_clipped",
+        "multiple_clipped",
+    ] = "none"
+    unrecoverable_occlusion: bool = False
+    reason: str = Field(default="", max_length=300)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_source_face_condition(cls, value: object) -> object:
+        if not isinstance(value, dict) or "source_face_condition" in value:
+            return value
+        return {
+            **value,
+            "source_face_condition": (
+                "major_occlusion"
+                if value.get("unrecoverable_occlusion")
+                else "complete"
+            ),
+        }
+
+    @model_validator(mode="after")
+    def canonicalize_source_review_flag(self) -> "FaceLocalizationAttempt":
+        self.unrecoverable_occlusion = source_face_condition_requires_review(
+            self.source_face_condition
+        )
+        return self
+
+
 class AnalysisResult(BaseModel):
     asset_id: str
     faces: list[FaceObservation]
     provider: str
     model: str | None = None
     detection_audit: PersonDetectionAudit | None = None
+    localization_attempts: list[FaceLocalizationAttempt] = Field(
+        default_factory=list,
+        max_length=256,
+    )
 
 
 class SwapOperation(BaseModel):
@@ -1006,6 +1114,14 @@ class ValidationRequest(BaseModel):
     expected_subjects: list[ValidationSubject] = Field(default_factory=list)
     peer_results: list[ValidationPeer] = Field(default_factory=list)
     review_reasons: ReviewReasonSet = Field(default_factory=frozenset)
+    authorization_mask_uri: str | None = None
+    authorization_mask_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    authorization_mask_width: int | None = Field(default=None, gt=0)
+    authorization_mask_height: int | None = Field(default=None, gt=0)
+    preserve_outside_mask: bool = False
     operation: Literal["validate_result"] = "validate_result"
 
     @model_validator(mode="after")

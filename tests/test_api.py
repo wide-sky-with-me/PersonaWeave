@@ -215,11 +215,12 @@ def test_health_reports_unconfigured_providers_without_leaking_secrets(tmp_path:
         "status": "ok",
         "providers": {
             "inference_gateway": {"configured": False},
-            "yunwu_multimodal_qa": {
+            "yunwu_multimodal_analysis": {
                 "configured": False,
                 "model": None,
                 "api_mode": "chat_completions",
                 "api_path": "/chat/completions",
+                "default_person_analysis": True,
             },
             "yunwu_preview_image": {
                 "configured": False,
@@ -851,6 +852,94 @@ def test_missing_face_can_be_manually_added_to_existing_person(tmp_path: Path) -
     assert "overlaps" in duplicate.json()["detail"]
 
 
+def test_failed_occurrence_can_be_manually_framed_or_kept_per_source(
+    tmp_path: Path,
+) -> None:
+    client = make_client(tmp_path)
+    batch = client.post("/api/v1/batches", json={"name": "resolve occurrence"}).json()
+    source = client.post(
+        f"/api/v1/batches/{batch['id']}/images",
+        files={"image": ("group.jpg", image_bytes(), "image/jpeg")},
+    ).json()
+    client.post(f"/api/v1/batches/{batch['id']}/analysis/jobs")
+    completed = client.post(
+        f"/api/v1/batches/{batch['id']}/analysis/complete",
+        json={
+            "results": [{
+                "asset_id": source["id"],
+                "provider": "test-detector",
+                "faces": [{
+                    "external_face_id": "I01-V01",
+                    "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
+                    "detection_confidence": 0.2,
+                    "suggested_person_key": "person-a",
+                    "identity_confidence": 0.9,
+                }],
+                "detection_audit": {
+                    "available": True,
+                    "complete": True,
+                    "detected_face_count": 1,
+                    "visible_face_count": 1,
+                    "requires_manual_review": True,
+                    "summary": "candidate is occluded",
+                },
+                "localization_attempts": [{
+                    "occurrence_code": "I01-V01",
+                    "attempt": 1,
+                    "bbox": {"x": 0, "y": 0, "width": 2, "height": 2},
+                    "confidence": 0.4,
+                    "full_face_visible": False,
+                    "crop_contains_all_source_visible_face": True,
+                    "source_face_condition": "major_occlusion",
+                    "face_centered": True,
+                    "tight_face_crop": True,
+                    "accepted": True,
+                    "boundary_issue": "none",
+                    "unrecoverable_occlusion": True,
+                    "reason": "phone obscures the face",
+                }],
+            }]
+        },
+    )
+    assert completed.status_code == 200
+    detail = client.get(f"/api/v1/batches/{batch['id']}").json()
+    face = detail["persons"][0]["faces"][0]
+    assert face["localization_preview_url"]
+    assert client.get(face["localization_preview_url"]).status_code == 200
+
+    accepted_occlusion = client.put(
+        f"/api/v1/batches/{batch['id']}/faces/{face['id']}/resolution",
+        json={"action": "accept_occlusion"},
+    )
+    assert accepted_occlusion.status_code == 200
+    assert accepted_occlusion.json()["analysis_review_issues"] == []
+    assert (
+        accepted_occlusion.json()["person"]["faces"][0]["analysis_resolution"]
+        == "accept_occlusion"
+    )
+
+    framed = client.put(
+        f"/api/v1/batches/{batch['id']}/faces/{face['id']}/resolution",
+        json={
+            "action": "manual_bbox",
+            "bbox": {"x": 1, "y": 1, "width": 2, "height": 2},
+        },
+    )
+    assert framed.status_code == 200
+    assert framed.json()["analysis_review_issues"] == []
+    updated_face = framed.json()["person"]["faces"][0]
+    assert updated_face["bbox"] == {"x": 1, "y": 1, "width": 2, "height": 2}
+    assert updated_face["analysis_resolution"] == "manual_bbox"
+
+    kept = client.put(
+        f"/api/v1/batches/{batch['id']}/faces/{face['id']}/resolution",
+        json={"action": "keep_original"},
+    )
+    assert kept.status_code == 200
+    assert kept.json()["analysis_review_issues"] == []
+    assert kept.json()["person"]["faces"][0]["analysis_resolution"] == "keep_original"
+
+
 def test_combined_analysis_action_is_exposed_without_hiding_provider_failure(
     tmp_path: Path,
 ) -> None:
@@ -869,7 +958,7 @@ def test_combined_analysis_action_is_exposed_without_hiding_provider_failure(
     assert detail["latest_jobs"][0]["status"] == "queued"
 
 
-def test_execute_stage_requires_remote_gateway(tmp_path: Path) -> None:
+def test_execute_analysis_requires_multimodal_provider(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     batch = client.post("/api/v1/batches", json={"name": "remote"}).json()
     client.post(
@@ -1087,7 +1176,7 @@ def test_preview_forwards_configured_image_model(tmp_path: Path, monkeypatch) ->
     assert response.status_code == 200
     assert response.content == b"generated-image"
     assert captured == {
-        "timeouts": [600.0, 300.0, 321.0],
+        "timeouts": [600.0, 600.0, 321.0],
         "url": "http://127.0.0.1:8010/v1/preview-replacement",
         "data": {
             "description": "replace every detected face",

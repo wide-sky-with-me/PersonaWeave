@@ -1,10 +1,16 @@
+import base64
 import json
+from io import BytesIO
 
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 
 from personaweave.domain import (
+    AnalysisResult,
     BoundingBox,
+    FaceObservation,
+    PersonDetectionAudit,
     ReferenceSufficiency,
     SourceOccurrenceEvidence,
     TargetIdentityProfile,
@@ -13,6 +19,8 @@ from personaweave.domain import (
 )
 
 from personaweave.providers.yunwu import (
+    BatchPersonAnalysis,
+    FaceCropReviewItem,
     ImageEditIssue,
     ImageEditPlan,
     ImageEditReview,
@@ -33,6 +41,89 @@ def test_json_parser_accepts_fenced_json_with_gateway_suffix() -> None:
 def test_json_parser_rejects_incomplete_object() -> None:
     with pytest.raises(ValueError, match="complete JSON object"):
         _parse_json_object('{"groups": [')
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("bottom and right clipped", "multiple_clipped"),
+        ("top-left crop edge", "multiple_clipped"),
+        ("right edge", "right_clipped"),
+        ("no boundary issue", "none"),
+    ],
+)
+def test_face_crop_review_normalizes_common_boundary_variants(
+    raw: str,
+    expected: str,
+) -> None:
+    item = FaceCropReviewItem.model_validate({
+        "occurrence_code": "I01-V01",
+        "full_face_visible": True,
+        "crop_contains_all_source_visible_face": False,
+        "matches_expected_occurrence": True,
+        "source_face_condition": "complete",
+        "face_centered": True,
+        "tight_face_crop": True,
+        "boundary_issue": raw,
+        "reason": "review",
+    })
+
+    assert item.boundary_issue == expected
+
+
+def test_face_crop_review_rejects_unknown_boundary_variant() -> None:
+    with pytest.raises(ValidationError):
+        FaceCropReviewItem.model_validate({
+            "occurrence_code": "I01-V01",
+            "full_face_visible": True,
+            "crop_contains_all_source_visible_face": False,
+            "matches_expected_occurrence": True,
+            "source_face_condition": "complete",
+            "face_centered": True,
+            "tight_face_crop": True,
+            "boundary_issue": "diagonal",
+            "reason": "review",
+        })
+
+
+def test_batch_analysis_lifts_unambiguously_misnested_source_objects() -> None:
+    appearance = {
+        "apparent_age": "adult",
+        "face_features": "oval face",
+        "hair": "dark hair",
+        "eyewear": "none",
+        "accessories": "none",
+        "body": "medium build",
+        "clothing": "dark top",
+        "pose": "front-facing",
+        "lighting_occlusion": "even light",
+    }
+
+    def source(code: str) -> dict:
+        return {
+            "source_code": code,
+            "complete": True,
+            "visible_person_count": 1,
+            "people": [{
+                "occurrence_code": f"{code}-V01",
+                "bbox": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+                "detection_confidence": 0.95,
+                "person_group_key": "G01",
+                "identity_confidence": 0.9,
+                "grouping_uncertain": False,
+                "appearance": appearance,
+            }],
+            "summary": "complete",
+        }
+
+    first = source("I01")
+    second = source("I02")
+    first["people"].append(second)
+
+    parsed = BatchPersonAnalysis.model_validate({"sources": [first]})
+
+    assert [item.source_code for item in parsed.sources] == ["I01", "I02"]
+    assert [len(item.people) for item in parsed.sources] == [1, 1]
 
 
 @pytest.mark.anyio
@@ -60,8 +151,75 @@ async def test_visual_provider_reuses_injected_http_client() -> None:
         await provider.aclose()
 
         assert len(requests) == 2
+        assert json.loads(requests[0].content)["max_completion_tokens"] == 16_384
         assert provider._client is client
         assert not client.is_closed
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_json_completion_reports_upstream_token_truncation() -> None:
+    httpx = __import__("httpx")
+
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": '{"sources": ['},
+                }],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1",
+        "test-key",
+        "vision-model",
+        client=client,
+    )
+    try:
+        with pytest.raises(ValueError, match="truncated at the output-token limit"):
+            await provider._json_completion([])
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.anyio
+async def test_json_completion_retries_5xx_with_stable_idempotency_key(
+    monkeypatch,
+) -> None:
+    requests = []
+    httpx = __import__("httpx")
+
+    def handler(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(500, json={"error": "temporary"})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("personaweave.providers.yunwu.asyncio.sleep", no_sleep)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1",
+        "test-key",
+        "vision-model",
+        client=client,
+    )
+    try:
+        assert await provider._json_completion([]) == {"ok": True}
+        assert len(requests) == 2
+        assert requests[0].headers["Idempotency-Key"] == requests[1].headers[
+            "Idempotency-Key"
+        ]
     finally:
         await client.aclose()
 
@@ -88,6 +246,1069 @@ def test_visual_provider_accepts_an_absolute_endpoint() -> None:
     )
 
     assert provider.endpoint == "https://gateway.example.test/chat"
+
+
+@pytest.mark.anyio
+async def test_batch_person_analysis_groups_sources_and_uses_original_detail(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    captured = {}
+    appearance = {
+        "apparent_age": "adult",
+        "face_features": "oval face",
+        "hair": "dark hair",
+        "eyewear": "none",
+        "accessories": "none",
+        "body": "medium build",
+        "clothing": "dark top",
+        "pose": "front-facing",
+        "lighting_occlusion": "even light",
+    }
+
+    async def fake_completion(content):
+        captured["content"] = content
+        return {"sources": [
+            {
+                "source_code": code,
+                "complete": True,
+                "visible_person_count": 1,
+                "people": [{
+                    "occurrence_code": f"{code}-V01",
+                    "bbox": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+                    "detection_confidence": 0.96,
+                    "person_group_key": "G01",
+                    "identity_confidence": 0.93,
+                    "grouping_uncertain": False,
+                    "appearance": appearance,
+                }],
+                "summary": "complete",
+            }
+            for code in ("I01", "I02")
+        ]}
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    results = await provider.analyze_batch_people([
+        {
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": "data:image/jpeg;base64,one",
+            "analysis_image_uri": "data:image/jpeg;base64,preview-one",
+            "width": 100,
+            "height": 200,
+        },
+        {
+            "asset_id": "asset-2",
+            "source_code": "I02",
+            "image_uri": "data:image/jpeg;base64,two",
+            "width": 200,
+            "height": 100,
+        },
+    ])
+
+    image_items = [item for item in captured["content"] if item["type"] == "image_url"]
+    assert [item["image_url"]["detail"] for item in image_items] == ["original", "original"]
+    assert [item["image_url"]["url"] for item in image_items] == [
+        "data:image/jpeg;base64,preview-one",
+        "data:image/jpeg;base64,two",
+    ]
+    assert [result.asset_id for result in results] == ["asset-1", "asset-2"]
+    assert results[0].faces[0].suggested_person_key == "vlm:G01"
+    assert results[1].faces[0].suggested_person_key == "vlm:G01"
+    assert results[0].faces[0].bbox.model_dump() == {
+        "x": 10, "y": 40, "width": 30, "height": 80
+    }
+    assert all(result.faces[0].needs_confirmation for result in results)
+
+
+@pytest.mark.anyio
+async def test_batch_person_analysis_isolates_uncertain_grouping(monkeypatch) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+
+    async def fake_completion(_content):
+        return {"sources": [{
+            "source_code": "I01",
+            "complete": True,
+            "visible_person_count": 1,
+            "people": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.2},
+                "detection_confidence": 0.8,
+                "person_group_key": "G01",
+                "identity_confidence": 0.79,
+                "grouping_uncertain": False,
+                "appearance": {},
+            }],
+            "summary": "uncertain match",
+        }]}
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    result = (await provider.analyze_batch_people([{
+        "asset_id": "asset-1",
+        "source_code": "I01",
+        "image_uri": "data:image/jpeg;base64,one",
+        "width": 100,
+        "height": 100,
+    }]))[0]
+
+    assert result.faces[0].suggested_person_key == "vlm-uncertain:I01:I01-V01"
+    assert result.detection_audit.requires_manual_review is True
+
+
+def test_face_crop_review_board_uses_the_exact_bbox_without_padding(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    crop_boxes = []
+    original_crop = Image.Image.crop
+
+    def recording_crop(image, box=None):
+        crop_boxes.append(box)
+        return original_crop(image, box)
+
+    monkeypatch.setattr(Image.Image, "crop", recording_crop)
+    provider._face_crop_review_board(
+        image_uri,
+        [FaceObservation(
+            external_face_id="I01-V01",
+            bbox=BoundingBox(x=20, y=30, width=40, height=50),
+            detection_confidence=0.99,
+        )],
+    )
+
+    assert crop_boxes == [(20, 30, 60, 80)]
+
+
+def test_low_confidence_anchor_uses_broader_localization_context() -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (1000, 800), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    bbox = BoundingBox(x=400, y=300, width=20, height=20)
+
+    _, reliable_tiles = provider._localization_tile_images(
+        image_uri,
+        [FaceObservation(
+            external_face_id="I01-V01",
+            bbox=bbox,
+            detection_confidence=0.95,
+        )],
+        expansion=3.0,
+    )
+    _, unreliable_tiles = provider._localization_tile_images(
+        image_uri,
+        [FaceObservation(
+            external_face_id="I01-V01",
+            bbox=bbox,
+            detection_confidence=0.2,
+        )],
+        expansion=3.0,
+    )
+
+    assert reliable_tiles["I01-V01"].width == 96
+    assert unreliable_tiles["I01-V01"].width == 200
+
+
+def test_anchor_reliability_is_independent_of_manual_broad_search() -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    reliable = FaceObservation(
+        external_face_id="I01-V01",
+        bbox=BoundingBox(x=100, y=100, width=120, height=140),
+        detection_confidence=0.95,
+    )
+    unreliable = reliable.model_copy(update={"detection_confidence": 0.2})
+
+    assert provider._face_anchor_is_unreliable(
+        reliable, image_width=4000, image_height=6000
+    ) is False
+    assert provider._face_anchor_is_unreliable(
+        unreliable, image_width=4000, image_height=6000
+    ) is True
+
+
+@pytest.mark.anyio
+async def test_manual_broad_search_uses_ten_times_context_even_for_reliable_anchor(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (1000, 800), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "recap": "extra model commentary must be ignored",
+            "analysis": "not part of the response contract",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {
+                    "x": 300,
+                    "y": 300,
+                    "width": 300,
+                    "height": 350,
+                    "commentary": "ignore nested bbox prose",
+                },
+                "confidence": 0.9,
+                "explanation": "ignore nested location prose",
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "matches_expected_occurrence": True,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "reason": "pass",
+                "explanation": "ignore nested review prose",
+            }],
+            "recap": "ignore top-level review prose",
+        },
+    ])
+    expansions = []
+    original_tile_images = provider._localization_tile_images
+
+    def recording_tile_images(image_uri, faces, *, expansion):
+        expansions.append(expansion)
+        return original_tile_images(image_uri, faces, expansion=expansion)
+
+    async def fake_completion(_content):
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_localization_tile_images", recording_tile_images)
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 1000,
+            "height": 800,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=400, y=300, width=20, height=20),
+                detection_confidence=0.95,
+            )],
+        )],
+        broad_search=True,
+    )
+
+    assert expansions == [10.0]
+
+
+@pytest.mark.anyio
+async def test_precise_localization_repairs_a_failed_crop_once(monkeypatch) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 100, "y": 400, "width": 300, "height": 400},
+                "confidence": 0.91,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": False,
+                "face_centered": False,
+                "tight_face_crop": False,
+                "reason": "crop shows torso instead of the face",
+            }],
+        },
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 200, "y": 200, "width": 200, "height": 200},
+                "confidence": 0.88,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "matches_expected_occurrence": True,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "reason": "face is tightly centered",
+            }],
+        },
+    ])
+    calls = []
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "grid_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=10, y=40, width=30, height=40),
+                detection_confidence=0.99,
+                suggested_person_key="vlm:G01",
+                identity_confidence=0.98,
+            )],
+            detection_audit=PersonDetectionAudit(
+                complete=True,
+                detected_face_count=1,
+                visible_face_count=1,
+            ),
+        )],
+    )
+
+    face = refined[0].faces[0]
+    assert face.bbox == BoundingBox(x=20, y=20, width=20, height=20)
+    assert face.detection_confidence == 0.88
+    assert refined[0].detection_audit.requires_manual_review is False
+    assert "复核通过" in refined[0].detection_audit.summary
+    assert len(calls) == 4
+    assert "crop shows torso instead of the face" in calls[2][0]["text"]
+    assert [attempt.accepted for attempt in refined[0].localization_attempts] == [
+        False,
+        True,
+    ]
+    assert refined[0].localization_attempts[0].bbox != face.bbox
+
+
+@pytest.mark.anyio
+async def test_crop_geometry_does_not_pass_when_candidate_is_wrong_person(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 100, "y": 100, "width": 300, "height": 400},
+                "confidence": 0.94,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "crop_contains_all_source_visible_face": True,
+                "matches_expected_occurrence": False,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "reason": "crop is a different person with glasses",
+            }],
+        },
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 500, "y": 200, "width": 250, "height": 350},
+                "confidence": 0.91,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "crop_contains_all_source_visible_face": True,
+                "matches_expected_occurrence": True,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "reason": "crop matches the expected person",
+            }],
+        },
+    ])
+    calls = []
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+            "expected_person_appearances": [{"eyewear": "none"}],
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=10, y=10, width=30, height=40),
+                detection_confidence=0.95,
+                appearance={"eyewear": "none"},
+            )],
+        )],
+    )
+
+    attempts = refined[0].localization_attempts
+    assert [attempt.matches_expected_occurrence for attempt in attempts] == [False, True]
+    assert [attempt.accepted for attempt in attempts] == [False, True]
+    assert "EXPECTED_APPEARANCES" in calls[1][0]["text"]
+    assert "different person with glasses" in calls[2][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_second_localization_freezes_faces_that_already_passed(monkeypatch) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (200, 200), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "locations": [
+                {"occurrence_code": "I01-V01", "bbox": {"x": 300, "y": 300, "width": 250, "height": 250}, "confidence": 0.95},
+                {"occurrence_code": "I01-V02", "bbox": {"x": 250, "y": 350, "width": 300, "height": 350}, "confidence": 0.9},
+            ],
+        },
+        {
+            "source_code": "I01",
+            "items": [
+                {"occurrence_code": "I01-V01", "full_face_visible": True, "matches_expected_occurrence": True, "face_centered": True, "tight_face_crop": True, "reason": "pass"},
+                {"occurrence_code": "I01-V02", "full_face_visible": True, "matches_expected_occurrence": False, "face_centered": False, "tight_face_crop": False, "reason": "too much torso"},
+            ],
+        },
+        {
+            "source_code": "I01",
+            "locations": [
+                {"occurrence_code": "I01-V02", "bbox": {"x": 300, "y": 250, "width": 250, "height": 250}, "confidence": 0.88},
+            ],
+        },
+        {
+            "source_code": "I01",
+            "items": [
+                {"occurrence_code": "I01-V02", "full_face_visible": True, "matches_expected_occurrence": True, "face_centered": True, "tight_face_crop": True, "reason": "pass"},
+            ],
+        },
+    ])
+    calls = []
+    tile_inputs = []
+    original_tile_images = provider._localization_tile_images
+
+    def recording_tile_images(image_uri, faces, *, expansion):
+        tile_inputs.append((
+            {face.external_face_id: face.bbox for face in faces},
+            expansion,
+        ))
+        return original_tile_images(image_uri, faces, expansion=expansion)
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_localization_tile_images", recording_tile_images)
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{"asset_id": "asset-1", "source_code": "I01", "image_uri": image_uri, "width": 200, "height": 200}],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[
+                FaceObservation(external_face_id="I01-V01", bbox=BoundingBox(x=20, y=20, width=30, height=30), detection_confidence=0.99),
+                FaceObservation(external_face_id="I01-V02", bbox=BoundingBox(x=120, y=120, width=30, height=30), detection_confidence=0.99),
+            ],
+        )],
+        broad_search=True,
+    ))[0]
+
+    attempts_by_code = {
+        code: [attempt for attempt in refined.localization_attempts if attempt.occurrence_code == code]
+        for code in ("I01-V01", "I01-V02")
+    }
+    assert len(attempts_by_code["I01-V01"]) == 1
+    assert attempts_by_code["I01-V01"][0].accepted is True
+    assert len(attempts_by_code["I01-V02"]) == 2
+    assert len([item for item in calls[0] if item["type"] == "image_url"]) == 2
+    assert "I01-V01" not in calls[2][0]["text"]
+    assert "I01-V02" in calls[2][0]["text"]
+    assert tile_inputs[0][1] == 10.0
+    assert tile_inputs[1] == ({
+        "I01-V02": BoundingBox(x=120, y=120, width=30, height=30),
+    }, 10.0)
+
+
+@pytest.mark.anyio
+async def test_degenerate_low_confidence_location_keeps_reviewable_coarse_box(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 450, "y": 500, "width": 100, "height": 2},
+                "confidence": 0.02,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "matches_expected_occurrence": True,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "reason": "coarse box still contains the complete face",
+            }],
+        },
+    ])
+
+    async def fake_completion(_content):
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=10, y=10, width=30, height=30),
+                detection_confidence=0.94,
+            )],
+        )],
+    ))[0]
+
+    assert refined.faces[0].bbox == BoundingBox(x=10, y=10, width=30, height=30)
+    assert refined.faces[0].detection_confidence == 0.94
+    assert refined.localization_attempts[0].confidence == 0.02
+    assert refined.localization_attempts[0].accepted is True
+
+
+@pytest.mark.anyio
+async def test_precise_localization_fails_closed_after_second_crop_rejection(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    location = {
+        "source_code": "I01",
+        "locations": [{
+            "occurrence_code": "I01-V01",
+            "bbox": {"x": 100, "y": 400, "width": 300, "height": 400},
+            "confidence": 0.9,
+        }],
+    }
+    rejected = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": False,
+            "face_centered": False,
+            "tight_face_crop": False,
+            "reason": "crop still shows clothing instead of a centered face",
+        }],
+    }
+    responses = iter([location, rejected, location, rejected])
+
+    async def fake_completion(_content):
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    coarse_bbox = BoundingBox(x=10, y=40, width=30, height=40)
+    refined = await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "grid_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=coarse_bbox,
+                detection_confidence=0.99,
+            )],
+        )],
+    )
+
+    assert refined[0].faces[0].bbox == coarse_bbox
+    assert all(
+        not attempt.accepted for attempt in refined[0].localization_attempts
+    )
+    assert refined[0].detection_audit.requires_manual_review is True
+    assert "复核未通过" in refined[0].detection_audit.summary
+
+
+@pytest.mark.anyio
+async def test_boundary_clipping_gets_one_directional_repair_and_final_review(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    responses = iter([
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 200, "y": 200, "width": 400, "height": 400},
+                "confidence": 0.92,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": False,
+                "face_centered": True,
+                "tight_face_crop": False,
+                "reason": "chin is clipped",
+            }],
+        },
+        {
+            "source_code": "I01",
+            "locations": [{
+                "occurrence_code": "I01-V01",
+                "bbox": {"x": 250, "y": 250, "width": 400, "height": 350},
+                "confidence": 0.89,
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": False,
+                "face_centered": True,
+                "tight_face_crop": False,
+                "boundary_issue": "bottom",
+                "unrecoverable_occlusion": False,
+                "reason": "chin is still clipped",
+            }],
+        },
+        {
+            "source_code": "I01",
+            "items": [{
+                "occurrence_code": "I01-V01",
+                "full_face_visible": True,
+                "matches_expected_occurrence": True,
+                "face_centered": True,
+                "tight_face_crop": True,
+                "boundary_issue": "none",
+                "unrecoverable_occlusion": False,
+                "reason": "complete face after downward expansion",
+            }],
+        },
+    ])
+    calls = []
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=20, y=20, width=40, height=40),
+                detection_confidence=0.99,
+            )],
+        )],
+    ))[0]
+
+    assert len(calls) == 5
+    assert [attempt.attempt for attempt in refined.localization_attempts] == [1, 2, 3]
+    assert [attempt.accepted for attempt in refined.localization_attempts] == [
+        False,
+        False,
+        True,
+    ]
+    second_box = refined.localization_attempts[1].bbox
+    final_box = refined.localization_attempts[2].bbox
+    assert refined.localization_attempts[1].boundary_issue == "bottom_clipped"
+    assert final_box.x == second_box.x
+    assert final_box.y == second_box.y
+    assert final_box.width == second_box.width
+    assert final_box.height > second_box.height
+    assert refined.detection_audit.requires_manual_review is False
+
+
+@pytest.mark.anyio
+async def test_boundary_clipping_allows_one_more_bounded_repair(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    location = {
+        "source_code": "I01",
+        "locations": [{
+            "occurrence_code": "I01-V01",
+            "bbox": {"x": 250, "y": 100, "width": 300, "height": 300},
+            "confidence": 0.9,
+        }],
+    }
+    rejected = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": False,
+            "face_centered": True,
+            "tight_face_crop": False,
+            "boundary_issue": "bottom_clipped",
+            "unrecoverable_occlusion": False,
+            "reason": "lower face remains clipped",
+        }],
+    }
+    accepted = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": True,
+            "matches_expected_occurrence": True,
+            "face_centered": True,
+            "tight_face_crop": True,
+            "boundary_issue": "none",
+            "unrecoverable_occlusion": False,
+            "reason": "complete face after the second bounded repair",
+        }],
+    }
+    responses = iter([
+        location,
+        rejected,
+        location,
+        rejected,
+        rejected,
+        accepted,
+    ])
+
+    async def fake_completion(_content):
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=25, y=10, width=30, height=30),
+                detection_confidence=0.99,
+            )],
+        )],
+    ))[0]
+
+    assert [attempt.attempt for attempt in refined.localization_attempts] == [1, 2, 3, 4]
+    assert [attempt.accepted for attempt in refined.localization_attempts] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert refined.localization_attempts[3].bbox.height > refined.localization_attempts[2].bbox.height
+    assert refined.detection_audit.requires_manual_review is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("condition", "reason", "requires_review"), [
+    ("major_occlusion", "phone hides core facial features", True),
+    ("minor_occlusion", "lollipop overlaps a small part of the mouth", False),
+])
+async def test_source_condition_with_valid_crop_does_not_trigger_relocalization(
+    monkeypatch,
+    condition: str,
+    reason: str,
+    requires_review: bool,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    location = {
+        "source_code": "I01",
+        "locations": [{
+            "occurrence_code": "I01-V01",
+            "bbox": {"x": 200, "y": 200, "width": 400, "height": 400},
+            "confidence": 0.9,
+        }],
+    }
+    source_occluded = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": False,
+            "crop_contains_all_source_visible_face": True,
+            "matches_expected_occurrence": True,
+            "source_face_condition": condition,
+            "face_centered": True,
+            "tight_face_crop": True,
+            "boundary_issue": "none",
+            "unrecoverable_occlusion": True,
+            "reason": reason,
+        }],
+    }
+    responses = iter([location, source_occluded])
+    calls = []
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=20, y=20, width=40, height=40),
+                detection_confidence=0.99,
+            )],
+        )],
+    ))[0]
+
+    assert len(calls) == 2
+    assert len([item for item in calls[1] if item["type"] == "image_url"]) == 2
+    assert len(refined.localization_attempts) == 1
+    assert refined.localization_attempts[-1].source_face_condition == condition
+    assert (
+        refined.localization_attempts[-1].unrecoverable_occlusion
+        is requires_review
+    )
+    assert refined.localization_attempts[-1].accepted is True
+    assert refined.localization_attempts[-1].crop_contains_all_source_visible_face is True
+    assert refined.detection_audit.requires_manual_review is requires_review
+    assert (
+        "原图面部条件需人工确认" in refined.detection_audit.summary
+    ) is requires_review
+
+
+@pytest.mark.anyio
+async def test_source_occlusion_still_retries_when_crop_misses_visible_face(
+    monkeypatch,
+) -> None:
+    provider = YunwuMultimodalProvider(
+        "https://yunwu.example/v1", "test-key", "vision-model"
+    )
+    output = BytesIO()
+    Image.new("RGB", (100, 100), "white").save(output, format="JPEG")
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+    location = {
+        "source_code": "I01",
+        "locations": [{
+            "occurrence_code": "I01-V01",
+            "bbox": {"x": 200, "y": 200, "width": 400, "height": 400},
+            "confidence": 0.9,
+        }],
+    }
+    invalid_crop = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": False,
+            "crop_contains_all_source_visible_face": False,
+            "source_face_condition": "major_occlusion",
+            "face_centered": True,
+            "tight_face_crop": False,
+            "boundary_issue": "left_clipped",
+            "unrecoverable_occlusion": True,
+            "reason": "crop misses source-visible cheek while phone hides the mouth",
+        }],
+    }
+    valid_crop = {
+        "source_code": "I01",
+        "items": [{
+            "occurrence_code": "I01-V01",
+            "full_face_visible": False,
+            "crop_contains_all_source_visible_face": True,
+            "matches_expected_occurrence": True,
+            "source_face_condition": "major_occlusion",
+            "face_centered": True,
+            "tight_face_crop": True,
+            "boundary_issue": "none",
+            "unrecoverable_occlusion": True,
+            "reason": "all source-visible face pixels are now inside the crop",
+        }],
+    }
+    responses = iter([location, invalid_crop, location, valid_crop])
+    calls = []
+
+    async def fake_completion(content):
+        calls.append(content)
+        return next(responses)
+
+    monkeypatch.setattr(provider, "_json_completion", fake_completion)
+    refined = (await provider.refine_batch_face_boxes(
+        [{
+            "asset_id": "asset-1",
+            "source_code": "I01",
+            "image_uri": image_uri,
+            "width": 100,
+            "height": 100,
+        }],
+        [AnalysisResult(
+            asset_id="asset-1",
+            provider="batch-analysis",
+            faces=[FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=20, y=20, width=40, height=40),
+                detection_confidence=0.99,
+            )],
+        )],
+    ))[0]
+
+    assert len(calls) == 4
+    assert [attempt.accepted for attempt in refined.localization_attempts] == [
+        False,
+        True,
+    ]
+    assert all(
+        attempt.unrecoverable_occlusion
+        for attempt in refined.localization_attempts
+    )
+    assert refined.detection_audit.requires_manual_review is True
+
+
+def test_crop_review_normalizes_bounded_provider_wrappers() -> None:
+    item = {
+        "occurrence_code": "I01-V01",
+        "full_face_visible": True,
+        "matches_expected_occurrence": False,
+    }
+
+    wrapped = YunwuMultimodalProvider._normalize_face_crop_review_payload(
+        {"review": {"faces": [item]}},
+        source_code="I01",
+        occurrence_codes=["I01-V01"],
+    )
+    keyed = YunwuMultimodalProvider._normalize_face_crop_review_payload(
+        {"I01": {"I01-V01": {"full_face_visible": True, "matches_expected_occurrence": False}}},
+        source_code="I01",
+        occurrence_codes=["I01-V01"],
+    )
+
+    assert wrapped == {"source_code": "I01", "items": [item]}
+    assert keyed == {"source_code": "I01", "items": [item]}
 
 
 @pytest.mark.anyio

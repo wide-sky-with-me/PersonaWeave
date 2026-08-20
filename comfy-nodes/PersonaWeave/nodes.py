@@ -455,7 +455,14 @@ class MaskedOriginalComposite:
             pil_mask = Image.fromarray((value.cpu().numpy() * 255).round().astype(np.uint8), mode="L")
             if feather_radius:
                 pil_mask = pil_mask.filter(ImageFilter.GaussianBlur(radius=feather_radius))
-            softened = torch.from_numpy(np.array(pil_mask, dtype=np.float32, copy=True) / 255.0)
+                blurred = np.array(pil_mask, dtype=np.float32, copy=True) / 255.0
+                # A regular Gaussian mask is still about 50% opaque at the
+                # formal boundary. Remap that midpoint to zero so blending
+                # happens inward and cannot leave a visible clipped seam.
+                softened_array = np.clip((blurred - 0.5) * 2.0, 0.0, 1.0)
+            else:
+                softened_array = np.array(pil_mask, dtype=np.float32, copy=True) / 255.0
+            softened = torch.from_numpy(softened_array)
             feathered.append(softened)
         alpha = torch.stack(feathered).to(original.device, original.dtype)
         # The blur may never authorize pixels outside the caller-provided mask.

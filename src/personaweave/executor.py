@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import logging
 from io import BytesIO
 from typing import Any
 
 import httpx
 from PIL import Image, ImageDraw, ImageOps
+from pydantic import ValidationError
 
 from personaweave.assets import AssetResolver
 from personaweave.domain import (
@@ -22,6 +24,8 @@ from personaweave.domain import (
     ValidationRequest,
     ValidationResult,
     ValidationReviewerVerdict,
+    bbox_iou,
+    source_face_condition_requires_review,
 )
 from personaweave.formal import validate_swap_request_scope
 from personaweave.providers.gateway import InferenceGateway, ProviderNotConfigured
@@ -30,6 +34,9 @@ from personaweave.storage import Repository
 from personaweave.workflow import InvalidTransition, WorkflowService
 from personaweave.validation import compare_source_result
 from personaweave.provider_errors import ProviderExecutionError
+
+
+logger = logging.getLogger(__name__)
 
 
 class StageExecutionError(RuntimeError):
@@ -47,16 +54,19 @@ class PipelineExecutor:
         advisory_validator: ValidationProvider | None = None,
         quality_validators: tuple[ValidationProvider, ValidationProvider] | None = None,
         advisory_preview_max_edge: int = 1600,
+        objective_validators: tuple[ValidationProvider, ...] = (),
     ):
         self.repository = repository
         self.workflow = workflow
         self.gateway = gateway
         self.assets = assets
         self.semaphore = asyncio.Semaphore(concurrency)
+        self._active_relocalization_batches: set[str] = set()
         self.advisory_validator = advisory_validator
         if quality_validators is not None and quality_validators[0] is quality_validators[1]:
             raise ValueError("quality validators must be independent provider instances")
         self.quality_validators = quality_validators
+        self.objective_validators = objective_validators
         self.advisory_preview_max_edge = advisory_preview_max_edge
 
 
@@ -69,14 +79,38 @@ class PipelineExecutor:
         batch = self.repository.get_batch(batch_id)
         if batch["status"] != expected_status:
             raise InvalidTransition(f"cannot execute {stage} from {batch['status']}")
-        if not self.gateway.configured:
+        if (
+            stage is JobStage.ANALYZE
+            and (
+                getattr(self.advisory_validator, "analyze_batch_people", None) is None
+                or getattr(
+                    self.advisory_validator, "refine_batch_face_boxes", None
+                ) is None
+            )
+        ):
+            raise ProviderNotConfigured(
+                "multimodal batch analysis and precise localization provider is not configured"
+            )
+        if stage is not JobStage.ANALYZE and not self.gateway.configured:
             raise ProviderNotConfigured("remote inference gateway is not configured")
 
         jobs = self.repository.current_contract_stage_jobs(batch_id, stage)
         queued = [job for job in jobs if job["status"] == JobStatus.QUEUED]
+        if stage is JobStage.ANALYZE and queued:
+            # Analysis is one whole-batch inference contract. Retrying any failed
+            # image therefore resumes every failed peer in the same joint call.
+            for failed_job in (
+                job for job in jobs if job["status"] == JobStatus.FAILED
+            ):
+                self.repository.retry_job(failed_job["id"])
+            jobs = self.repository.current_contract_stage_jobs(batch_id, stage)
+            queued = [job for job in jobs if job["status"] == JobStatus.QUEUED]
         if not queued and any(job["status"] == JobStatus.FAILED for job in jobs):
             raise StageExecutionError("stage has failed jobs; retry them before execution")
-        await asyncio.gather(*(self._execute_job(job, stage) for job in queued))
+        if stage is JobStage.ANALYZE:
+            await self._execute_multimodal_analysis_batch(queued)
+        else:
+            await asyncio.gather(*(self._execute_job(job, stage) for job in queued))
 
         latest = self.repository.current_contract_stage_jobs(batch_id, stage)
         failed = [job for job in latest if job["status"] == JobStatus.FAILED]
@@ -104,7 +138,6 @@ class PipelineExecutor:
 
         if stage is JobStage.ANALYZE:
             analysis_outputs = [job["output"] for job in latest]
-            await self._cluster_analysis_people(analysis_outputs)
             self.workflow.complete_analysis(batch_id, analysis_outputs)
         elif stage is JobStage.SWAP:
             self.workflow.complete_swap(
@@ -117,6 +150,300 @@ class PipelineExecutor:
                 [ValidationResult.model_validate(job["output"]) for job in latest],
             )
         return {"batch_id": batch_id, "stage": stage, "completed": True}
+
+    async def _execute_multimodal_analysis_batch(
+        self,
+        jobs: list[dict[str, Any]],
+    ) -> None:
+        if not jobs:
+            return
+        analyzer = getattr(self.advisory_validator, "analyze_batch_people", None)
+        refiner = getattr(self.advisory_validator, "refine_batch_face_boxes", None)
+        if analyzer is None or refiner is None:
+            error = ProviderNotConfigured(
+                "multimodal batch analysis and precise localization provider is not configured"
+            )
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"], self._error_code(error), self._error_message(error)
+                )
+            return
+        sources: list[dict[str, Any]] = []
+        for job in jobs:
+            request = AnalysisRequest.model_validate(job["input"])
+            asset = self.repository.get_asset(request.asset_id)
+            try:
+                image_uri, analysis_image_uri, width, height = (
+                    self._analysis_image_payload(asset)
+                )
+            except Exception as error:
+                for queued_job in jobs:
+                    self.repository.fail_job(
+                        queued_job["id"],
+                        self._error_code(error),
+                        self._error_message(error),
+                    )
+                return
+            sources.append({
+                "asset_id": asset["id"],
+                "source_code": asset["display_code"],
+                "image_uri": image_uri,
+                "analysis_image_uri": analysis_image_uri,
+                "width": width,
+                "height": height,
+            })
+        for job in jobs:
+            self.repository.mark_job_running(
+                job["id"],
+                phase=JobPhase.ANALYZING,
+                message="多模态模型正在整批识别人物并进行跨图归类",
+            )
+        try:
+            raw_results = await analyzer(sources)
+            results = [AnalysisResult.model_validate(result) for result in raw_results]
+            results = [
+                AnalysisResult.model_validate(result)
+                for result in await refiner(sources, results)
+            ]
+            expected_ids = [source["asset_id"] for source in sources]
+            returned_ids = [result.asset_id for result in results]
+            if (
+                len(returned_ids) != len(set(returned_ids))
+                or set(returned_ids) != set(expected_ids)
+            ):
+                raise ValueError(
+                    "multimodal batch analysis must return every source asset exactly once"
+                )
+            result_by_asset = {result.asset_id: result for result in results}
+            for job in jobs:
+                output = result_by_asset[job["item_key"]].model_dump(mode="json")
+                self.repository.complete_job(
+                    job["id"],
+                    status=JobStatus.SUCCEEDED,
+                    provider=output["provider"],
+                    output=output,
+                )
+        except ProviderExecutionError as error:
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"], error.error.code, error.error.message
+                )
+        except Exception as error:
+            if isinstance(error, ValidationError):
+                safe_errors = [
+                    {
+                        "loc": ".".join(str(part) for part in item["loc"]),
+                        "type": item["type"],
+                    }
+                    for item in error.errors(include_url=False, include_context=False)
+                ][:20]
+                logger.warning(
+                    "Batch analysis provider response failed schema validation: %s",
+                    safe_errors,
+                )
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"],
+                    self._error_code(error),
+                    self._provider_response_error_message(error),
+                )
+
+    def _analysis_image_payload(
+        self,
+        asset: dict[str, Any],
+    ) -> tuple[str, str, int, int]:
+        path = self.assets.local_path(asset["storage_uri"])
+        if not path.is_file():
+            raise ValueError(f"source image is not locally readable: {asset['display_code']}")
+        with Image.open(path) as image:
+            image.seek(0)
+            oriented = ImageOps.exif_transpose(image).convert("RGB")
+        width, height = oriented.size
+        full_output = BytesIO()
+        oriented.save(full_output, format="JPEG", quality=92, optimize=True)
+        preview = oriented.copy()
+        preview.thumbnail(
+            (self.advisory_preview_max_edge, self.advisory_preview_max_edge),
+            Image.Resampling.LANCZOS,
+        )
+        preview_output = BytesIO()
+        preview.save(preview_output, format="JPEG", quality=85, optimize=True)
+        return (
+            "data:image/jpeg;base64,"
+            + base64.b64encode(full_output.getvalue()).decode("ascii"),
+            "data:image/jpeg;base64,"
+            + base64.b64encode(preview_output.getvalue()).decode("ascii"),
+            width,
+            height,
+        )
+
+    async def relocalize_person(self, batch_id: str, person_id: str) -> dict[str, Any]:
+        """Re-localize one confirmed Pxx proposal across all of its source occurrences."""
+        if batch_id in self._active_relocalization_batches:
+            raise InvalidTransition("another person in this batch is already being re-localized")
+        self._active_relocalization_batches.add(batch_id)
+        try:
+            return await self._relocalize_person(batch_id, person_id)
+        finally:
+            self._active_relocalization_batches.discard(batch_id)
+
+    async def _relocalize_person(self, batch_id: str, person_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id)
+        if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+            raise InvalidTransition(
+                f"cannot re-localize a person from {batch['status']}"
+            )
+        refiner = getattr(self.advisory_validator, "refine_batch_face_boxes", None)
+        if refiner is None:
+            raise ProviderNotConfigured(
+                "multimodal precise localization provider is not configured"
+            )
+        person = next(
+            (
+                item
+                for item in self.repository.list_persons(batch_id)
+                if item["id"] == person_id
+            ),
+            None,
+        )
+        if person is None:
+            raise KeyError(person_id)
+        faces_by_asset: dict[str, list[FaceObservation]] = {}
+        expected_person_appearances = [
+            face.get("appearance") or {}
+            for face in person["faces"]
+            if face.get("appearance")
+        ]
+        skipped_occluded_codes: list[str] = []
+        for face in person["faces"]:
+            if face.get("analysis_resolution") is not None:
+                continue
+            latest_attempt = face.get("latest_localization_attempt") or {}
+            source_condition = latest_attempt.get("source_face_condition")
+            if (
+                source_condition is not None
+                and source_face_condition_requires_review(source_condition)
+                and latest_attempt.get(
+                    "crop_contains_all_source_visible_face"
+                ) is True
+            ):
+                skipped_occluded_codes.append(face["external_face_id"])
+                continue
+            faces_by_asset.setdefault(face["asset_id"], []).append(
+                FaceObservation(
+                    external_face_id=face["external_face_id"],
+                    bbox=face["bbox"],
+                    detection_confidence=face["detection_confidence"],
+                    suggested_person_key=f"existing:{person_id}",
+                    identity_confidence=face.get("identity_confidence"),
+                    needs_confirmation=True,
+                    appearance=face.get("appearance") or {},
+                )
+            )
+        sources = []
+        results = []
+        for asset_id, faces in faces_by_asset.items():
+            asset = self.repository.get_asset(asset_id)
+            image_uri, analysis_image_uri, width, height = (
+                self._analysis_image_payload(asset)
+            )
+            sources.append({
+                "asset_id": asset_id,
+                "source_code": asset["display_code"],
+                "image_uri": image_uri,
+                "analysis_image_uri": analysis_image_uri,
+                "width": width,
+                "height": height,
+                "expected_person_appearances": expected_person_appearances,
+            })
+            results.append(AnalysisResult(
+                asset_id=asset_id,
+                provider="targeted-person-localization",
+                model=getattr(self.advisory_validator, "model", None),
+                faces=faces,
+                detection_audit=PersonDetectionAudit(
+                    complete=True,
+                    detected_face_count=len(faces),
+                    visible_face_count=len(faces),
+                ),
+            ))
+        if not sources:
+            current_batch = self.repository.get_batch(batch_id)
+            occurrence_codes = {
+                face["external_face_id"] for face in person["faces"]
+            }
+            person_review_issues = [
+                issue
+                for issue in current_batch["analysis_review_issues"]
+                if issue.partition(":")[0] in occurrence_codes
+            ]
+            return {
+                "batch_id": batch_id,
+                "person_id": person_id,
+                "person_code": person["display_code"],
+                "source_count": 0,
+                "failed_occurrence_codes": [],
+                "skipped_occluded_occurrence_codes": sorted(
+                    skipped_occluded_codes
+                ),
+                "requires_manual_review": bool(person_review_issues),
+                "person_review_issues": person_review_issues,
+                "batch_requires_manual_review": bool(
+                    current_batch["analysis_review_issues"]
+                ),
+                "analysis_review_issues": current_batch["analysis_review_issues"],
+            }
+        refined = await refiner(sources, results, broad_search=True)
+        dumped = [result.model_dump(mode="json") for result in refined]
+        self.repository.update_person_localizations(batch_id, person_id, dumped)
+        current_batch = self.repository.get_batch(batch_id)
+        occurrence_codes = {
+            face["external_face_id"]
+            for face in person["faces"]
+        }
+        person_review_issues = [
+            issue
+            for issue in current_batch["analysis_review_issues"]
+            if issue.partition(":")[0] in occurrence_codes
+        ]
+        review_issue_codes = {
+            issue.partition(":")[0] for issue in person_review_issues
+        }
+        updated_person = next(
+            item
+            for item in self.repository.list_persons(batch_id)
+            if item["id"] == person_id
+        )
+        occluded_codes = {
+            face["external_face_id"]
+            for face in updated_person["faces"]
+            if not face.get("analysis_resolution")
+            and (face.get("latest_localization_attempt") or {}).get(
+                "source_face_condition"
+            ) is not None
+            and source_face_condition_requires_review(
+                (face.get("latest_localization_attempt") or {}).get(
+                    "source_face_condition"
+                )
+            )
+            and (face.get("latest_localization_attempt") or {}).get(
+                "crop_contains_all_source_visible_face"
+            ) is True
+        }
+        return {
+            "batch_id": batch_id,
+            "person_id": person_id,
+            "person_code": person["display_code"],
+            "source_count": len(refined),
+            "failed_occurrence_codes": sorted(review_issue_codes - occluded_codes),
+            "skipped_occluded_occurrence_codes": sorted(occluded_codes),
+            "requires_manual_review": bool(person_review_issues),
+            "person_review_issues": person_review_issues,
+            "batch_requires_manual_review": bool(
+                current_batch["analysis_review_issues"]
+            ),
+            "analysis_review_issues": current_batch["analysis_review_issues"],
+        }
 
     async def fuse_existing_people(self, batch_id: str) -> dict[str, Any]:
         batch = self.repository.get_batch(batch_id)
@@ -399,7 +726,7 @@ class PipelineExecutor:
                 )
             except Exception as error:
                 code = self._error_code(error)
-                self.repository.fail_job(job["id"], code, str(error))
+                self.repository.fail_job(job["id"], code, self._error_message(error))
 
     async def _dispatch(
         self,
@@ -409,14 +736,9 @@ class PipelineExecutor:
         job_id: str,
     ) -> dict[str, Any]:
         if stage is JobStage.ANALYZE:
-            request = AnalysisRequest.model_validate(payload)
-            asset = self.repository.get_asset(request.asset_id)
-            request.asset_uri = self.assets.for_remote(request.asset_uri, asset["media_type"])
-            analysis_result = await self.gateway.analyze(request)
-            if analysis_result.asset_id != request.asset_id:
-                raise ValueError("analysis provider returned a mismatched asset_id")
-            analysis_result = await self._audit_and_recover_faces(request, analysis_result)
-            return analysis_result.model_dump(mode="json")
+            raise StageExecutionError(
+                "analysis must run as one multimodal whole-batch operation"
+            )
         if stage is JobStage.SWAP:
             request = SwapRequest.model_validate(payload)
             validate_swap_request_scope(request)
@@ -564,6 +886,60 @@ class PipelineExecutor:
         if not source_comparison.passed:
             source_comparison.review_reasons = request.review_reasons
             return source_comparison.model_dump(mode="json")
+        objective_results: list[ValidationResult] = []
+        if self.objective_validators:
+            raw_objective_results = await asyncio.gather(
+                *(
+                    validator.validate(request.model_copy(deep=True))
+                    for validator in self.objective_validators
+                ),
+                return_exceptions=True,
+            )
+            for index, item in enumerate(raw_objective_results, start=1):
+                if isinstance(item, BaseException):
+                    objective_results.append(ValidationResult(
+                        result_asset_id=request.result_asset_id,
+                        passed=False,
+                        provider=f"objective-validator-{index}",
+                        checks={"objective.available": False},
+                        reasons=[
+                            "客观人物质量验证不可用："
+                            + (str(item).strip() or type(item).__name__)
+                        ],
+                    ))
+                    continue
+                if item.result_asset_id != request.result_asset_id:
+                    raise ValueError(
+                        "objective validator returned a mismatched result_asset_id"
+                    )
+                objective_results.append(item)
+            if not all(result.passed for result in objective_results):
+                objective_failure = ValidationResult(
+                    result_asset_id=request.result_asset_id,
+                    passed=False,
+                    provider="+".join([
+                        source_comparison.provider,
+                        *(result.provider for result in objective_results),
+                    ]),
+                    checks={
+                        **source_comparison.checks,
+                        **{
+                            f"objective_{index}.{key}": value
+                            for index, result in enumerate(objective_results, start=1)
+                            for key, value in result.checks.items()
+                        },
+                    },
+                    reasons=[
+                        *source_comparison.reasons,
+                        *(
+                            f"objective_{index}: {reason}"
+                            for index, result in enumerate(objective_results, start=1)
+                            for reason in result.reasons
+                        ),
+                    ],
+                    review_reasons=request.review_reasons,
+                )
+                return objective_failure.model_dump(mode="json")
         request.source_uri = self.assets.for_remote(request.source_uri)
         request.result_uri = self.assets.for_remote(request.result_uri)
         for subject in request.expected_subjects:
@@ -623,9 +999,29 @@ class PipelineExecutor:
         validation_result = ValidationResult(
             result_asset_id=request.result_asset_id,
             passed=validation_result.passed and source_comparison.passed,
-            provider=f"{validation_result.provider}+{source_comparison.provider}",
-            checks={**validation_result.checks, **source_comparison.checks},
-            reasons=[*validation_result.reasons, *source_comparison.reasons],
+            provider="+".join([
+                validation_result.provider,
+                *(result.provider for result in objective_results),
+                source_comparison.provider,
+            ]),
+            checks={
+                **validation_result.checks,
+                **{
+                    f"objective_{index}.{key}": value
+                    for index, result in enumerate(objective_results, start=1)
+                    for key, value in result.checks.items()
+                },
+                **source_comparison.checks,
+            },
+            reasons=[
+                *validation_result.reasons,
+                *(
+                    f"objective_{index}: {reason}"
+                    for index, result in enumerate(objective_results, start=1)
+                    for reason in result.reasons
+                ),
+                *source_comparison.reasons,
+            ],
             reviewer_verdicts=validation_result.reviewer_verdicts,
         )
         if validation_result.result_asset_id != request.result_asset_id:
@@ -828,7 +1224,7 @@ class PipelineExecutor:
             key=lambda face: face.detection_confidence,
             reverse=True,
         ):
-            if all(cls._bbox_iou(candidate.bbox, kept.bbox) < 0.35 for kept in selected):
+            if all(bbox_iou(candidate.bbox, kept.bbox) < 0.35 for kept in selected):
                 selected.append(candidate.model_copy(deep=True))
         for index, face in enumerate(selected):
             face.external_face_id = f"face-{index}"
@@ -836,15 +1232,7 @@ class PipelineExecutor:
 
     @staticmethod
     def _bbox_iou(left: Any, right: Any) -> float:
-        left_x2 = left.x + left.width
-        left_y2 = left.y + left.height
-        right_x2 = right.x + right.width
-        right_y2 = right.y + right.height
-        intersection_width = max(0, min(left_x2, right_x2) - max(left.x, right.x))
-        intersection_height = max(0, min(left_y2, right_y2) - max(left.y, right.y))
-        intersection = intersection_width * intersection_height
-        union = left.width * left.height + right.width * right.height - intersection
-        return intersection / union if union > 0 else 0.0
+        return bbox_iou(left, right)
 
     @staticmethod
     def _normalized_region_matches_face(
@@ -923,6 +1311,31 @@ class PipelineExecutor:
             return "provider_not_configured"
         if isinstance(error, httpx.TimeoutException):
             return "provider_timeout"
+        if isinstance(error, httpx.ConnectError):
+            return "provider_unavailable"
         if isinstance(error, httpx.HTTPStatusError):
             return f"provider_http_{error.response.status_code}"
         return "provider_error"
+
+    @staticmethod
+    def _error_message(error: Exception) -> str:
+        """Persist a useful fallback when an upstream exception has no text."""
+        if isinstance(error, httpx.TimeoutException):
+            return "云端模型在 600 秒执行窗口内未返回，请稍后重试。"
+        if isinstance(error, httpx.ConnectError):
+            return "云端模型连接失败，请检查 Docker 网络或代理后重试。"
+        message = str(error).strip()
+        if message:
+            return message
+        cause = error.__cause__
+        if cause is not None:
+            message = str(cause).strip()
+            if message:
+                return message
+        return type(error).__name__
+
+    @staticmethod
+    def _provider_response_error_message(error: Exception) -> str:
+        if isinstance(error, ValidationError):
+            return "云端模型返回的数据结构不符合要求，请重试。"
+        return PipelineExecutor._error_message(error)

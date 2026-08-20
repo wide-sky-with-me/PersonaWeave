@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     database_path: Path = Path("./data/personaweave.sqlite3")
     asset_root: Path = Path("./data/assets")
+    asset_legacy_root: Path | None = None
 
     yunwu_api_key: str | None = Field(default=None, repr=False)
     yunwu_base_url: str = "https://yunwu.ai/v1"
@@ -37,7 +38,7 @@ class Settings(BaseSettings):
     formal_image_size: str = "1024x1024"
     formal_image_response_format: Literal["url", "b64_json"] | None = None
     formal_image_timeout_seconds: float = Field(default=600.0, ge=10.0, le=1800.0)
-    multimodal_timeout_seconds: float = Field(default=300.0, ge=10.0, le=600.0)
+    multimodal_timeout_seconds: float = Field(default=600.0, ge=10.0, le=600.0)
     advisory_preview_max_edge: int = Field(default=1600, ge=512, le=2048)
     preview_strategy: str = "model_native"
     preview_max_iterations: int = Field(default=3, ge=1, le=10)
