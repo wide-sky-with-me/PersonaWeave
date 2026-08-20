@@ -605,7 +605,7 @@ async def compile_reference_occurrence_case(
 
 
 @pytest.mark.anyio
-async def test_formal_identity_permissions_and_coverages_run_concurrently(
+async def test_formal_identity_and_permissions_run_concurrently_without_source_calls(
     repository: Repository,
 ) -> None:
     batch = repository.create_batch("parallel evidence", "将 @P01 替换为 @T01")
@@ -650,7 +650,7 @@ async def test_formal_identity_permissions_and_coverages_run_concurrently(
     )
     person = repository.list_persons(batch["id"])[0]
 
-    await service.compile_task_contract(
+    compiled = await service.compile_task_contract(
         batch["id"],
         [MappingDecision(
             person_id=person["id"],
@@ -660,11 +660,26 @@ async def test_formal_identity_permissions_and_coverages_run_concurrently(
     )
 
     assert set(compiler.initial_calls) == {"identity", "permissions"}
-    assert compiler.coverage_calls == ["I01", "I02"]
+    assert compiler.coverage_calls == []
+    coverages = compiled["compiled_contract"]["operations"][0][
+        "source_reference_coverage"
+    ]
+    assert [coverage["source_asset_code"] for coverage in coverages] == [
+        "I01",
+        "I02",
+    ]
+    assert all(coverage["sufficient"] is False for coverage in coverages)
+    assert all(
+        assessment["requires_manual_review"]
+        for coverage in coverages
+        for assessment in coverage["occurrence_assessments"]
+    )
 
 
 @pytest.mark.anyio
-async def test_formal_mask_proposals_run_concurrently(repository: Repository) -> None:
+async def test_formal_masks_are_compiled_locally_without_model_calls(
+    repository: Repository,
+) -> None:
     batch = repository.create_batch("parallel masks", "修改 @P01 的面部身份")
     sources = [
         add_source(repository, batch["id"], f"group-{index}.jpg")
@@ -708,10 +723,14 @@ async def test_formal_mask_proposals_run_concurrently(repository: Repository) ->
         ],
     )
 
-    assert semantic_compiler.calls == ["I01", "I02"]
+    assert semantic_compiler.calls == []
     assert [
         source["code"] for source in compiled["compiled_contract"]["source_assets"]
     ] == ["I01", "I02"]
+    assert all(
+        source["authorization_mask"]["review_reasons"] == ["mask_uncertain"]
+        for source in compiled["compiled_contract"]["source_assets"]
+    )
 
 
 def confirm_contract(
@@ -990,6 +1009,154 @@ def test_analysis_always_pauses_for_mapping_confirmation(repository: Repository)
     person = repository.list_persons(batch["id"])[0]
     assert person["confirmed"] == 0
     assert person["faces"][0]["needs_confirmation"] == 1
+
+
+@pytest.mark.anyio
+async def test_failed_active_localization_can_be_resolved_for_one_occurrence(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("localization review")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    service.start_analysis(batch["id"])
+    service.complete_analysis(
+        batch["id"],
+        [{
+            "asset_id": source["id"],
+            "provider": "fake",
+            "faces": [{
+                "external_face_id": "I01-V01",
+                "bbox": {"x": 10, "y": 20, "width": 80, "height": 4},
+                "detection_confidence": 0.02,
+                "suggested_person_key": "cluster-a",
+                "identity_confidence": 0.98,
+                "needs_confirmation": True,
+            }],
+            "detection_audit": {
+                "available": True,
+                "complete": True,
+                "detected_face_count": 1,
+                "visible_face_count": 1,
+                "requires_manual_review": True,
+                "summary": "crop review failed",
+            },
+            "localization_attempts": [{
+                "occurrence_code": "I01-V01",
+                "attempt": 2,
+                "bbox": {"x": 10, "y": 20, "width": 80, "height": 4},
+                "confidence": 0.02,
+                "full_face_visible": False,
+                "face_centered": False,
+                "tight_face_crop": False,
+                "accepted": False,
+                "boundary_issue": "multiple_clipped",
+                "unrecoverable_occlusion": False,
+                "reason": "only a thin facial strip is visible",
+            }],
+        }],
+    )
+
+    current = repository.get_batch(batch["id"])
+    assert current["requires_manual_review"] is True
+    assert current["analysis_review_issues"] == [
+        "I01-V01: only a thin facial strip is visible"
+    ]
+    with pytest.raises(ValueError, match="人物分析仍有未解决问题"):
+        await service.compile_task_contract(batch["id"])
+
+    person = repository.list_persons(batch["id"])[0]
+    face = person["faces"][0]
+    repository.resolve_face_occurrence(
+        batch["id"],
+        face["id"],
+        "keep_original",
+    )
+    resolved = repository.get_batch(batch["id"])
+    assert resolved["requires_manual_review"] is False
+    assert resolved["analysis_review_issues"] == []
+    remaining = repository.list_persons(batch["id"])
+    assert len(remaining) == 1
+    assert remaining[0]["id"] == person["id"]
+    assert remaining[0]["faces"][0]["analysis_resolution"] == "keep_original"
+
+
+def test_analysis_reports_overlapping_occurrences_as_duplicate_source_faces(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("duplicate source face")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    service.start_analysis(batch["id"])
+    service.complete_analysis(batch["id"], [{
+        "asset_id": source["id"],
+        "provider": "fake",
+        "faces": [
+            {
+                "external_face_id": "I01-V01",
+                "bbox": {"x": 10, "y": 10, "width": 30, "height": 40},
+                "detection_confidence": 0.99,
+                "suggested_person_key": "person-a",
+                "identity_confidence": 0.98,
+            },
+            {
+                "external_face_id": "I01-V02",
+                "bbox": {"x": 12, "y": 12, "width": 30, "height": 40},
+                "detection_confidence": 0.97,
+                "suggested_person_key": "person-b",
+                "identity_confidence": 0.96,
+            },
+        ],
+    }])
+
+    issues = repository.get_batch(batch["id"])["analysis_review_issues"]
+
+    assert len(issues) == 2
+    assert all("重复定位" in issue for issue in issues)
+    assert any(issue.startswith("I01-V01:") and "@I01-V02" in issue for issue in issues)
+    assert any(issue.startswith("I01-V02:") and "@I01-V01" in issue for issue in issues)
+
+
+
+def test_keep_original_occurrence_is_protected_without_disabling_person() -> None:
+    operation = CompiledOperation(
+        person_id="person-1",
+        person_code="P01",
+        action=MappingAction.EDIT,
+        permissions=AttributePermission(
+            editable=["face_features"],
+            protected=sorted(HEAD_ATTRIBUTES - {"face_features"}),
+        ),
+    )
+    editable = CompiledFaceEvidence(
+        face_instance_id="face-edit",
+        person_id="person-1",
+        person_code="P01",
+        bbox={"x": 1, "y": 1, "width": 20, "height": 20},
+        source_appearance={},
+    )
+    protected = CompiledFaceEvidence(
+        face_instance_id="face-keep",
+        person_id="person-1",
+        person_code="P01",
+        bbox={"x": 30, "y": 1, "width": 20, "height": 20},
+        source_appearance={},
+        analysis_resolution="keep_original",
+    )
+
+    contract = CompiledBatchContract(
+        task_instruction="edit @P01",
+        max_iterations=1,
+        operations=[operation],
+        source_assets=[SourceAssetEvidence(
+            asset_id="source-1",
+            code="I01",
+            sha256="a" * 64,
+            faces=[editable, protected],
+            editable_face_instance_ids=["face-edit"],
+        )],
+    )
+
+    assert contract.source_assets[0].editable_face_instance_ids == ["face-edit"]
 
 
 def test_every_detected_person_requires_a_mapping(repository: Repository) -> None:
@@ -1681,6 +1848,25 @@ def test_rerun_analysis_preserves_history_and_never_reuses_person_codes(
     assert repository.list_persons(batch["id"])[0]["display_code"] == "P02"
 
 
+def test_rerun_analysis_can_recover_a_failed_analysis_batch(
+    repository: Repository,
+) -> None:
+    batch = repository.create_batch("failed analysis")
+    source = add_source(repository, batch["id"])
+    service = WorkflowService(repository)
+    jobs = service.start_analysis(batch["id"])
+    repository.fail_job(jobs[0]["id"], "provider_unavailable", "temporary outage")
+    repository.set_batch_status(batch["id"], BatchStatus.FAILED)
+
+    retried = service.reset_analysis(batch["id"])
+
+    assert len(retried) == 1
+    assert retried[0]["item_key"] == source["id"]
+    assert retried[0]["attempt"] == 2
+    assert retried[0]["status"] == JobStatus.QUEUED
+    assert repository.get_batch(batch["id"])["status"] == BatchStatus.ANALYZING
+
+
 def test_confirmed_contract_is_required_and_propagated_to_one_source_job(
     repository: Repository,
 ) -> None:
@@ -1914,13 +2100,26 @@ async def test_insufficient_references_mark_affected_output_for_manual_review(
     assert persisted_contract.review_reasons == frozenset({
         ReviewReason.REFERENCE_INSUFFICIENCY
     })
-    service.confirm_task_contract(batch["id"], compiled["contract_hash"])
-    job = service.start_swap(batch["id"])[0]
-    assert job["input"]["review_reasons"] == ["reference_insufficiency"]
-    assert "requires_manual_review" not in job["input"]
-    assert job["input"]["replacements"][0]["review_reasons"] == [
-        "reference_insufficiency"
+    mask_hashes = [
+        source["authorization_mask"]["sha256"]
+        for source in compiled["compiled_contract"]["source_assets"]
+        if source["authorization_mask"] is not None
     ]
+    service.confirm_task_contract(
+        batch["id"],
+        compiled["contract_hash"],
+        acknowledged_mask_sha256s=mask_hashes,
+    )
+    job = service.start_swap(batch["id"])[0]
+    assert set(job["input"]["review_reasons"]) == {
+        "reference_insufficiency",
+        "mask_uncertain",
+    }
+    assert "requires_manual_review" not in job["input"]
+    assert set(job["input"]["replacements"][0]["review_reasons"]) == {
+        "reference_insufficiency",
+        "mask_uncertain",
+    }
     assert "requires_manual_review" not in job["input"]["replacements"][0]
     assert "requires_manual_review" not in SwapRequest.model_fields
 
@@ -1938,7 +2137,9 @@ async def test_source_pose_absent_from_reference_views_requires_manual_review(
     assert model.sufficient is False
     assert model.requires_manual_review is True
     assessment = model.occurrence_assessments[0]
-    assert assessment.missing_coverage == ["left profile reference"]
+    assert assessment.missing_coverage == [
+        "fast compile defers per-occurrence reference coverage"
+    ]
     assert assessment.requires_manual_review is True
 
 
@@ -1956,7 +2157,7 @@ async def test_source_reference_compiler_failure_fails_closed(
     assert model.requires_manual_review is True
     assert model.occurrence_assessments[0].sufficient is False
     assert model.summary == (
-        "Reference coverage compiler failed closed for this source person."
+        "Reference coverage is conservatively unconfirmed in fast compile mode."
     )
 
 

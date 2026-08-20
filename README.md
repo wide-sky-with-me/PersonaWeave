@@ -24,6 +24,38 @@ The repository-level `uv.toml` keeps uv's cache in the ignored `.uv-cache/`
 directory. This avoids failures in sandboxed environments where the default
 `~/.cache/uv` location is mounted read-only.
 
+## Run with Docker
+
+Docker is the preferred way to run the service on Windows when project-level
+WSL memory growth is undesirable. It runs the FastAPI control plane and a
+lightweight ingress proxy in resource-limited Linux containers, builds the
+React workbench inside the image, and persists SQLite data and uploaded assets
+in `./data`. The control-plane limit is 2 GB with no additional container swap
+allowance.
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
+```
+
+Open `http://127.0.0.1:8100/app/`. The default Compose stack does not start
+WSL, ComfyUI, or a local model process. Set the Yunwu variables in `.env` for
+cloud analysis and generation. To enable the optional ComfyUI gateway:
+
+```bash
+docker compose --profile comfy up --build -d
+```
+
+For this optional profile, set
+`PERSONAWEAVE_DOCKER_INFERENCE_BASE_URL=http://127.0.0.1:8010`,
+`PERSONAWEAVE_DOCKER_INFERENCE_API_KEY`, and
+`PERSONAWEAVE_GATEWAY_SHARED_KEY` in `.env`; the two API keys must match.
+
+The Compose file also mounts `./data` at the old WSL data path by default so
+existing development databases and their `file:///mnt/e/...` asset URIs remain
+usable during migration. Change `PERSONAWEAVE_LEGACY_DATA_ROOT` only when that
+compatibility path is not needed.
+
 Open:
 
 - `http://127.0.0.1:8000/app/` for the minimal workflow console;
@@ -141,18 +173,41 @@ photos improve identity consistency but remain optional for text-only edits.
 
 ## Remote providers
 
-- The configured Yunwu visual model acts as an OpenAI-compatible multimodal
-  planner and inspection/QA provider. In model-native preview it plans the
+- The configured Yunwu visual model is the default whole-batch person-analysis,
+  cross-image grouping, planning, and inspection/QA provider. It receives the
+  complete source set together, returns visible-person boxes and proposed
+  same-person groups, and leaves every grouping awaiting user confirmation.
+  Low-confidence matches are kept as separate people instead of being guessed.
+  Coarse batch boxes are then expanded into separately labeled, enlarged person
+  tiles. Each tile is sent as an independent image with its own deterministic
+  0-1000 coordinate grid, avoiding coordinate confusion from a compressed
+  multi-panel strip. Low-confidence, degenerate, or implausibly thin boxes are
+  rejected instead of replacing the coarse anchor. A failed second pass returns
+  to that original anchor with broader context rather than zooming further into
+  a bad result. PersonaWeave maps accepted tile coordinates back to the source, crops without a
+  local detector, and asks the visual model whether the exact crop contains a
+  complete, usable face. Hair, hats, natural occlusion, and a small amount of
+  collar or shoulder context are allowed. Passed faces are frozen; failed faces
+  may receive one relocalization. If that result has one clearly clipped edge,
+  local geometry performs one directional boundary expansion and requests a
+  final visual review. Severe identity-blocking occlusion and unresolved crops
+  remain visible as manual-review requirements. Every attempt's box and verdict
+  is retained in the analysis job output. During person confirmation, any Pxx
+  can be re-localized across only its existing source occurrences without
+  regrouping the batch.
+  In model-native preview it plans the
   whole-image edit before the independently configured image model runs, then
   compares source and result. A failed
   advisory check can feed a bounded next iteration, while a passing check stops
   early. Each iteration regenerates from the original source; review outages and
   provider errors stop instead of retrying. The default maximum is three rounds,
   and the request may select between one and ten rounds.
-  It is not treated as a biometric identity oracle.
-- Local tiled MediaPipe detection is active. Durable clustering and production
-  face replacement continue to use the provider-neutral inference gateway
-  contract in `docs/provider-contract.md`.
+  It does not name people or establish real-world identity.
+- Local tiled MediaPipe detection is optional tooling for face-region preview,
+  diagnostics, and strict-mask assistance. It is not a prerequisite or fallback
+  for the default person-analysis stage. Production face replacement continues
+  to use the provider-neutral inference gateway contract in
+  `docs/provider-contract.md`.
 - A hosted ComfyUI instance can sit behind that gateway. This prevents its node
   names and workflow JSON from leaking into the product domain.
 - The included `personaweave-comfy-gateway` process implements that adapter and

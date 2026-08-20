@@ -49,7 +49,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 
 import { apiJson, personaApi, postJson, upload } from '../api'
 import { fileFromUpload, IMAGE_FILE_ACCEPT, isSupportedImageFile } from '../imageFiles'
-import { requiredManualMaskDigests, type Asset, type Batch, type BatchProgress, type Identity, type Job, type Person } from '../types'
+import { requiredManualMaskDigests, type Asset, type Batch, type BatchProgress, type FaceOccurrence, type Identity, type Job, type Person } from '../types'
 import { JobFailure } from './JobFailure'
 
 const { Text } = Typography
@@ -144,7 +144,7 @@ const stepMeta = {
   analysis: {
     title: '人物分析',
     shortTitle: '人物',
-    description: '提取与融合',
+    description: '整批识别与归类',
     icon: <TeamOutlined />,
   },
   task: {
@@ -190,6 +190,28 @@ type ExecutionResult = {
   requires_review?: boolean
 }
 
+const sourceConditionsRequiringReview = new Set([
+  'major_occlusion',
+  'source_boundary',
+  'unusable',
+])
+
+type RelocalizePersonResult = {
+  person_code: string
+  failed_occurrence_codes: string[]
+  skipped_occluded_occurrence_codes: string[]
+  requires_manual_review: boolean
+  person_review_issues: string[]
+  batch_requires_manual_review: boolean
+  analysis_review_issues: string[]
+}
+
+type RelocalizationProgress = {
+  personCodes: string[]
+  currentIndex: number
+  completed: number
+}
+
 export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   const { message } = AntApp.useApp()
   const [batch, setBatch] = useState<Batch>()
@@ -200,11 +222,14 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number }>()
   const [removingAssetId, setRemovingAssetId] = useState<string>()
   const [removingIdentityId, setRemovingIdentityId] = useState<string>()
+  const [relocalizingPersonId, setRelocalizingPersonId] = useState<string>()
+  const [relocalizationProgress, setRelocalizationProgress] = useState<RelocalizationProgress>()
   const [identityLabel, setIdentityLabel] = useState('')
   const [taskInstruction, setTaskInstruction] = useState('')
   const [maxIterations, setMaxIterations] = useState(3)
   const [selectedPersonIds, setSelectedPersonIds] = useState<string[]>([])
   const [manualFaceAsset, setManualFaceAsset] = useState<Asset>()
+  const [manualFaceEdit, setManualFaceEdit] = useState<{ asset: Asset; face: FaceOccurrence }>()
   const [activeStep, setActiveStep] = useState<(typeof stepKeys)[number]>('upload')
   const [acknowledgedMaskSha256s, setAcknowledgedMaskSha256s] = useState<string[]>([])
   const promptEditorRef = useRef<HTMLDivElement>(null)
@@ -257,27 +282,49 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   }, [refresh])
 
   useEffect(() => {
-    if (!batch || !['analyzing', 'swapping', 'validating'].includes(batch.status)) return
+    if (
+      !batch
+      || (
+        !['analyzing', 'swapping', 'validating'].includes(batch.status)
+        && batch.contract_compile_status !== 'running'
+      )
+    ) return
     const poll = window.setInterval(() => {
       void Promise.all([refresh(true), Promise.resolve(onChangedRef.current())])
     }, 2000)
     return () => window.clearInterval(poll)
-  }, [batch?.status, refresh])
+  }, [batch?.status, batch?.contract_compile_status, refresh])
 
   useEffect(() => {
     if (!batch) return
+    const latestFailedJob = batch.latest_jobs
+      .filter((job) => job.status === 'failed')
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0]
     if (batch.status === 'draft') {
       setActiveStep('upload')
-    } else if (['analyzing', 'awaiting_confirmation'].includes(batch.status)) {
+    } else if (batch.status === 'analyzing') {
       setActiveStep('analysis')
+    } else if (batch.status === 'awaiting_confirmation') {
+      setActiveStep(
+        batch.compiled_contract && batch.analysis_review_issues.length === 0
+          ? 'task'
+          : 'analysis',
+      )
     } else if (batch.status === 'ready') {
       setActiveStep('task')
+    } else if (batch.status === 'failed' && latestFailedJob?.stage === 'analyze') {
+      setActiveStep('analysis')
     } else if (batch.assets.some((asset) => asset.kind === 'result')) {
       setActiveStep('results')
     } else {
       setActiveStep('jobs')
     }
-  }, [batch?.id, batch?.status])
+  }, [
+    batch?.id,
+    batch?.status,
+    batch?.contract_hash,
+    batch?.analysis_review_issues.length,
+  ])
 
   const runAction = async (path: string, success: string) => {
     setActing(true)
@@ -338,10 +385,10 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
         throw new Error(`${succeeded} 张已上传，${failedFileUids.size} 张失败；列表中仅保留失败项。${detail}`)
       }
       setSourceFiles([])
-      message.loading({ content: '素材已上传，正在提取并融合人物…', key: 'upload-analysis', duration: 1.5 })
+      message.loading({ content: '素材已上传，多模态模型正在整批识别并归类人物…', key: 'upload-analysis', duration: 1.5 })
       const result = await postJson<{ completed?: boolean }>(`/batches/${batchId}/analysis/run`)
       if (result.completed === false) throw new Error('部分素材分析失败，请在执行记录中重试')
-      message.success({ content: `已分析 ${files.length} 张素材并完成人物融合`, key: 'upload-analysis' })
+      message.success({ content: `已联合分析 ${files.length} 张素材并完成跨图人物归类`, key: 'upload-analysis' })
       await Promise.all([refresh(), onChanged()])
     } catch (error) {
       message.destroy('upload-analysis')
@@ -440,8 +487,8 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
     }
     setActing(true)
     try {
-      if (!await saveTaskSpec(false)) return
-      await postJson(`/batches/${batchId}/task/compile`)
+      if (taskSpecDirty && !await saveTaskSpec(false)) return
+      await waitForExecution(postJson(`/batches/${batchId}/task/compile`))
       message.success('正式约束已编译，请检查证据并确认')
       await Promise.all([refresh(), onChanged()])
     } catch (error) {
@@ -550,13 +597,13 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
     if (!batchId) return
     setActing(true)
     try {
-      message.loading({ content: '正在重新执行多尺度检测与完整性检查…', key: 'analysis-rerun', duration: 1.5 })
+      message.loading({ content: '多模态模型正在重新联合分析全部原图…', key: 'analysis-rerun', duration: 1.5 })
       const result = await waitForExecution(
         postJson<{ completed?: boolean }>(`/batches/${batchId}/analysis/rerun`),
       )
       if (result.completed === false) throw new Error('部分素材重新分析失败，请查看任务记录')
       setSelectedPersonIds([])
-      message.success({ content: '人物已重新提取并融合', key: 'analysis-rerun' })
+      message.success({ content: '人物已重新识别并完成跨图归类', key: 'analysis-rerun' })
       await Promise.all([refresh(), onChanged()])
     } catch (error) {
       message.destroy('analysis-rerun')
@@ -564,6 +611,72 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
       await refresh()
     } finally {
       setActing(false)
+    }
+  }
+
+  const relocalizePeople = async (people: Person[]) => {
+    if (!batchId || !people.length || relocalizingPersonId) return
+    const personCodes = people.map((person) => person.display_code)
+    const reviewCodes: string[] = []
+    const failed: Array<{ code: string; message: string }> = []
+    setRelocalizationProgress({ personCodes, currentIndex: 0, completed: 0 })
+    try {
+      for (const [index, person] of people.entries()) {
+        setRelocalizingPersonId(person.id)
+        setRelocalizationProgress({ personCodes, currentIndex: index, completed: index })
+        message.loading({
+          content: `正在重新定位并复核 @${person.display_code}（${index + 1}/${people.length}）…`,
+          key: 'person-relocalize',
+          duration: 0,
+        })
+        try {
+          const result = await waitForExecution(postJson<RelocalizePersonResult>(
+            `/batches/${batchId}/persons/${person.id}/relocalize`,
+          ))
+          if (result.requires_manual_review) reviewCodes.push(person.display_code)
+        } catch (error) {
+          failed.push({
+            code: person.display_code,
+            message: error instanceof Error ? error.message : '重新定位请求失败',
+          })
+        } finally {
+          setRelocalizationProgress({ personCodes, currentIndex: index, completed: index + 1 })
+        }
+      }
+      await Promise.all([refresh(), onChanged()])
+      if (failed.length) {
+        const failedSummary = failed.map((item) => `@${item.code}：${item.message}`).join('；')
+        const reviewSummary = reviewCodes.length
+          ? `；${reviewCodes.map((code) => `@${code}`).join('、')} 仍需人工确认`
+          : ''
+        message.error({
+          content: `${people.length - failed.length} 个人物已完成重新定位和复核，${failed.length} 个执行失败${reviewSummary}。${failedSummary}`,
+          key: 'person-relocalize',
+          duration: 8,
+        })
+      } else if (reviewCodes.length) {
+        message.warning({
+          content: `${people.length} 个人物已完成重新定位和复核；${reviewCodes.map((code) => `@${code}`).join('、')} 仍需人工确认`,
+          key: 'person-relocalize',
+          duration: 6,
+        })
+      } else {
+        message.success({
+          content: `${people.map((person) => `@${person.display_code}`).join('、')} 已完成重新定位和复核`,
+          key: 'person-relocalize',
+          duration: 4,
+        })
+      }
+    } catch (error) {
+      message.error({
+        content: error instanceof Error ? error.message : '重新定位状态同步失败',
+        key: 'person-relocalize',
+        duration: 6,
+      })
+      await refresh()
+    } finally {
+      setRelocalizingPersonId(undefined)
+      setRelocalizationProgress(undefined)
     }
   }
 
@@ -584,6 +697,33 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
       await refresh()
     } catch (error) {
       message.error(error instanceof Error ? error.message : '人工补框失败')
+    } finally {
+      setActing(false)
+    }
+  }
+
+  const resolveOccurrence = async (
+    face: FaceOccurrence,
+    action: 'manual_bbox' | 'keep_original' | 'accept_occlusion',
+    bbox?: { x: number; y: number; width: number; height: number },
+  ) => {
+    if (!batchId) return
+    setActing(true)
+    try {
+      await apiJson(`/batches/${batchId}/faces/${face.id}/resolution`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, bbox }),
+      })
+      setManualFaceEdit(undefined)
+      message.success({
+        manual_bbox: '已保存人工定位并重新检查',
+        keep_original: '该图片将保留原人物',
+        accept_occlusion: '已确认原图现状，后续将仅处理可见面部并保护遮挡内容',
+      }[action])
+      await Promise.all([refresh(), onChanged()])
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '出现记录处理失败')
     } finally {
       setActing(false)
     }
@@ -700,8 +840,15 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
   const results = batch.assets.filter((asset) => asset.kind === 'result')
   const assetCodeById = new Map(batch.assets.map((asset) => [asset.id, asset.display_code]))
   const failedJobs = batch.latest_jobs.filter((job) => ['failed', 'needs_review'].includes(job.status))
+  const failedAnalysisJob = failedJobs
+    .filter((job) => job.stage === 'analyze')
+    .sort((left, right) => right.updated_at.localeCompare(left.updated_at))[0]
   const draftOnly = batch.status === 'draft'
-  const analysisComplete = !['draft', 'analyzing'].includes(batch.status)
+  const analysisComplete = (
+    !['draft', 'analyzing'].includes(batch.status)
+    && !(batch.status === 'failed' && !!failedAnalysisJob)
+    && batch.analysis_review_issues.length === 0
+  )
   const targetEditable = batch.status === 'awaiting_confirmation'
   const specEditable = ['awaiting_confirmation', 'ready'].includes(batch.status)
   const referenceAssets = batch.identities.flatMap((identity) => identity.references)
@@ -712,9 +859,6 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
     || maxIterations !== batch.max_iterations
   )
   const requiredMaskDigests = requiredManualMaskDigests(compiledContract)
-  const allRequiredMasksAcknowledged = requiredMaskDigests.every(
-    (digest) => acknowledgedMaskSha256s.includes(digest),
-  )
   const sourceByEvidenceKey = new Map(
     sources.flatMap((asset) => [[asset.id, asset], [asset.display_code, asset]] as const),
   )
@@ -732,23 +876,62 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
     .map((job) => ({
       asset: sources.find((asset) => asset.id === job.item_key),
       audit: job.output!.detection_audit!,
+      localizationAttempts: job.output!.localization_attempts ?? [],
     }))
-  const faceCountByAsset = new Map<string, number>()
-  batch.persons.forEach((person) => person.faces.forEach((face) => {
-    faceCountByAsset.set(face.asset_id, (faceCountByAsset.get(face.asset_id) ?? 0) + 1)
-  }))
-  const uncertainAudits = analysisAudits.filter(({ asset, audit }) => (
-    audit.requires_manual_review
-    && (
-      audit.visible_face_count == null
-      || !asset
-      || (faceCountByAsset.get(asset.id) ?? 0) < audit.visible_face_count
-    )
+  const latestLocalizationByCode = new Map<
+    string,
+    NonNullable<FaceOccurrence['latest_localization_attempt']>
+  >()
+  for (const { localizationAttempts } of analysisAudits) {
+    for (const attempt of localizationAttempts) {
+      const previous = latestLocalizationByCode.get(attempt.occurrence_code)
+      if (!previous || attempt.attempt >= previous.attempt) {
+        latestLocalizationByCode.set(attempt.occurrence_code, attempt)
+      }
+    }
+  }
+  const failedLocalizationCodes = new Set<string>()
+  const duplicateLocalizationCodes = new Set<string>()
+  const sourceConditionReviewCodes = new Set<string>()
+  const sourceComparisonRequiredCodes = new Set<string>()
+  for (const [code, attempt] of latestLocalizationByCode) {
+    const condition = attempt.source_face_condition
+    const sourceRequiresReview = condition
+      ? sourceConditionsRequiringReview.has(condition)
+      : false
+    if (
+      sourceRequiresReview
+      && attempt.crop_contains_all_source_visible_face === true
+    ) sourceConditionReviewCodes.add(code)
+    else if (sourceRequiresReview) failedLocalizationCodes.add(code)
+    else if (!condition && attempt.unrecoverable_occlusion) {
+      sourceComparisonRequiredCodes.add(code)
+      failedLocalizationCodes.add(code)
+    }
+    else if (!attempt.accepted) failedLocalizationCodes.add(code)
+  }
+  for (const issue of batch.analysis_review_issues) {
+    if (!issue.includes('重复定位')) continue
+    for (const person of batch.persons) {
+      for (const face of person.faces) {
+        if (issue.includes(face.external_face_id)) {
+          duplicateLocalizationCodes.add(face.external_face_id)
+          failedLocalizationCodes.add(face.external_face_id)
+        }
+      }
+    }
+  }
+  const personsNeedingRelocalization = batch.persons.filter((person) => (
+    person.faces.some((face) => (
+      !face.analysis_resolution
+      && failedLocalizationCodes.has(face.external_face_id)
+    ))
   ))
+  const analysisMutationRunning = acting || !!relocalizingPersonId
   const analysisVerified = (
     fusionVerified
     && analysisAudits.length === sources.length
-    && uncertainAudits.length === 0
+    && batch.analysis_review_issues.length === 0
   )
   const mentionCodes = [
     ...sources.map((asset) => ({ code: asset.display_code, label: asset.filename, thumbnail: asset.content_url })),
@@ -882,66 +1065,224 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
 
   const fusionPanel = (
     <div className="tab-stack">
+      {batch.status === 'failed' && failedAnalysisJob && (
+        <Alert
+          type="error"
+          showIcon
+          message="人物分析未完成"
+          description={failedAnalysisJob.error_message ?? '多模态人物分析执行失败，请重试。'}
+          action={(
+            <Button
+              danger
+              loading={acting}
+              icon={<RetweetOutlined />}
+              onClick={() => retryAndExecute(failedAnalysisJob.id, 'analyze')}
+            >
+              重试分析
+            </Button>
+          )}
+        />
+      )}
       {batch.status === 'awaiting_confirmation' && (
         <div className="mapping-toolbar">
-          <span>检查人物是否完整；重复人物可勾选后融合</span>
+          <span>检查整批识别与跨图归类；不确定项必须人工确认</span>
           <Space wrap>
             <Popconfirm
               title="重新分析全部原图？"
-              description="现有人物识别记录会被替换，已创建的 P 编号不会复用"
+              description="模型将重新分析全部原图并替换现有人物记录；已有 P 编号不会复用，人物映射需要重新确认"
               okText="重新分析"
               cancelText="取消"
               onConfirm={rerunAnalysis}
             >
-              <Button icon={<ReloadOutlined />} loading={acting}>重新分析</Button>
+              <Button icon={<ReloadOutlined />} loading={acting} disabled={!!relocalizingPersonId}>重新分析</Button>
             </Popconfirm>
-            <Button type={fusionVerified ? 'default' : 'primary'} loading={acting} onClick={fusePeople}>{fusionVerified ? '重新自动融合' : '自动融合重复人物'}</Button>
-            <Button disabled={selectedPersonIds.length < 2} loading={acting} onClick={mergeSelectedPeople}>融合选中人物</Button>
+            <Button type="default" loading={acting} disabled={!!relocalizingPersonId} onClick={fusePeople}>重新核对跨图归类</Button>
+            <Button disabled={selectedPersonIds.length < 2 || !!relocalizingPersonId} loading={acting} onClick={mergeSelectedPeople}>融合选中人物</Button>
           </Space>
         </div>
       )}
-      {!!uncertainAudits.length && (
+      {relocalizationProgress && (
+        <Alert
+          type="info"
+          showIcon
+          message={`正在重新定位并复核 @${relocalizationProgress.personCodes[relocalizationProgress.currentIndex]}`}
+          description={(
+            <div>
+              <Progress
+                percent={Math.round(relocalizationProgress.completed / relocalizationProgress.personCodes.length * 100)}
+                size="small"
+                status="active"
+              />
+              <Text type="secondary">
+                已完成 {relocalizationProgress.completed}/{relocalizationProgress.personCodes.length}
+              </Text>
+            </div>
+          )}
+        />
+      )}
+      {!!batch.analysis_review_issues.length && (
         <Alert
           type="warning"
           showIcon
-          message={`${uncertainAudits.length} 张图片需要确认是否漏检`}
-          description={uncertainAudits.map(({ asset, audit }) => `@${asset?.display_code ?? '图片'}：${audit.summary}`).join('；')}
+          message={`${batch.analysis_review_issues.length} 个人物分析问题需要处理`}
+          description={batch.analysis_review_issues.join('；')}
+          action={personsNeedingRelocalization.length ? (
+            <Popconfirm
+              title={`重新定位 ${personsNeedingRelocalization.length} 个待处理人物？`}
+              description="系统将按顺序逐个重新定位，每个人物完成后重新检查并同步最新状态；失败项不会中断后续人物"
+              okText="开始重新定位"
+              cancelText="取消"
+              onConfirm={() => { void relocalizePeople(personsNeedingRelocalization) }}
+            >
+              <Button
+                icon={<ReloadOutlined />}
+                loading={!!relocalizingPersonId}
+                disabled={analysisMutationRunning}
+              >
+                全部重新定位（{personsNeedingRelocalization.length}）
+              </Button>
+            </Popconfirm>
+          ) : undefined}
         />
       )}
       {batch.status === 'awaiting_confirmation' && (
         <div className="manual-face-strip">
           {sources.map((asset) => (
-            <button type="button" key={asset.id} className="manual-face-source" onClick={() => setManualFaceAsset(asset)}>
+            <button type="button" key={asset.id} className="manual-face-source" disabled={analysisMutationRunning} onClick={() => setManualFaceAsset(asset)}>
               <img src={asset.content_url} alt={asset.filename} />
               <span>@{asset.display_code} · 补充人物</span>
             </button>
           ))}
         </div>
       )}
-      {!batch.persons.length ? <Empty description="尚未提取到人物" /> : (
+      {!batch.persons.length ? <Empty description="尚未识别到人物" /> : (
         <>
           <div className="fusion-grid">
             {batch.persons.map((person, index) => {
               const imageCount = new Set(person.faces.map((face) => face.asset_id)).size
+              const needsRelocalization = person.faces.some((face) => (
+                !face.analysis_resolution
+                && failedLocalizationCodes.has(face.external_face_id)
+              ))
+              const hasSourceConditionReview = person.faces.some((face) => (
+                !face.analysis_resolution
+                && sourceConditionReviewCodes.has(face.external_face_id)
+              ))
+              const relocalizationOnlyHasOcclusion = (
+                hasSourceConditionReview && !needsRelocalization
+              )
               return (
                 <Card
                   key={person.id}
                   className="mapping-card fusion-card"
-                  title={<Space>{batch.status === 'awaiting_confirmation' && <Checkbox checked={selectedPersonIds.includes(person.id)} onChange={(event) => setSelectedPersonIds((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />}<Tag color="purple">@{person.display_code}</Tag>{person.label || `人物 ${index + 1}`}</Space>}
-                  extra={<Space><Tag color={person.faces.length > 1 ? 'success' : 'default'}>{imageCount} 张图 · {person.faces.length} 次</Tag>{batch.status === 'awaiting_confirmation' && <Popconfirm title={`移除 @${person.display_code}？`} description="删除该人物的全部识别记录，原始图片不会改变" okText="移除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removePerson(person)}><Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={`移除 ${person.display_code}`} /></Popconfirm>}</Space>}
+                  title={<Space>{batch.status === 'awaiting_confirmation' && <Checkbox disabled={analysisMutationRunning} checked={selectedPersonIds.includes(person.id)} onChange={(event) => setSelectedPersonIds((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />}<Tag color="purple">@{person.display_code}</Tag>{person.label || `人物 ${index + 1}`}</Space>}
+                  extra={(
+                    <Space>
+                      <Tag color={needsRelocalization || hasSourceConditionReview ? 'warning' : person.faces.length > 1 ? 'success' : 'default'}>
+                        {needsRelocalization
+                          ? '需重新定位'
+                          : hasSourceConditionReview
+                            ? '原图条件待确认'
+                            : `${imageCount} 张图 · ${person.faces.length} 次`}
+                      </Tag>
+                      {batch.status === 'awaiting_confirmation' && (
+                        <>
+                          <Popconfirm
+                            title={`重新定位并复核 @${person.display_code}？`}
+                            description={`将重新定位该人物在 ${imageCount} 张图片中的可恢复出现记录，并在写入后重新检查结果`}
+                            okText="开始重新定位"
+                            cancelText="取消"
+                            disabled={relocalizationOnlyHasOcclusion}
+                            onConfirm={() => { void relocalizePeople([person]) }}
+                          >
+                            <Button
+                              size="small"
+                              icon={<ReloadOutlined />}
+                              loading={relocalizingPersonId === person.id}
+                              disabled={analysisMutationRunning || relocalizationOnlyHasOcclusion}
+                              title={relocalizationOnlyHasOcclusion ? '原图缺失内容无法通过重新定位恢复' : undefined}
+                            >
+                              重新定位此人物
+                            </Button>
+                          </Popconfirm>
+                          <Popconfirm title={`移除 @${person.display_code}？`} description="删除该人物的全部识别记录，原始图片不会改变" okText="移除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => removePerson(person)}>
+                            <Button type="text" size="small" danger disabled={analysisMutationRunning} icon={<DeleteOutlined />} aria-label={`移除 ${person.display_code}`} />
+                          </Popconfirm>
+                        </>
+                      )}
+                    </Space>
+                  )}
                 >
                   {!!person.faces.length && (
                     <div className="person-occurrences">
-                      {person.faces.map((face) => (
-                        <div className="person-occurrence" key={face.id}>
-                          <Image src={face.crop_url} width={72} height={72} preview={{ mask: '查看' }} />
-                          {batch.status === 'awaiting_confirmation' && person.faces.length > 1 && (
-                            <Popconfirm title="这张脸不是该人物？" description="将其拆分为新的 P 编号" okText="拆分" cancelText="取消" onConfirm={() => splitOccurrence(person.id, face.id)}>
-                              <Button type="link" size="small">拆分</Button>
-                            </Popconfirm>
-                          )}
-                        </div>
-                      ))}
+                      {person.faces.map((face) => {
+                        const source = sources.find((asset) => asset.id === face.asset_id)
+                        const localizationFailed = (
+                          !face.analysis_resolution
+                          && failedLocalizationCodes.has(face.external_face_id)
+                        )
+                        const sourceConditionNeedsReview = (
+                          !face.analysis_resolution
+                          && sourceConditionReviewCodes.has(face.external_face_id)
+                        )
+                        const requiresResolution = localizationFailed || sourceConditionNeedsReview
+                        const previewUrl = requiresResolution && face.localization_preview_url
+                          ? face.localization_preview_url
+                          : face.crop_url
+                        return (
+                          <div className={`person-occurrence${localizationFailed ? ' failed' : sourceConditionNeedsReview ? ' occluded' : ''}`} key={face.id}>
+                            <Image src={previewUrl} width={88} height={88} preview={{ mask: '查看' }} />
+                            <Text className="person-occurrence-code">@{face.external_face_id}</Text>
+                            {localizationFailed && (
+                              <Text type="danger" className="person-occurrence-reason" title={face.latest_localization_attempt?.reason}>
+                                {duplicateLocalizationCodes.has(face.external_face_id)
+                                  ? '与其他人物重复定位'
+                                  : sourceComparisonRequiredCodes.has(face.external_face_id)
+                                  ? '需结合原图重新核验'
+                                  : '定位复核未通过'}
+                              </Text>
+                            )}
+                            {sourceConditionNeedsReview && (
+                              <Text className="person-occurrence-reason source-occlusion" title={face.latest_localization_attempt?.reason}>
+                                原图条件受限，定位无需重试
+                              </Text>
+                            )}
+                            {face.analysis_resolution === 'keep_original' && <Tag color="default">此图保留</Tag>}
+                            {face.analysis_resolution === 'manual_bbox' && <Tag color="success">人工定位</Tag>}
+                            {face.analysis_resolution === 'accept_occlusion' && <Tag color="warning">已确认原图现状</Tag>}
+                            {batch.status === 'awaiting_confirmation' && requiresResolution && source && (
+                              <div className="person-occurrence-actions">
+                                {sourceConditionNeedsReview && (
+                                  <Popconfirm
+                                    title={`确认 @${face.external_face_id} 的原图条件？`}
+                                    description="保留当前定位；后续仅处理原图可见面部，并保持遮挡物及其他原图内容不变"
+                                    okText="确认并继续"
+                                    cancelText="取消"
+                                    onConfirm={() => resolveOccurrence(face, 'accept_occlusion')}
+                                  >
+                                    <Button size="small" type="primary" disabled={analysisMutationRunning}>确认原图现状并继续</Button>
+                                  </Popconfirm>
+                                )}
+                                <Button size="small" onClick={() => setManualFaceEdit({ asset: source, face })} disabled={analysisMutationRunning}>手动框选</Button>
+                                <Popconfirm
+                                  title={`确认在 @${source.display_code} 中保留原人物？`}
+                                  description={`仅跳过 @${face.external_face_id}，@${person.display_code} 在其他图片中仍按任务处理`}
+                                  okText="确认保留"
+                                  cancelText="取消"
+                                  onConfirm={() => resolveOccurrence(face, 'keep_original')}
+                                >
+                                  <Button size="small" type="link" disabled={analysisMutationRunning}>此图保留</Button>
+                                </Popconfirm>
+                              </div>
+                            )}
+                            {batch.status === 'awaiting_confirmation' && !requiresResolution && person.faces.length > 1 && (
+                              <Popconfirm title="这张脸不是该人物？" description="将其拆分为新的 P 编号" okText="拆分" cancelText="取消" onConfirm={() => splitOccurrence(person.id, face.id)}>
+                                <Button type="link" size="small" disabled={analysisMutationRunning}>拆分</Button>
+                              </Popconfirm>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
                 </Card>
@@ -953,18 +1294,28 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
       <ManualFacePicker
         asset={manualFaceAsset}
         people={batch.persons}
-        loading={acting}
+        loading={analysisMutationRunning}
         onCancel={() => setManualFaceAsset(undefined)}
         onSubmit={addManualFace}
+      />
+      <ManualFacePicker
+        asset={manualFaceEdit?.asset}
+        people={[]}
+        loading={analysisMutationRunning}
+        editingOccurrence={manualFaceEdit?.face}
+        onCancel={() => setManualFaceEdit(undefined)}
+        onSubmit={async (_asset, bbox) => {
+          if (manualFaceEdit) await resolveOccurrence(manualFaceEdit.face, 'manual_bbox', bbox)
+        }}
       />
     </div>
   )
 
   const analysisStep = (
-    <Card className="subtle-card analysis-card" title="人物提取与融合" extra={<Tag color={analysisVerified ? 'success' : 'warning'}>{batch.persons.length} 人</Tag>}>
+    <Card className="subtle-card analysis-card" title="多模态整批人物分析" extra={<Tag color={analysisVerified ? 'success' : 'warning'}>{batch.persons.length} 人</Tag>}>
       {analysisComplete || batch.persons.length
         ? fusionPanel
-        : <Empty description={batch.status === 'analyzing' ? '正在提取并融合人物' : '上传素材后自动进行人物分析'} />}
+        : <Empty description={batch.status === 'analyzing' ? '多模态模型正在联合分析整组图片' : '上传素材后自动进行整批人物分析'} />}
     </Card>
   )
 
@@ -1032,11 +1383,13 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
           <Button onClick={() => saveTaskSpec()} loading={acting}>保存任务要求</Button>
           <Button
             icon={compiledContract ? <ReloadOutlined /> : <CheckCircleFilled />}
-            disabled={!taskInstruction.trim()}
-            loading={acting}
+            disabled={!taskInstruction.trim() || batch.contract_compile_status === 'running'}
+            loading={acting || batch.contract_compile_status === 'running'}
             onClick={compileTaskContract}
           >
-            {compiledContract ? '重新编译正式约束' : '编译正式约束'}
+            {batch.contract_compile_status === 'running'
+              ? '正在编译正式约束'
+              : compiledContract ? '重新编译正式约束' : '编译正式约束'}
           </Button>
           <Button
             type="primary"
@@ -1065,6 +1418,22 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
         </Space>
       ) : <Tag>尚未编译</Tag>}
     >
+      {batch.contract_compile_status === 'running' && (
+        <Alert
+          type="info"
+          showIcon
+          message="正在编译正式约束"
+          description="系统正在分析目标身份、参考覆盖和五张原图的授权蒙版，完成后会自动刷新。"
+        />
+      )}
+      {batch.contract_compile_status === 'failed' && (
+        <Alert
+          type="error"
+          showIcon
+          message="正式约束编译失败"
+          description={batch.contract_compile_error ?? '未获得可用的编译结果，请重试。'}
+        />
+      )}
       {!compiledContract ? (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -1362,7 +1731,7 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
             <Button
               type="primary"
               icon={<CheckCircleFilled />}
-              disabled={contractConfirmed || taskSpecDirty || !allRequiredMasksAcknowledged}
+              disabled={contractConfirmed || taskSpecDirty}
               loading={acting}
               onClick={confirmTaskContract}
             >
@@ -1546,6 +1915,18 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
         </div>
         <div className="batch-header-actions">
           <Button icon={<ReloadOutlined />} loading={loading} onClick={() => refresh()}>刷新</Button>
+          {batch.status === 'failed' && failedAnalysisJob && (
+            <Button
+              className="batch-primary-action"
+              type="primary"
+              danger
+              icon={<RetweetOutlined />}
+              loading={acting}
+              onClick={() => retryAndExecute(failedAnalysisJob.id, 'analyze')}
+            >
+              重试人物分析
+            </Button>
+          )}
           {primaryAction && <Button className="batch-primary-action" type="primary" icon={<PlayCircleOutlined />} loading={acting} disabled={batch.status === 'draft' && !sources.length} onClick={() => primaryAction.path.endsWith('/task/run') ? startTaskLoop() : runAction(primaryAction.path, primaryAction.success)}>{primaryAction.label}</Button>}
         </div>
       </div>
@@ -1594,10 +1975,11 @@ export function BatchWorkspace({ batchId, onChanged }: BatchWorkspaceProps) {
 
 type RelativeFaceBox = { x: number; y: number; width: number; height: number }
 
-function ManualFacePicker({ asset, people, loading, onCancel, onSubmit }: {
+function ManualFacePicker({ asset, people, loading, editingOccurrence, onCancel, onSubmit }: {
   asset?: Asset
   people: Person[]
   loading: boolean
+  editingOccurrence?: FaceOccurrence
   onCancel: () => void
   onSubmit: (
     asset: Asset,
@@ -1613,7 +1995,20 @@ function ManualFacePicker({ asset, people, loading, onCancel, onSubmit }: {
   useEffect(() => {
     setBox(undefined)
     setPersonId('new')
-  }, [asset?.id])
+  }, [asset?.id, editingOccurrence?.id])
+
+  const initializeEditingBox = () => {
+    const image = imageRef.current
+    const initial = editingOccurrence?.latest_localization_attempt?.bbox
+      ?? editingOccurrence?.bbox
+    if (!image || !initial || !image.naturalWidth || !image.naturalHeight) return
+    setBox({
+      x: initial.x / image.naturalWidth,
+      y: initial.y / image.naturalHeight,
+      width: initial.width / image.naturalWidth,
+      height: initial.height / image.naturalHeight,
+    })
+  }
 
   const point = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = imageRef.current?.getBoundingClientRect()
@@ -1667,8 +2062,8 @@ function ManualFacePicker({ asset, people, loading, onCancel, onSubmit }: {
   return (
     <Modal
       open={!!asset}
-      title={asset ? `@${asset.display_code} · 框选缺失人物` : '框选缺失人物'}
-      okText="加入人物分析"
+      title={asset ? `@${asset.display_code} · ${editingOccurrence ? `修正 @${editingOccurrence.external_face_id}` : '框选缺失人物'}` : '框选人物'}
+      okText={editingOccurrence ? '确认人工定位' : '加入人物分析'}
       cancelText="取消"
       confirmLoading={loading}
       okButtonProps={{ disabled: !box || box.width < 0.01 || box.height < 0.01 }}
@@ -1678,18 +2073,20 @@ function ManualFacePicker({ asset, people, loading, onCancel, onSubmit }: {
       destroyOnHidden
     >
       <div className="manual-face-controls">
-        <Select
-          value={personId}
-          onChange={setPersonId}
-          options={[
-            { value: 'new', label: '创建为新人物' },
-            ...people.map((person) => ({
-              value: person.id,
-              label: `加入 @${person.display_code} ${person.label || ''}`.trim(),
-            })),
-          ]}
-        />
-        <Text type="secondary">在图片上拖动，只框住缺失人物的脸部</Text>
+        {!editingOccurrence && (
+          <Select
+            value={personId}
+            onChange={setPersonId}
+            options={[
+              { value: 'new', label: '创建为新人物' },
+              ...people.map((person) => ({
+                value: person.id,
+                label: `加入 @${person.display_code} ${person.label || ''}`.trim(),
+              })),
+            ]}
+          />
+        )}
+        <Text type="secondary">在图片上拖动，只框住人物脸部</Text>
       </div>
       {asset && (
         <div
@@ -1699,7 +2096,7 @@ function ManualFacePicker({ asset, people, loading, onCancel, onSubmit }: {
           onPointerUp={finish}
           onPointerCancel={finish}
         >
-          <img ref={imageRef} src={asset.content_url} alt={asset.filename} draggable={false} />
+          <img ref={imageRef} src={asset.content_url} alt={asset.filename} draggable={false} onLoad={initializeEditingBox} />
           {box && (
             <div
               className="manual-face-selection"

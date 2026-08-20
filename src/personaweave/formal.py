@@ -1,10 +1,9 @@
 import asyncio
 import hashlib
 import json
+import math
 import re
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, Protocol
 
 from PIL import Image
@@ -24,6 +23,7 @@ from personaweave.domain import (
     ReferenceSufficiency,
     ReviewReasonSet,
     ReviewReason,
+    SemanticMaskContour,
     SemanticMaskProposal,
     SourceAssetEvidence,
     SourceOccurrenceEvidence,
@@ -64,6 +64,69 @@ class SemanticMaskProposalCompiler(Protocol):
     ) -> SemanticMaskProposal: ...
 
 
+def _local_conservative_semantic_mask_proposal(
+    *,
+    source: "FormalSourceSnapshot",
+    width: int,
+    height: int,
+    editable_faces: list[FormalMaskFaceScope],
+) -> SemanticMaskProposal:
+    """Build a small face-centred mask without another fallible model call.
+
+    The contour stays inside the confirmed face box and deliberately carries
+    low confidence so formal execution still requires a human mask review.
+    """
+    x_denominator = max(1, width - 1)
+    y_denominator = max(1, height - 1)
+    contours: list[SemanticMaskContour] = []
+    for face in editable_faces:
+        horizontal_span = max(1, face.bbox.width - 1)
+        vertical_span = max(1, face.bbox.height - 1)
+        center_x = face.bbox.x + horizontal_span / 2
+        center_y = face.bbox.y + vertical_span / 2
+        radius_x = horizontal_span * 0.38
+        radius_y = vertical_span * 0.40
+        points = [
+            {
+                "x": max(
+                    0.0,
+                    min(1.0, (center_x + radius_x * math.cos(angle)) / x_denominator),
+                ),
+                "y": max(
+                    0.0,
+                    min(1.0, (center_y + radius_y * math.sin(angle)) / y_denominator),
+                ),
+            }
+            for angle in (2 * math.pi * index / 16 for index in range(16))
+        ]
+        contours.append(
+            SemanticMaskContour(
+                operation="include",
+                face_instance_id=face.face_instance_id,
+                person_id=face.person_id,
+                person_code=face.person_code,
+                permissions=face.permissions,
+                points=points,
+                confidence=0.75,
+                evidence=(
+                    "Conservative local ellipse derived from the confirmed face box; "
+                    "manual review is required before formal execution."
+                ),
+            )
+        )
+    return SemanticMaskProposal(
+        source_asset_id=source.id,
+        source_asset_code=source.code,
+        contours=contours,
+        confidence=0.75,
+        summary=(
+            "Fast local face-box mask proposal. It is intentionally conservative "
+            "and requires manual review."
+        ),
+        review_reasons=frozenset({ReviewReason.MASK_UNCERTAIN}),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FormalReferenceSnapshot:
     code: str
@@ -78,6 +141,7 @@ class FormalFaceSnapshot:
     person_id: str
     bbox: BoundingBox
     appearance: PersonAppearance
+    analysis_resolution: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +174,7 @@ def _compiled_face_evidence(
             person_code=people[face.person_id].code,
             bbox=face.bbox,
             source_appearance=face.appearance,
+            analysis_resolution=face.analysis_resolution,
         )
         for face in source.faces
     ]
@@ -389,6 +454,10 @@ class FormalContractCompiler:
         mask_compiler: SemanticMaskProposalCompiler,
         resolver: AssetResolver | None,
     ) -> FormalCompilationResult:
+        # Kept in the public signature for provider compatibility. Fast formal
+        # compilation now derives conservative masks locally from confirmed
+        # face boxes instead of making one additional model call per source.
+        _ = mask_compiler
         people = {person.id: person for person in snapshot.people}
         mappings = {mapping.person_id: mapping for mapping in snapshot.mappings}
         if len(mappings) != len(snapshot.mappings) or set(mappings) != set(people):
@@ -468,75 +537,8 @@ class FormalContractCompiler:
             mapping.person_id: [] for mapping in snapshot.mappings
         }
 
-        async def compile_coverage(
-            *,
-            person: FormalPersonSnapshot,
-            source: FormalSourceSnapshot,
-            occurrences: list[SourceOccurrenceEvidence],
-            target_identity_id: str,
-            evidence: CompiledIdentityEvidence,
-        ) -> tuple[str, SourceOperationReferenceCoverage]:
-            try:
-                async with compilation_semaphore:
-                    coverage = await compiler.compile_source_reference_coverage(
-                        source_asset_id=source.id,
-                        source_asset_code=source.code,
-                        source_uri=(
-                            resolver.for_remote(source.storage_uri, source.media_type)
-                            if resolver
-                            else source.storage_uri
-                        ),
-                        person_id=person.id,
-                        person_code=person.code,
-                        occurrences=occurrences,
-                        target_profile=evidence.profile,
-                        reference_assessment=evidence.reference_assessment,
-                        references=remote_refs[target_identity_id],
-                    )
-            except Exception:
-                coverage = SourceOperationReferenceCoverage(
-                    source_asset_id=source.id,
-                    source_asset_code=source.code,
-                    person_id=person.id,
-                    person_code=person.code,
-                    occurrences=occurrences,
-                    occurrence_assessments=[
-                        SourceOccurrenceReferenceAssessment(
-                            face_instance_id=item.face_instance_id,
-                            missing_coverage=["compiler assessment unavailable"],
-                            sufficient=False,
-                            requires_manual_review=True,
-                            summary=(
-                                "Reference-to-occurrence coverage could not be "
-                                "confirmed; manual review is required."
-                            ),
-                        )
-                        for item in occurrences
-                    ],
-                    sufficient=False,
-                    summary=(
-                        "Reference coverage compiler failed closed for this source person."
-                    ),
-                )
-            if (
-                coverage.source_asset_id,
-                coverage.source_asset_code,
-                coverage.person_id,
-                coverage.person_code,
-            ) != (source.id, source.code, person.id, person.code):
-                raise ValueError(
-                    "reference coverage compiler returned mismatched source or person"
-                )
-            return person.id, coverage
-
-        coverage_jobs: list[
-            Awaitable[tuple[str, SourceOperationReferenceCoverage]]
-        ] = []
         for mapping in snapshot.mappings:
             if mapping.target_identity_id is None:
-                continue
-            evidence = evidence_by_id.get(mapping.target_identity_id)
-            if evidence is None:
                 continue
             person = people[mapping.person_id]
             for source in snapshot.sources:
@@ -551,18 +553,41 @@ class FormalContractCompiler:
                         ),
                     )
                     for face in source.faces
-                    if face.person_id == person.id
+                    if (
+                        face.person_id == person.id
+                        and face.analysis_resolution != "keep_original"
+                    )
                 ]
                 if occurrences:
-                    coverage_jobs.append(compile_coverage(
-                        person=person,
-                        source=source,
-                        occurrences=occurrences,
-                        target_identity_id=mapping.target_identity_id,
-                        evidence=evidence,
-                    ))
-        for person_id, coverage in await asyncio.gather(*coverage_jobs):
-            coverage_by_person[person_id].append(coverage)
+                    coverage_by_person[person.id].append(
+                        SourceOperationReferenceCoverage(
+                            source_asset_id=source.id,
+                            source_asset_code=source.code,
+                            person_id=person.id,
+                            person_code=person.code,
+                            occurrences=occurrences,
+                            occurrence_assessments=[
+                                SourceOccurrenceReferenceAssessment(
+                                    face_instance_id=item.face_instance_id,
+                                    missing_coverage=[
+                                        "fast compile defers per-occurrence reference coverage"
+                                    ],
+                                    sufficient=False,
+                                    requires_manual_review=True,
+                                    summary=(
+                                        "Fast compile did not ask the model to infer source-pose "
+                                        "coverage; manual review is required."
+                                    ),
+                                )
+                                for item in occurrences
+                            ],
+                            sufficient=False,
+                            summary=(
+                                "Reference coverage is conservatively unconfirmed in fast "
+                                "compile mode."
+                            ),
+                        )
+                    )
 
         operations: list[CompiledOperation] = []
         for mapping in snapshot.mappings:
@@ -591,66 +616,6 @@ class FormalContractCompiler:
         operations_by_person = {operation.person_id: operation for operation in operations}
         source_assets: list[SourceAssetEvidence | None] = [None] * len(snapshot.sources)
         compiled_masks: list[CompiledMaskArtifact] = []
-        mask_compile_semaphore = asyncio.Semaphore(self.concurrency)
-
-        async def compile_masked_source(
-            *,
-            source_index: int,
-            source: FormalSourceSnapshot,
-            source_path: Path,
-            compiled_faces: list[CompiledFaceEvidence],
-            editable_scopes: list[FormalMaskFaceScope],
-            protected_faces: list[BoundingBox],
-            editable_face_instance_ids: list[str],
-            face_payloads: list[dict[str, object]],
-            protected_people: list[dict[str, str]],
-            identity_payloads: list[dict[str, object]],
-        ) -> tuple[int, SourceAssetEvidence, CompiledMaskArtifact]:
-            async with mask_compile_semaphore:
-                proposal = await mask_compiler.compile_semantic_mask_proposal(
-                    source_asset_id=source.id,
-                    source_asset_code=source.code,
-                    source_uri=resolver.for_remote(source.storage_uri, source.media_type),
-                    faces=face_payloads,
-                    protected_people=protected_people,
-                    identity_evidence=identity_payloads,
-                )
-            rasterized = validate_and_rasterize_semantic_mask(
-                source_path=source_path,
-                proposal=proposal,
-                source_asset_id=source.id,
-                source_asset_code=source.code,
-                editable_faces=editable_scopes,
-                protected_faces=protected_faces,
-            )
-            mask_evidence = CanonicalMaskEvidence(
-                source_asset_id=source.id,
-                source_asset_code=source.code,
-                width=rasterized.width,
-                height=rasterized.height,
-                sha256=rasterized.sha256,
-                proposal=rasterized.proposal,
-                review_reasons=rasterized.review_reasons,
-            )
-            return (
-                source_index,
-                SourceAssetEvidence(
-                    asset_id=source.id,
-                    code=source.code,
-                    sha256=source.sha256,
-                    faces=compiled_faces,
-                    editable_face_instance_ids=editable_face_instance_ids,
-                    authorization_mask=mask_evidence,
-                ),
-                CompiledMaskArtifact(
-                    evidence=mask_evidence,
-                    png_bytes=rasterized.png_bytes,
-                ),
-            )
-
-        mask_jobs: list[
-            Awaitable[tuple[int, SourceAssetEvidence, CompiledMaskArtifact]]
-        ] = []
         for source_index, source in enumerate(snapshot.sources):
             source_path = resolver.local_path(source.storage_uri)
             if source_path is None or not source_path.is_file():
@@ -660,31 +625,12 @@ class FormalContractCompiler:
             compiled_faces = _compiled_face_evidence(source, people)
             editable_scopes: list[FormalMaskFaceScope] = []
             protected_faces: list[BoundingBox] = []
-            face_payloads: list[dict[str, object]] = []
             for face in source.faces:
                 person = people[face.person_id]
                 operation = operations_by_person[person.id]
-                editable = operation.action is not MappingAction.KEEP
-                face_payloads.append(
-                    {
-                        "face_instance_id": face.id,
-                        "person_id": person.id,
-                        "person_code": person.code,
-                        "bbox": face.bbox.model_dump(mode="json"),
-                        "normalized_bbox": {
-                            "x": face.bbox.x / source_width,
-                            "y": face.bbox.y / source_height,
-                            "width": face.bbox.width / source_width,
-                            "height": face.bbox.height / source_height,
-                        },
-                        "source_dimensions": {
-                            "width": source_width,
-                            "height": source_height,
-                        },
-                        "action": operation.action.value,
-                        "editable_attributes": list(operation.permissions.editable),
-                        "protected_attributes": list(operation.permissions.protected),
-                    }
+                editable = (
+                    operation.action is not MappingAction.KEEP
+                    and face.analysis_resolution != "keep_original"
                 )
                 if editable:
                     editable_scopes.append(
@@ -710,57 +656,43 @@ class FormalContractCompiler:
                     editable_face_instance_ids=[],
                 )
                 continue
-            protected_people = [
-                {
-                    "person_id": operation.person_id,
-                    "person_code": operation.person_code,
-                }
-                for operation in operations
-                if operation.action is MappingAction.KEEP
-            ]
-            identity_payloads: list[dict[str, object]] = []
-            for scope in editable_scopes:
-                operation = operations_by_person[scope.person_id]
-                target_profile = operation.target_profile
-                reference_assessment = operation.reference_assessment
-                identity_payloads.append(
-                    {
-                        "person_id": scope.person_id,
-                        "person_code": scope.person_code,
-                        "target_profile": (
-                            target_profile.model_dump(mode="json")
-                            if target_profile is not None
-                            else None
-                        ),
-                        "reference_assessment": (
-                            reference_assessment.model_dump(mode="json")
-                            if reference_assessment is not None
-                            else None
-                        ),
-                        "source_reference_coverage": [
-                            coverage.model_dump(mode="json")
-                            for coverage in operation.source_reference_coverage
-                            if coverage.source_asset_id == source.id
-                        ],
-                    }
-                )
-            mask_jobs.append(
-                compile_masked_source(
-                    source_index=source_index,
-                    source=source,
-                    source_path=source_path,
-                    compiled_faces=compiled_faces,
-                    editable_scopes=editable_scopes,
-                    protected_faces=protected_faces,
-                    editable_face_instance_ids=editable_face_instance_ids,
-                    face_payloads=face_payloads,
-                    protected_people=protected_people,
-                    identity_payloads=identity_payloads,
+            proposal = _local_conservative_semantic_mask_proposal(
+                source=source,
+                width=source_width,
+                height=source_height,
+                editable_faces=editable_scopes,
+            )
+            rasterized = validate_and_rasterize_semantic_mask(
+                source_path=source_path,
+                proposal=proposal,
+                source_asset_id=source.id,
+                source_asset_code=source.code,
+                editable_faces=editable_scopes,
+                protected_faces=protected_faces,
+            )
+            mask_evidence = CanonicalMaskEvidence(
+                source_asset_id=source.id,
+                source_asset_code=source.code,
+                width=rasterized.width,
+                height=rasterized.height,
+                sha256=rasterized.sha256,
+                proposal=rasterized.proposal,
+                review_reasons=rasterized.review_reasons,
+            )
+            source_assets[source_index] = SourceAssetEvidence(
+                asset_id=source.id,
+                code=source.code,
+                sha256=source.sha256,
+                faces=compiled_faces,
+                editable_face_instance_ids=editable_face_instance_ids,
+                authorization_mask=mask_evidence,
+            )
+            compiled_masks.append(
+                CompiledMaskArtifact(
+                    evidence=mask_evidence,
+                    png_bytes=rasterized.png_bytes,
                 )
             )
-        for source_index, source_evidence, mask_artifact in await asyncio.gather(*mask_jobs):
-            source_assets[source_index] = source_evidence
-            compiled_masks.append(mask_artifact)
         if any(source is None for source in source_assets):
             raise RuntimeError("formal source compilation returned incomplete evidence")
         compiled_source_assets = [

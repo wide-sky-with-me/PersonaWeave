@@ -11,6 +11,7 @@ ProviderErrorCode = Literal[
     "provider_timeout",
     "provider_rate_limited",
     "provider_request_rejected",
+    "provider_response_invalid",
     "provider_unavailable",
     "workflow_execution_failed",
 ]
@@ -27,6 +28,11 @@ _ERROR_POLICY: dict[ProviderErrorCode, tuple[str, bool, int]] = {
     "provider_request_rejected": (
         "图片生成服务拒绝了请求，请检查输入后重试。",
         False,
+        502,
+    ),
+    "provider_response_invalid": (
+        "云端模型返回的数据结构不符合要求，请重试。",
+        True,
         502,
     ),
     "provider_unavailable": ("图片生成服务暂时不可用，请稍后重试。", True, 502),

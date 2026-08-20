@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 from PIL import Image, ImageDraw, ImageOps
+from pydantic import ValidationError
 
 from personaweave.assets import AssetResolver
 from personaweave.domain import (
@@ -22,6 +23,8 @@ from personaweave.domain import (
     ValidationRequest,
     ValidationResult,
     ValidationReviewerVerdict,
+    bbox_iou,
+    source_face_condition_requires_review,
 )
 from personaweave.formal import validate_swap_request_scope
 from personaweave.providers.gateway import InferenceGateway, ProviderNotConfigured
@@ -37,6 +40,8 @@ class StageExecutionError(RuntimeError):
 
 
 class PipelineExecutor:
+    ANALYSIS_SOURCE_CHUNK_SIZE = 2
+
     def __init__(
         self,
         repository: Repository,
@@ -53,6 +58,7 @@ class PipelineExecutor:
         self.gateway = gateway
         self.assets = assets
         self.semaphore = asyncio.Semaphore(concurrency)
+        self._active_relocalization_batches: set[str] = set()
         self.advisory_validator = advisory_validator
         if quality_validators is not None and quality_validators[0] is quality_validators[1]:
             raise ValueError("quality validators must be independent provider instances")
@@ -69,14 +75,33 @@ class PipelineExecutor:
         batch = self.repository.get_batch(batch_id)
         if batch["status"] != expected_status:
             raise InvalidTransition(f"cannot execute {stage} from {batch['status']}")
-        if not self.gateway.configured:
+        if (
+            stage is JobStage.ANALYZE
+            and getattr(self.advisory_validator, "analyze_batch_people", None) is None
+        ):
+            raise ProviderNotConfigured(
+                "multimodal batch analysis provider is not configured"
+            )
+        if stage is not JobStage.ANALYZE and not self.gateway.configured:
             raise ProviderNotConfigured("remote inference gateway is not configured")
 
         jobs = self.repository.current_contract_stage_jobs(batch_id, stage)
         queued = [job for job in jobs if job["status"] == JobStatus.QUEUED]
+        if stage is JobStage.ANALYZE and queued:
+            # Analysis is one whole-batch inference contract. Retrying any failed
+            # image therefore resumes every failed peer in the same joint call.
+            for failed_job in (
+                job for job in jobs if job["status"] == JobStatus.FAILED
+            ):
+                self.repository.retry_job(failed_job["id"])
+            jobs = self.repository.current_contract_stage_jobs(batch_id, stage)
+            queued = [job for job in jobs if job["status"] == JobStatus.QUEUED]
         if not queued and any(job["status"] == JobStatus.FAILED for job in jobs):
             raise StageExecutionError("stage has failed jobs; retry them before execution")
-        await asyncio.gather(*(self._execute_job(job, stage) for job in queued))
+        if stage is JobStage.ANALYZE:
+            await self._execute_multimodal_analysis_batch(queued)
+        else:
+            await asyncio.gather(*(self._execute_job(job, stage) for job in queued))
 
         latest = self.repository.current_contract_stage_jobs(batch_id, stage)
         failed = [job for job in latest if job["status"] == JobStatus.FAILED]
@@ -104,7 +129,6 @@ class PipelineExecutor:
 
         if stage is JobStage.ANALYZE:
             analysis_outputs = [job["output"] for job in latest]
-            await self._cluster_analysis_people(analysis_outputs)
             self.workflow.complete_analysis(batch_id, analysis_outputs)
         elif stage is JobStage.SWAP:
             self.workflow.complete_swap(
@@ -117,6 +141,322 @@ class PipelineExecutor:
                 [ValidationResult.model_validate(job["output"]) for job in latest],
             )
         return {"batch_id": batch_id, "stage": stage, "completed": True}
+
+    async def _execute_multimodal_analysis_batch(
+        self,
+        jobs: list[dict[str, Any]],
+    ) -> None:
+        if not jobs:
+            return
+        analyzer = getattr(self.advisory_validator, "analyze_batch_people", None)
+        if analyzer is None:
+            error = ProviderNotConfigured(
+                "multimodal batch analysis provider is not configured"
+            )
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"], self._error_code(error), self._error_message(error)
+                )
+            return
+        sources: list[dict[str, Any]] = []
+        for job in jobs:
+            request = AnalysisRequest.model_validate(job["input"])
+            asset = self.repository.get_asset(request.asset_id)
+            try:
+                image_uri, analysis_image_uri, width, height = (
+                    self._analysis_image_payload(asset)
+                )
+            except Exception as error:
+                for queued_job in jobs:
+                    self.repository.fail_job(
+                        queued_job["id"],
+                        self._error_code(error),
+                        self._error_message(error),
+                    )
+                return
+            sources.append({
+                "asset_id": asset["id"],
+                "source_code": asset["display_code"],
+                "image_uri": image_uri,
+                "analysis_image_uri": analysis_image_uri,
+                "width": width,
+                "height": height,
+            })
+        for job in jobs:
+            self.repository.mark_job_running(
+                job["id"],
+                phase=JobPhase.ANALYZING,
+                message="多模态模型正在整批识别人物并进行跨图归类",
+            )
+        try:
+            chunks = [
+                sources[start : start + self.ANALYSIS_SOURCE_CHUNK_SIZE]
+                for start in range(0, len(sources), self.ANALYSIS_SOURCE_CHUNK_SIZE)
+            ]
+
+            async def analyze_chunk(
+                chunk: list[dict[str, Any]],
+            ) -> list[AnalysisResult]:
+                async with self.semaphore:
+                    return await analyzer(chunk)
+
+            chunk_outputs = await asyncio.gather(
+                *(analyze_chunk(chunk) for chunk in chunks),
+                return_exceptions=True,
+            )
+            chunk_errors = [
+                output for output in chunk_outputs if isinstance(output, BaseException)
+            ]
+            if chunk_errors:
+                raise chunk_errors[0]
+            raw_results = [
+                result
+                for output in chunk_outputs
+                for result in output
+            ]
+            results = [AnalysisResult.model_validate(result) for result in raw_results]
+            for job in jobs:
+                self.repository.update_job_progress(
+                    job["id"],
+                    phase=JobPhase.ANALYZING,
+                    message="分批人物发现完成，正在校验整批结果完整性",
+                )
+            expected_ids = [source["asset_id"] for source in sources]
+            returned_ids = [result.asset_id for result in results]
+            if (
+                len(returned_ids) != len(set(returned_ids))
+                or set(returned_ids) != set(expected_ids)
+            ):
+                raise ValueError(
+                    "multimodal batch analysis must return every source asset exactly once"
+                )
+            regrouped = [result.model_dump(mode="json") for result in results]
+            for job in jobs:
+                self.repository.update_job_progress(
+                    job["id"],
+                    phase=JobPhase.ANALYZING,
+                    message="人物发现完成，正在整批执行跨图重复人物融合",
+                )
+            await self._cluster_analysis_people(regrouped)
+            results = [AnalysisResult.model_validate(result) for result in regrouped]
+            result_by_asset = {result.asset_id: result for result in results}
+            for job in jobs:
+                output = result_by_asset[job["item_key"]].model_dump(mode="json")
+                self.repository.complete_job(
+                    job["id"],
+                    status=JobStatus.SUCCEEDED,
+                    provider=output["provider"],
+                    output=output,
+                )
+        except ProviderExecutionError as error:
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"], error.error.code, error.error.message
+                )
+        except Exception as error:
+            for job in jobs:
+                self.repository.fail_job(
+                    job["id"],
+                    self._error_code(error),
+                    self._provider_response_error_message(error),
+                )
+
+    def _analysis_image_payload(
+        self,
+        asset: dict[str, Any],
+    ) -> tuple[str, str, int, int]:
+        path = self.assets.local_path(asset["storage_uri"])
+        if not path.is_file():
+            raise ValueError(f"source image is not locally readable: {asset['display_code']}")
+        with Image.open(path) as image:
+            image.seek(0)
+            oriented = ImageOps.exif_transpose(image).convert("RGB")
+        width, height = oriented.size
+        full_output = BytesIO()
+        oriented.save(full_output, format="JPEG", quality=92, optimize=True)
+        preview = oriented.copy()
+        preview.thumbnail(
+            (self.advisory_preview_max_edge, self.advisory_preview_max_edge),
+            Image.Resampling.LANCZOS,
+        )
+        preview_output = BytesIO()
+        preview.save(preview_output, format="JPEG", quality=85, optimize=True)
+        return (
+            "data:image/jpeg;base64,"
+            + base64.b64encode(full_output.getvalue()).decode("ascii"),
+            "data:image/jpeg;base64,"
+            + base64.b64encode(preview_output.getvalue()).decode("ascii"),
+            width,
+            height,
+        )
+
+    async def relocalize_person(self, batch_id: str, person_id: str) -> dict[str, Any]:
+        """Re-localize one confirmed Pxx proposal across all of its source occurrences."""
+        if batch_id in self._active_relocalization_batches:
+            raise InvalidTransition("another person in this batch is already being re-localized")
+        self._active_relocalization_batches.add(batch_id)
+        try:
+            return await self._relocalize_person(batch_id, person_id)
+        finally:
+            self._active_relocalization_batches.discard(batch_id)
+
+    async def _relocalize_person(self, batch_id: str, person_id: str) -> dict[str, Any]:
+        batch = self.repository.get_batch(batch_id)
+        if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+            raise InvalidTransition(
+                f"cannot re-localize a person from {batch['status']}"
+            )
+        refiner = getattr(self.advisory_validator, "refine_batch_face_boxes", None)
+        if refiner is None:
+            raise ProviderNotConfigured(
+                "multimodal precise localization provider is not configured"
+            )
+        person = next(
+            (
+                item
+                for item in self.repository.list_persons(batch_id)
+                if item["id"] == person_id
+            ),
+            None,
+        )
+        if person is None:
+            raise KeyError(person_id)
+        faces_by_asset: dict[str, list[FaceObservation]] = {}
+        expected_person_appearances = [
+            face.get("appearance") or {}
+            for face in person["faces"]
+            if face.get("appearance")
+        ]
+        skipped_occluded_codes: list[str] = []
+        for face in person["faces"]:
+            if face.get("analysis_resolution") is not None:
+                continue
+            latest_attempt = face.get("latest_localization_attempt") or {}
+            source_condition = latest_attempt.get("source_face_condition")
+            if (
+                source_condition is not None
+                and source_face_condition_requires_review(source_condition)
+                and latest_attempt.get(
+                    "crop_contains_all_source_visible_face"
+                ) is True
+            ):
+                skipped_occluded_codes.append(face["external_face_id"])
+                continue
+            faces_by_asset.setdefault(face["asset_id"], []).append(
+                FaceObservation(
+                    external_face_id=face["external_face_id"],
+                    bbox=face["bbox"],
+                    detection_confidence=face["detection_confidence"],
+                    suggested_person_key=f"existing:{person_id}",
+                    identity_confidence=face.get("identity_confidence"),
+                    needs_confirmation=True,
+                    appearance=face.get("appearance") or {},
+                )
+            )
+        sources = []
+        results = []
+        for asset_id, faces in faces_by_asset.items():
+            asset = self.repository.get_asset(asset_id)
+            image_uri, analysis_image_uri, width, height = (
+                self._analysis_image_payload(asset)
+            )
+            sources.append({
+                "asset_id": asset_id,
+                "source_code": asset["display_code"],
+                "image_uri": image_uri,
+                "analysis_image_uri": analysis_image_uri,
+                "width": width,
+                "height": height,
+                "expected_person_appearances": expected_person_appearances,
+            })
+            results.append(AnalysisResult(
+                asset_id=asset_id,
+                provider="targeted-person-localization",
+                model=getattr(self.advisory_validator, "model", None),
+                faces=faces,
+                detection_audit=PersonDetectionAudit(
+                    complete=True,
+                    detected_face_count=len(faces),
+                    visible_face_count=len(faces),
+                ),
+            ))
+        if not sources:
+            current_batch = self.repository.get_batch(batch_id)
+            occurrence_codes = {
+                face["external_face_id"] for face in person["faces"]
+            }
+            person_review_issues = [
+                issue
+                for issue in current_batch["analysis_review_issues"]
+                if issue.partition(":")[0] in occurrence_codes
+            ]
+            return {
+                "batch_id": batch_id,
+                "person_id": person_id,
+                "person_code": person["display_code"],
+                "source_count": 0,
+                "failed_occurrence_codes": [],
+                "skipped_occluded_occurrence_codes": sorted(
+                    skipped_occluded_codes
+                ),
+                "requires_manual_review": bool(person_review_issues),
+                "person_review_issues": person_review_issues,
+                "batch_requires_manual_review": bool(
+                    current_batch["analysis_review_issues"]
+                ),
+                "analysis_review_issues": current_batch["analysis_review_issues"],
+            }
+        refined = await refiner(sources, results, broad_search=True)
+        dumped = [result.model_dump(mode="json") for result in refined]
+        self.repository.update_person_localizations(batch_id, person_id, dumped)
+        current_batch = self.repository.get_batch(batch_id)
+        occurrence_codes = {
+            face["external_face_id"]
+            for face in person["faces"]
+        }
+        person_review_issues = [
+            issue
+            for issue in current_batch["analysis_review_issues"]
+            if issue.partition(":")[0] in occurrence_codes
+        ]
+        review_issue_codes = {
+            issue.partition(":")[0] for issue in person_review_issues
+        }
+        updated_person = next(
+            item
+            for item in self.repository.list_persons(batch_id)
+            if item["id"] == person_id
+        )
+        occluded_codes = {
+            face["external_face_id"]
+            for face in updated_person["faces"]
+            if not face.get("analysis_resolution")
+            and (face.get("latest_localization_attempt") or {}).get(
+                "source_face_condition"
+            ) is not None
+            and source_face_condition_requires_review(
+                (face.get("latest_localization_attempt") or {}).get(
+                    "source_face_condition"
+                )
+            )
+            and (face.get("latest_localization_attempt") or {}).get(
+                "crop_contains_all_source_visible_face"
+            ) is True
+        }
+        return {
+            "batch_id": batch_id,
+            "person_id": person_id,
+            "person_code": person["display_code"],
+            "source_count": len(refined),
+            "failed_occurrence_codes": sorted(review_issue_codes - occluded_codes),
+            "skipped_occluded_occurrence_codes": sorted(occluded_codes),
+            "requires_manual_review": bool(person_review_issues),
+            "person_review_issues": person_review_issues,
+            "batch_requires_manual_review": bool(
+                current_batch["analysis_review_issues"]
+            ),
+            "analysis_review_issues": current_batch["analysis_review_issues"],
+        }
 
     async def fuse_existing_people(self, batch_id: str) -> dict[str, Any]:
         batch = self.repository.get_batch(batch_id)
@@ -314,6 +654,22 @@ class PipelineExecutor:
             raise StageExecutionError(f"cross-image person fusion failed: {error}") from error
         if set(assignments) != set(observation_faces):
             raise StageExecutionError("cross-image person fusion returned incomplete assignments")
+        cluster_reviewer = getattr(
+            self.advisory_validator,
+            "review_person_cluster_assignments",
+            None,
+        )
+        if cluster_reviewer is not None:
+            try:
+                assignments = await cluster_reviewer(observations, assignments)
+            except Exception as error:
+                raise StageExecutionError(
+                    f"cross-image person fusion review failed: {error}"
+                ) from error
+            if set(assignments) != set(observation_faces):
+                raise StageExecutionError(
+                    "cross-image person fusion review returned incomplete assignments"
+                )
         for code, (group_key, confidence) in assignments.items():
             face = observation_faces[code]
             face["suggested_person_key"] = group_key
@@ -367,6 +723,7 @@ class PipelineExecutor:
                             }
                         status = JobStatus.NEEDS_REVIEW
                     if generation_review.get("stop_reason") in {
+                        "generation_unavailable",
                         "review_unavailable",
                         "review_incomplete",
                         "max_iterations_reached",
@@ -399,7 +756,7 @@ class PipelineExecutor:
                 )
             except Exception as error:
                 code = self._error_code(error)
-                self.repository.fail_job(job["id"], code, str(error))
+                self.repository.fail_job(job["id"], code, self._error_message(error))
 
     async def _dispatch(
         self,
@@ -409,14 +766,9 @@ class PipelineExecutor:
         job_id: str,
     ) -> dict[str, Any]:
         if stage is JobStage.ANALYZE:
-            request = AnalysisRequest.model_validate(payload)
-            asset = self.repository.get_asset(request.asset_id)
-            request.asset_uri = self.assets.for_remote(request.asset_uri, asset["media_type"])
-            analysis_result = await self.gateway.analyze(request)
-            if analysis_result.asset_id != request.asset_id:
-                raise ValueError("analysis provider returned a mismatched asset_id")
-            analysis_result = await self._audit_and_recover_faces(request, analysis_result)
-            return analysis_result.model_dump(mode="json")
+            raise StageExecutionError(
+                "analysis must run as one multimodal whole-batch operation"
+            )
         if stage is JobStage.SWAP:
             request = SwapRequest.model_validate(payload)
             validate_swap_request_scope(request)
@@ -478,7 +830,26 @@ class PipelineExecutor:
                     current_iteration=iteration,
                     total_iterations=request.max_iterations,
                 )
-                result = await self.gateway.swap(request)
+                try:
+                    next_result = await self.gateway.swap(request)
+                except ProviderExecutionError as error:
+                    if result is None:
+                        raise
+                    final_review = {
+                        "passed": False,
+                        "summary": (
+                            f"第 {iteration} 轮生成不可用，已保留第 "
+                            f"{completed_iterations} 轮候选结果并转人工复核："
+                            f"{error.error.message}"
+                        ),
+                        "stop_reason": "generation_unavailable",
+                        "generation_error": error.error.model_dump(
+                            mode="json",
+                            exclude_none=True,
+                        ),
+                    }
+                    break
+                result = next_result
                 completed_iterations = iteration
                 if result.source_asset_id != request.asset_id:
                     raise ValueError("swap provider returned a mismatched source_asset_id")
@@ -828,7 +1199,7 @@ class PipelineExecutor:
             key=lambda face: face.detection_confidence,
             reverse=True,
         ):
-            if all(cls._bbox_iou(candidate.bbox, kept.bbox) < 0.35 for kept in selected):
+            if all(bbox_iou(candidate.bbox, kept.bbox) < 0.35 for kept in selected):
                 selected.append(candidate.model_copy(deep=True))
         for index, face in enumerate(selected):
             face.external_face_id = f"face-{index}"
@@ -836,15 +1207,7 @@ class PipelineExecutor:
 
     @staticmethod
     def _bbox_iou(left: Any, right: Any) -> float:
-        left_x2 = left.x + left.width
-        left_y2 = left.y + left.height
-        right_x2 = right.x + right.width
-        right_y2 = right.y + right.height
-        intersection_width = max(0, min(left_x2, right_x2) - max(left.x, right.x))
-        intersection_height = max(0, min(left_y2, right_y2) - max(left.y, right.y))
-        intersection = intersection_width * intersection_height
-        union = left.width * left.height + right.width * right.height - intersection
-        return intersection / union if union > 0 else 0.0
+        return bbox_iou(left, right)
 
     @staticmethod
     def _normalized_region_matches_face(
@@ -921,8 +1284,52 @@ class PipelineExecutor:
     def _error_code(error: Exception) -> str:
         if isinstance(error, ProviderNotConfigured):
             return "provider_not_configured"
+        if isinstance(error, ValidationError):
+            return "provider_response_invalid"
         if isinstance(error, httpx.TimeoutException):
             return "provider_timeout"
+        if isinstance(error, httpx.ConnectError):
+            return "provider_unavailable"
+        if isinstance(error, httpx.TransportError):
+            return "provider_unavailable"
         if isinstance(error, httpx.HTTPStatusError):
             return f"provider_http_{error.response.status_code}"
         return "provider_error"
+
+    @staticmethod
+    def _error_message(error: Exception) -> str:
+        """Persist a useful fallback when an upstream exception has no text."""
+        if isinstance(error, httpx.TimeoutException):
+            return "云端模型在 600 秒执行窗口内未返回，请稍后重试。"
+        if isinstance(error, httpx.ConnectError):
+            return "云端模型连接失败，请检查 Docker 网络或代理后重试。"
+        if isinstance(error, httpx.TransportError):
+            return "云端模型连接意外中断，请稍后重试。"
+        message = str(error).strip()
+        if message:
+            return message
+        cause = error.__cause__
+        if cause is not None:
+            message = str(cause).strip()
+            if message:
+                return message
+        return type(error).__name__
+
+    @staticmethod
+    def _provider_response_error_message(error: Exception) -> str:
+        if isinstance(error, ValidationError):
+            diagnostics: list[str] = []
+            for item in error.errors(
+                include_url=False,
+                include_context=False,
+                include_input=False,
+            )[:8]:
+                location = ".".join(str(part) for part in item.get("loc", ()))
+                error_type = str(item.get("type", "validation_error"))
+                diagnostics.append(f"{location or '<root>'} [{error_type}]")
+            detail = "；".join(diagnostics) or "<root> [validation_error]"
+            return (
+                f"云端模型返回的数据结构不符合要求：{error.title}.{detail}。"
+                "请重试；若再次失败，请按该字段路径检查模型协议。"
+            )[:1000]
+        return PipelineExecutor._error_message(error)

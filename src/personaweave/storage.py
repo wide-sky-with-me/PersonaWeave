@@ -23,6 +23,8 @@ from personaweave.domain import (
     JobStatus,
     MappingAction,
     MappingDecision,
+    bbox_iou,
+    source_face_condition_requires_review,
 )
 
 
@@ -35,9 +37,11 @@ class Repository:
         self,
         database_path: Path,
         formal_mask_root: Path | None = None,
+        formal_mask_read_roots: tuple[Path, ...] = (),
     ):
         self.database_path = database_path
         self.formal_mask_root = formal_mask_root or database_path.parent
+        self.formal_mask_read_roots = formal_mask_read_roots
         self.formal_mask_root.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
@@ -74,6 +78,10 @@ class Repository:
                     compiled_contract_json TEXT,
                     compiled_contract_hash TEXT,
                     contract_confirmed_at TEXT,
+                    contract_compile_status TEXT NOT NULL DEFAULT 'idle',
+                    contract_compile_error TEXT,
+                    contract_compile_started_at TEXT,
+                    contract_compile_finished_at TEXT,
                     requires_manual_review INTEGER NOT NULL DEFAULT 0,
                     deleted_at TEXT,
                     created_at TEXT NOT NULL,
@@ -126,6 +134,7 @@ class Repository:
                     identity_confidence REAL,
                     needs_confirmation INTEGER NOT NULL,
                     appearance_json TEXT NOT NULL DEFAULT '{}',
+                    analysis_resolution TEXT,
                     created_at TEXT NOT NULL,
                     UNIQUE(asset_id, external_face_id)
                 );
@@ -227,6 +236,10 @@ class Repository:
                     "compiled_contract_json": "TEXT",
                     "compiled_contract_hash": "TEXT",
                     "contract_confirmed_at": "TEXT",
+                    "contract_compile_status": "TEXT NOT NULL DEFAULT 'idle'",
+                    "contract_compile_error": "TEXT",
+                    "contract_compile_started_at": "TEXT",
+                    "contract_compile_finished_at": "TEXT",
                     "requires_manual_review": "INTEGER NOT NULL DEFAULT 0",
                     "deleted_at": "TEXT",
                 },
@@ -237,7 +250,10 @@ class Repository:
                 },
                 "assets": {"display_code": "TEXT"},
                 "persons": {"display_code": "TEXT"},
-                "face_instances": {"appearance_json": "TEXT NOT NULL DEFAULT '{}'"},
+                "face_instances": {
+                    "appearance_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "analysis_resolution": "TEXT",
+                },
                 "mappings": {"instruction": "TEXT NOT NULL DEFAULT ''"},
                 "jobs": {
                     "phase": "TEXT NOT NULL DEFAULT 'queued'",
@@ -464,7 +480,145 @@ class Repository:
             if batch["compiled_contract"]
             else False
         )
+        batch["analysis_review_issues"] = []
         return batch
+
+    @staticmethod
+    def _analysis_review_issues(
+        connection: sqlite3.Connection,
+        batch_id: str,
+    ) -> list[str]:
+        active_rows = connection.execute(
+            """SELECT face.asset_id, face.external_face_id,
+                      face.analysis_resolution, face.bbox_json,
+                      person.display_code AS person_code,
+                      asset.display_code AS source_code
+            FROM face_instances AS face
+            JOIN persons AS person ON person.id = face.person_id
+            JOIN assets AS asset ON asset.id = face.asset_id
+            WHERE face.batch_id = ?""",
+            (batch_id,),
+        ).fetchall()
+        active_by_asset: dict[str, dict[str, str | None]] = {}
+        for row in active_rows:
+            active_by_asset.setdefault(row["asset_id"], {})[
+                row["external_face_id"]
+            ] = row["analysis_resolution"]
+        if not active_by_asset:
+            return []
+
+        source_codes = {
+            row["id"]: row["display_code"]
+            for row in connection.execute(
+                "SELECT id, display_code FROM assets WHERE batch_id = ? AND kind = ?",
+                (batch_id, AssetKind.SOURCE),
+            ).fetchall()
+        }
+        jobs = connection.execute(
+            """SELECT item_key, output_json FROM jobs AS current
+            WHERE current.batch_id = ? AND current.stage = ?
+              AND current.attempt = (
+                SELECT MAX(candidate.attempt) FROM jobs AS candidate
+                WHERE candidate.batch_id = current.batch_id
+                  AND candidate.stage = current.stage
+                  AND candidate.item_key = current.item_key
+              )""",
+            (batch_id, JobStage.ANALYZE),
+        ).fetchall()
+        issues: list[str] = []
+        rows_by_asset: dict[str, list[sqlite3.Row]] = {}
+        for row in active_rows:
+            rows_by_asset.setdefault(row["asset_id"], []).append(row)
+        for rows in rows_by_asset.values():
+            for index, left in enumerate(rows):
+                left_bbox = json.loads(left["bbox_json"])
+                for right in rows[index + 1:]:
+                    if bbox_iou(left_bbox, json.loads(right["bbox_json"])) < 0.35:
+                        continue
+                    issues.extend([
+                        (
+                            f"{left['external_face_id']}: 与 "
+                            f"@{right['external_face_id']} 重复定位"
+                            f"（@{left['person_code']} 与 @{right['person_code']}，"
+                            f"来源 @{left['source_code']}）"
+                        ),
+                        (
+                            f"{right['external_face_id']}: 与 "
+                            f"@{left['external_face_id']} 重复定位"
+                            f"（@{right['person_code']} 与 @{left['person_code']}，"
+                            f"来源 @{right['source_code']}）"
+                        ),
+                    ])
+        for job in jobs:
+            active_resolutions = active_by_asset.get(job["item_key"], {})
+            active_codes = set(active_resolutions)
+            if not active_codes or not job["output_json"]:
+                continue
+            output = json.loads(job["output_json"])
+            source_code = source_codes.get(job["item_key"], "source")
+            audit = output.get("detection_audit") or {}
+            if audit and (
+                not audit.get("complete", False) or audit.get("missing_regions")
+            ):
+                issues.append(f"{source_code}: 人物检测不完整")
+
+            output_faces = {
+                str(face.get("external_face_id")): face
+                for face in output.get("faces", [])
+            }
+            uncertain_codes = [
+                code
+                for code in sorted(active_codes)
+                if active_resolutions.get(code) is None
+                if str(
+                    output_faces.get(code, {}).get("suggested_person_key") or ""
+                ).startswith("vlm-uncertain:")
+            ]
+            for code in uncertain_codes:
+                issues.append(f"{code}: 跨图身份归类不确定")
+
+            latest_attempts: dict[str, dict[str, Any]] = {}
+            for attempt in output.get("localization_attempts", []):
+                code = str(attempt.get("occurrence_code") or "")
+                if code not in active_codes:
+                    continue
+                previous = latest_attempts.get(code)
+                if previous is None or int(attempt.get("attempt", 0)) >= int(
+                    previous.get("attempt", 0)
+                ):
+                    latest_attempts[code] = attempt
+            for code, attempt in sorted(latest_attempts.items()):
+                source_requires_review = source_face_condition_requires_review(
+                    attempt.get("source_face_condition"),
+                    legacy_unrecoverable_occlusion=bool(
+                        attempt.get("unrecoverable_occlusion")
+                    ),
+                )
+                if (
+                    active_resolutions.get(code) is None
+                    and (
+                        not attempt.get("accepted")
+                        or source_requires_review
+                    )
+                ):
+                    reason = str(attempt.get("reason") or "人脸裁剪复核未通过")
+                    if source_requires_review:
+                        reason = (
+                            "原图面部条件需人工确认，重新定位无法补全源图缺失内容；"
+                            + reason
+                        )
+                    issues.append(f"{code}: {reason}")
+        return list(dict.fromkeys(issues))
+
+    def analysis_review_issues(self, batch_id: str) -> list[str]:
+        with self.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM batches WHERE id = ? AND deleted_at IS NULL",
+                (batch_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(batch_id)
+            return self._analysis_review_issues(connection, batch_id)
 
     @staticmethod
     def _decode_identity(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -544,6 +698,9 @@ class Repository:
             """UPDATE batches
             SET status = ?, compiled_contract_json = NULL,
                 compiled_contract_hash = NULL, contract_confirmed_at = NULL,
+                contract_compile_status = 'idle', contract_compile_error = NULL,
+                contract_compile_started_at = NULL,
+                contract_compile_finished_at = NULL,
                 requires_manual_review = 0, updated_at = ?
             WHERE id = ?""",
             (next_status, utc_now(), batch_id),
@@ -561,7 +718,10 @@ class Repository:
                 ).fetchall()
             except sqlite3.OperationalError:
                 return
-            resolver = AssetResolver(self.formal_mask_root)
+            resolver = AssetResolver(
+                self.formal_mask_root,
+                self.formal_mask_read_roots,
+            )
             for row in rows:
                 uri = row["storage_uri"]
                 still_referenced = connection.execute(
@@ -632,12 +792,67 @@ class Repository:
         max_iterations: int,
     ) -> dict[str, Any]:
         with self.connect() as connection:
-            self._invalidate_confirmation(connection, batch_id)
+            current = connection.execute(
+                """SELECT task_instruction, max_iterations
+                FROM batches WHERE id = ? AND deleted_at IS NULL""",
+                (batch_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(batch_id)
+            changed = (
+                current["task_instruction"] != task_instruction
+                or current["max_iterations"] != max_iterations
+            )
+            if changed:
+                self._invalidate_confirmation(connection, batch_id)
+                connection.execute(
+                    """UPDATE batches
+                    SET task_instruction = ?, max_iterations = ?, updated_at = ?
+                    WHERE id = ?""",
+                    (task_instruction, max_iterations, utc_now(), batch_id),
+                )
+        return self.get_batch(batch_id)
+
+    def start_contract_compilation(self, batch_id: str) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """SELECT contract_compile_status FROM batches
+                WHERE id = ? AND deleted_at IS NULL""",
+                (batch_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(batch_id)
+            if current["contract_compile_status"] == "running":
+                raise ValueError("正式约束正在编译，请等待当前编译完成。")
+            connection.execute(
+                """UPDATE batches
+                SET contract_compile_status = 'running',
+                    contract_compile_error = NULL,
+                    contract_compile_started_at = ?,
+                    contract_compile_finished_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL""",
+                (now, now, batch_id),
+            )
+        return self.get_batch(batch_id)
+
+    def fail_contract_compilation(
+        self,
+        batch_id: str,
+        message: str,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.connect() as connection:
             cursor = connection.execute(
                 """UPDATE batches
-                SET task_instruction = ?, max_iterations = ?, updated_at = ?
-                WHERE id = ?""",
-                (task_instruction, max_iterations, utc_now(), batch_id),
+                SET contract_compile_status = 'failed',
+                    contract_compile_error = ?,
+                    contract_compile_finished_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL""",
+                (message.strip()[:1000], now, now, batch_id),
             )
         if cursor.rowcount != 1:
             raise KeyError(batch_id)
@@ -649,16 +864,37 @@ class Repository:
             query += " AND deleted_at IS NULL"
         with self.connect() as connection:
             row = connection.execute(query, (batch_id,)).fetchone()
+            issues = (
+                self._analysis_review_issues(connection, batch_id)
+                if row is not None and not row["deleted_at"]
+                else []
+            )
         if row is None:
             raise KeyError(batch_id)
-        return self._decode_batch(row)
+        batch = self._decode_batch(row)
+        batch["analysis_review_issues"] = issues
+        batch["requires_manual_review"] = bool(
+            batch["requires_manual_review"] or issues
+        )
+        return batch
 
     def list_batches(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM batches WHERE deleted_at IS NULL ORDER BY created_at DESC"
             ).fetchall()
-        return [self._decode_batch(row) for row in rows]
+            issue_map = {
+                row["id"]: self._analysis_review_issues(connection, row["id"])
+                for row in rows
+            }
+        batches = [self._decode_batch(row) for row in rows]
+        for batch in batches:
+            issues = issue_map[batch["id"]]
+            batch["analysis_review_issues"] = issues
+            batch["requires_manual_review"] = bool(
+                batch["requires_manual_review"] or issues
+            )
+        return batches
 
     def list_deleted_batches(self) -> list[dict[str, Any]]:
         with self.connect() as connection:
@@ -1142,6 +1378,7 @@ class Repository:
                 ):
                     raise ValueError("authorization mask contour is outside the editable contract scope")
         contract_hash = contract.sha256()
+        completed_at = utc_now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             batch = connection.execute(
@@ -1150,9 +1387,15 @@ class Repository:
             ).fetchone()
             if batch is None:
                 raise KeyError(batch_id)
+            compile_started_at = batch["contract_compile_started_at"]
             if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
                 raise ValueError(
                     f"cannot compile task contract from {batch['status']}"
+                )
+            analysis_issues = self._analysis_review_issues(connection, batch_id)
+            if analysis_issues:
+                raise ValueError(
+                    "人物分析仍有未解决问题：" + "；".join(analysis_issues[:5])
                 )
             if (
                 contract.task_instruction != batch["task_instruction"]
@@ -1338,12 +1581,18 @@ class Repository:
                 connection.execute(
                 """UPDATE batches
                 SET compiled_contract_json = ?, compiled_contract_hash = ?,
-                    contract_confirmed_at = NULL, updated_at = ?
+                    contract_confirmed_at = NULL,
+                    contract_compile_status = 'succeeded',
+                    contract_compile_error = NULL,
+                    contract_compile_started_at = ?,
+                    contract_compile_finished_at = ?, updated_at = ?
                 WHERE id = ?""",
                 (
                     contract.canonical_json(),
                     contract_hash,
-                    utc_now(),
+                    compile_started_at,
+                    completed_at,
+                    completed_at,
                     batch_id,
                 ),
                 )
@@ -1375,6 +1624,11 @@ class Repository:
                 raise KeyError(batch_id)
             if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
                 raise ValueError(f"cannot confirm task contract from {batch['status']}")
+            analysis_issues = self._analysis_review_issues(connection, batch_id)
+            if analysis_issues:
+                raise ValueError(
+                    "人物分析仍有未解决问题：" + "；".join(analysis_issues[:5])
+                )
             if (
                 not batch["compiled_contract_json"]
                 or batch["compiled_contract_hash"] != contract_hash
@@ -1416,7 +1670,10 @@ class Repository:
             masks_by_source = {row["source_asset_id"]: row for row in mask_rows}
             if len(masks_by_source) != len(mask_rows) or set(masks_by_source) != set(expected_masks):
                 raise ValueError("stored masks do not exactly cover the editable contract sources")
-            resolver = AssetResolver(self.formal_mask_root)
+            resolver = AssetResolver(
+                self.formal_mask_root,
+                self.formal_mask_read_roots,
+            )
             uncertain_hashes: set[str] = set()
             for source_id, expected in expected_masks.items():
                 assert expected is not None
@@ -2094,6 +2351,29 @@ class Repository:
 
     def list_persons(self, batch_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
+            latest_attempts: dict[tuple[str, str], dict[str, Any]] = {}
+            job_rows = connection.execute(
+                """SELECT item_key, output_json FROM jobs AS current
+                WHERE current.batch_id = ? AND current.stage = ?
+                  AND current.attempt = (
+                    SELECT MAX(candidate.attempt) FROM jobs AS candidate
+                    WHERE candidate.batch_id = current.batch_id
+                      AND candidate.stage = current.stage
+                      AND candidate.item_key = current.item_key
+                  )""",
+                (batch_id, JobStage.ANALYZE),
+            ).fetchall()
+            for job in job_rows:
+                if not job["output_json"]:
+                    continue
+                output = json.loads(job["output_json"])
+                for attempt in output.get("localization_attempts", []):
+                    key = (job["item_key"], str(attempt.get("occurrence_code") or ""))
+                    previous = latest_attempts.get(key)
+                    if previous is None or int(attempt.get("attempt", 0)) >= int(
+                        previous.get("attempt", 0)
+                    ):
+                        latest_attempts[key] = attempt
             people = connection.execute(
                 "SELECT * FROM persons WHERE batch_id = ? ORDER BY created_at",
                 (batch_id,),
@@ -2111,6 +2391,9 @@ class Repository:
                     face_item["bbox"] = json.loads(face_item.pop("bbox_json"))
                     face_item["appearance"] = json.loads(
                         face_item.pop("appearance_json") or "{}"
+                    )
+                    face_item["latest_localization_attempt"] = latest_attempts.get(
+                        (face_item["asset_id"], face_item["external_face_id"])
                     )
                     item["faces"].append(face_item)
                 mapping = connection.execute(
@@ -2141,12 +2424,182 @@ class Repository:
                 "SELECT * FROM face_instances WHERE id = ?",
                 (face_id,),
             ).fetchone()
+            latest_attempt = None
+            if row is not None:
+                job = connection.execute(
+                    """SELECT output_json FROM jobs
+                    WHERE batch_id = ? AND stage = ? AND item_key = ?
+                    ORDER BY attempt DESC LIMIT 1""",
+                    (row["batch_id"], JobStage.ANALYZE, row["asset_id"]),
+                ).fetchone()
+                if job is not None and job["output_json"]:
+                    output = json.loads(job["output_json"])
+                    matching = [
+                        item
+                        for item in output.get("localization_attempts", [])
+                        if item.get("occurrence_code") == row["external_face_id"]
+                    ]
+                    if matching:
+                        latest_attempt = max(
+                            matching,
+                            key=lambda item: int(item.get("attempt", 0)),
+                        )
         if row is None:
             raise KeyError(face_id)
         face = dict(row)
         face["bbox"] = json.loads(face.pop("bbox_json"))
         face["appearance"] = json.loads(face.pop("appearance_json") or "{}")
+        face["latest_localization_attempt"] = latest_attempt
         return face
+
+    def resolve_face_occurrence(
+        self,
+        batch_id: str,
+        face_id: str,
+        action: str,
+        bbox: dict[str, int] | None = None,
+    ) -> dict[str, Any]:
+        """Persist a user decision for one source occurrence during analysis review."""
+        if action not in {"manual_bbox", "keep_original", "accept_occlusion"}:
+            raise ValueError("unknown face occurrence resolution")
+        if (action == "manual_bbox") != (bbox is not None):
+            raise ValueError(
+                "manual_bbox requires bbox and other resolutions must not include one"
+            )
+        with self.connect() as connection:
+            batch = connection.execute(
+                "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(batch_id)
+            if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+                raise ValueError("face occurrences can only be resolved during analysis confirmation")
+            face = connection.execute(
+                """SELECT * FROM face_instances
+                WHERE id = ? AND batch_id = ?""",
+                (face_id, batch_id),
+            ).fetchone()
+            if face is None:
+                raise KeyError(face_id)
+
+            if action == "accept_occlusion":
+                latest_job = connection.execute(
+                    """SELECT output_json FROM jobs
+                    WHERE batch_id = ? AND stage = ? AND item_key = ?
+                    ORDER BY attempt DESC LIMIT 1""",
+                    (batch_id, JobStage.ANALYZE, face["asset_id"]),
+                ).fetchone()
+                output = (
+                    json.loads(latest_job["output_json"])
+                    if latest_job is not None and latest_job["output_json"]
+                    else {}
+                )
+                matching_attempts = [
+                    item
+                    for item in output.get("localization_attempts", [])
+                    if item.get("occurrence_code") == face["external_face_id"]
+                ]
+                latest_attempt = max(
+                    matching_attempts,
+                    key=lambda item: int(item.get("attempt", 0)),
+                    default=None,
+                )
+                if not latest_attempt or not source_face_condition_requires_review(
+                    latest_attempt.get("source_face_condition"),
+                    legacy_unrecoverable_occlusion=bool(
+                        latest_attempt.get("unrecoverable_occlusion")
+                    ),
+                ):
+                    raise ValueError(
+                        "accept_occlusion requires a confirmed source-image occlusion"
+                    )
+
+            self._invalidate_confirmation(connection, batch_id)
+            if action == "manual_bbox":
+                connection.execute(
+                    """UPDATE face_instances
+                    SET bbox_json = ?, detection_confidence = 1,
+                        needs_confirmation = 0, analysis_resolution = ?
+                    WHERE id = ?""",
+                    (json.dumps(bbox), action, face_id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE face_instances
+                    SET needs_confirmation = 0, analysis_resolution = ?
+                    WHERE id = ?""",
+                    (action, face_id),
+                )
+
+            job = connection.execute(
+                """SELECT id, output_json FROM jobs
+                WHERE batch_id = ? AND stage = ? AND item_key = ?
+                ORDER BY attempt DESC LIMIT 1""",
+                (batch_id, JobStage.ANALYZE, face["asset_id"]),
+            ).fetchone()
+            if job is not None and job["output_json"]:
+                output = json.loads(job["output_json"])
+                if action == "manual_bbox":
+                    for item in output.get("faces", []):
+                        if item.get("external_face_id") == face["external_face_id"]:
+                            item["bbox"] = bbox
+                            item["detection_confidence"] = 1.0
+                    prior_attempts = [
+                        int(item.get("attempt", 0))
+                        for item in output.get("localization_attempts", [])
+                        if item.get("occurrence_code") == face["external_face_id"]
+                    ]
+                    output.setdefault("localization_attempts", []).append({
+                        "occurrence_code": face["external_face_id"],
+                        "attempt": max(prior_attempts, default=0) + 1,
+                        "bbox": bbox,
+                        "confidence": 1.0,
+                        "full_face_visible": True,
+                        "crop_contains_all_source_visible_face": True,
+                        "source_face_condition": "complete",
+                        "face_centered": True,
+                        "tight_face_crop": True,
+                        "accepted": True,
+                        "boundary_issue": "none",
+                        "unrecoverable_occlusion": False,
+                        "reason": "用户已手动框选并确认该出现记录。",
+                    })
+                source = connection.execute(
+                    "SELECT display_code FROM assets WHERE id = ?",
+                    (face["asset_id"],),
+                ).fetchone()
+                active_codes = {
+                    row["external_face_id"]
+                    for row in connection.execute(
+                        "SELECT external_face_id FROM face_instances WHERE asset_id = ?",
+                        (face["asset_id"],),
+                    ).fetchall()
+                }
+                if source is not None:
+                    active_codes.add(source["display_code"])
+                unresolved = self._analysis_review_issues(connection, batch_id)
+                audit = output.get("detection_audit") or {}
+                audit["requires_manual_review"] = any(
+                    issue.partition(":")[0] in active_codes
+                    for issue in unresolved
+                )
+                resolution_summary = {
+                    "manual_bbox": "用户已手动确认定位。",
+                    "keep_original": "用户已确认该出现记录保留原人物。",
+                    "accept_occlusion": (
+                        "用户已确认原图固有遮挡，后续仅处理可见面部并保护遮挡物。"
+                    ),
+                }[action]
+                audit["summary"] = (
+                    f"{str(audit.get('summary') or '').strip()} {resolution_summary}"
+                ).strip()[:1000]
+                output["detection_audit"] = audit
+                connection.execute(
+                    "UPDATE jobs SET output_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(output, ensure_ascii=False), utc_now(), job["id"]),
+                )
+        return self.get_face(face_id)
 
     def update_face_fusion_metadata(
         self,
@@ -2169,6 +2622,249 @@ class Repository:
                 WHERE id = ?""",
                 [(confidence, face_id) for face_id, confidence in updates],
             )
+
+    def update_person_localizations(
+        self,
+        batch_id: str,
+        person_id: str,
+        results: list[dict[str, Any]],
+    ) -> None:
+        """Replace geometry for one existing Pxx without changing its grouping."""
+        localized_by_key = {
+            (result["asset_id"], face["external_face_id"]): (face, result)
+            for result in results
+            for face in result["faces"]
+        }
+        with self.connect() as connection:
+            batch = connection.execute(
+                "SELECT status FROM batches WHERE id = ? AND deleted_at IS NULL",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(batch_id)
+            if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+                raise ValueError("person localization can only run during analysis confirmation")
+            existing = connection.execute(
+                """SELECT id, asset_id, external_face_id, analysis_resolution,
+                          bbox_json, detection_confidence
+                FROM face_instances
+                WHERE batch_id = ? AND person_id = ?""",
+                (batch_id, person_id),
+            ).fetchall()
+            if not existing:
+                raise KeyError(person_id)
+            # A source-condition review is already geometrically resolved. It
+            # remains a user-confirmation item, but must not be sent through a
+            # second coordinate search or make the targeted result incomplete.
+            skipped_source_condition_keys: set[tuple[str, str]] = set()
+            analyze_jobs = connection.execute(
+                """SELECT item_key, output_json FROM jobs
+                WHERE batch_id = ? AND stage = ?
+                  AND attempt = (
+                    SELECT MAX(candidate.attempt) FROM jobs AS candidate
+                    WHERE candidate.batch_id = ? AND candidate.stage = ?
+                      AND candidate.item_key = jobs.item_key
+                  )""",
+                (
+                    batch_id,
+                    JobStage.ANALYZE,
+                    batch_id,
+                    JobStage.ANALYZE,
+                ),
+            ).fetchall()
+            for job in analyze_jobs:
+                if not job["output_json"]:
+                    continue
+                output = json.loads(job["output_json"])
+                for attempt in output.get("localization_attempts", []):
+                    if not source_face_condition_requires_review(
+                        attempt.get("source_face_condition"),
+                        legacy_unrecoverable_occlusion=bool(
+                            attempt.get("unrecoverable_occlusion")
+                        ),
+                    ) or not attempt.get("accepted"):
+                        continue
+                    matching = next(
+                        (
+                            row
+                            for row in existing
+                            if row["asset_id"] == job["item_key"]
+                            and row["external_face_id"]
+                            == attempt.get("occurrence_code")
+                            and row["analysis_resolution"] is None
+                        ),
+                        None,
+                    )
+                    if matching is not None:
+                        skipped_source_condition_keys.add(
+                            (matching["asset_id"], matching["external_face_id"])
+                        )
+            existing_keys = {
+                (row["asset_id"], row["external_face_id"])
+                for row in existing
+                if row["analysis_resolution"] is None
+                and (row["asset_id"], row["external_face_id"])
+                not in skipped_source_condition_keys
+            }
+            if set(localized_by_key) != existing_keys:
+                raise ValueError("person localization must cover every existing occurrence exactly once")
+
+            for row in existing:
+                row_key = (row["asset_id"], row["external_face_id"])
+                if row_key not in localized_by_key:
+                    continue
+                face, result = localized_by_key[row_key]
+                other_rows = connection.execute(
+                    """SELECT face.external_face_id, face.bbox_json,
+                              person.display_code AS person_code
+                    FROM face_instances AS face
+                    JOIN persons AS person ON person.id = face.person_id
+                    WHERE face.asset_id = ? AND face.id != ?""",
+                    (row["asset_id"], row["id"]),
+                ).fetchall()
+                conflict = next(
+                    (
+                        other
+                        for other in other_rows
+                        if bbox_iou(face["bbox"], json.loads(other["bbox_json"])) >= 0.35
+                    ),
+                    None,
+                )
+                if conflict is None:
+                    continue
+                reason = (
+                    f"candidate overlaps @{conflict['external_face_id']} "
+                    f"(@{conflict['person_code']}); previous bbox preserved"
+                )
+                face["bbox"] = json.loads(row["bbox_json"])
+                face["detection_confidence"] = row["detection_confidence"]
+                matching_attempts = [
+                    attempt
+                    for attempt in result.get("localization_attempts", [])
+                    if attempt.get("occurrence_code") == row["external_face_id"]
+                ]
+                if matching_attempts:
+                    latest_attempt = max(
+                        matching_attempts,
+                        key=lambda attempt: int(attempt.get("attempt", 0)),
+                    )
+                    latest_attempt["accepted"] = False
+                    latest_attempt["matches_expected_occurrence"] = False
+                    latest_attempt["reason"] = reason
+                else:
+                    result.setdefault("localization_attempts", []).append({
+                        "occurrence_code": row["external_face_id"],
+                        "attempt": 1,
+                        "bbox": face["bbox"],
+                        "confidence": face["detection_confidence"],
+                        "full_face_visible": False,
+                        "crop_contains_all_source_visible_face": False,
+                        "matches_expected_occurrence": False,
+                        "source_face_condition": "complete",
+                        "face_centered": False,
+                        "tight_face_crop": False,
+                        "accepted": False,
+                        "boundary_issue": "none",
+                        "unrecoverable_occlusion": False,
+                        "reason": reason,
+                    })
+
+            self._invalidate_confirmation(connection, batch_id)
+            for row in existing:
+                row_key = (row["asset_id"], row["external_face_id"])
+                if (
+                    row["analysis_resolution"] is not None
+                    or row_key in skipped_source_condition_keys
+                ):
+                    continue
+                face, _ = localized_by_key[(row["asset_id"], row["external_face_id"])]
+                connection.execute(
+                    """UPDATE face_instances
+                    SET bbox_json = ?, detection_confidence = ?, needs_confirmation = 1
+                    WHERE id = ?""",
+                    (
+                        json.dumps(face["bbox"]),
+                        face["detection_confidence"],
+                        row["id"],
+                    ),
+                )
+
+            results_by_asset = {result["asset_id"]: result for result in results}
+            for asset_id, result in results_by_asset.items():
+                job_row = connection.execute(
+                    """SELECT id, output_json FROM jobs
+                    WHERE batch_id = ? AND stage = ? AND item_key = ?
+                    ORDER BY attempt DESC LIMIT 1""",
+                    (batch_id, JobStage.ANALYZE, asset_id),
+                ).fetchone()
+                if job_row is None or not job_row["output_json"]:
+                    raise ValueError("analysis history is missing for targeted localization")
+                output = json.loads(job_row["output_json"])
+                replacement_by_code = {
+                    face["external_face_id"]: face for face in result["faces"]
+                }
+                for face in output.get("faces", []):
+                    replacement = replacement_by_code.get(face.get("external_face_id"))
+                    if replacement is None:
+                        continue
+                    face["bbox"] = replacement["bbox"]
+                    face["detection_confidence"] = replacement["detection_confidence"]
+
+                replaced_codes = set(replacement_by_code)
+                attempts = [
+                    attempt
+                    for attempt in output.get("localization_attempts", [])
+                    if attempt.get("occurrence_code") not in replaced_codes
+                ]
+                attempts.extend(result.get("localization_attempts", []))
+                output["localization_attempts"] = attempts
+                latest_attempts: dict[str, dict[str, Any]] = {}
+                for attempt in attempts:
+                    code = str(attempt.get("occurrence_code", ""))
+                    previous = latest_attempts.get(code)
+                    if previous is None or int(attempt.get("attempt", 0)) >= int(
+                        previous.get("attempt", 0)
+                    ):
+                        latest_attempts[code] = attempt
+                failures = [
+                    f"{code}: {attempt.get('reason') or 'crop geometry failed'}"
+                    for code, attempt in latest_attempts.items()
+                    if (
+                        not attempt.get("accepted")
+                        or source_face_condition_requires_review(
+                            attempt.get("source_face_condition"),
+                            legacy_unrecoverable_occlusion=bool(
+                                attempt.get("unrecoverable_occlusion")
+                            ),
+                        )
+                    )
+                ]
+                audit = output.get("detection_audit") or {}
+                base_summary = str(audit.get("summary") or "").split(
+                    "逐图面部裁剪", 1
+                )[0].strip()
+                uncertain_grouping = any(
+                    str(face.get("suggested_person_key") or "").startswith(
+                        "vlm-uncertain:"
+                    )
+                    for face in output.get("faces", [])
+                )
+                audit["requires_manual_review"] = bool(
+                    not audit.get("complete", False)
+                    or uncertain_grouping
+                    or failures
+                )
+                geometry_summary = (
+                    "逐图面部裁剪复核通过。"
+                    if not failures
+                    else "逐图面部裁剪复核未通过：" + "；".join(failures)
+                )
+                audit["summary"] = f"{base_summary} {geometry_summary}".strip()[:1000]
+                output["detection_audit"] = audit
+                connection.execute(
+                    "UPDATE jobs SET output_json = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(output, ensure_ascii=False), utc_now(), job_row["id"]),
+                )
 
     def merge_persons(self, batch_id: str, person_ids: list[str]) -> dict[str, Any]:
         unique_ids = list(dict.fromkeys(person_ids))

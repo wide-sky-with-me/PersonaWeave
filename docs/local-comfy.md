@@ -17,7 +17,7 @@ The pinned checkout and its isolated Python environment live under
 `.runtime/ComfyUI`, which is intentionally ignored. The reproducible commit and
 PyTorch index are stored in `infra/comfyui/versions.env`. The project-owned
 custom nodes are linked from `comfy-nodes/PersonaWeave`. Setup also installs the
-5.42 MB Apache-2.0 MediaPipe face-landmarker package published by Comfy-Org and
+optional 5.42 MB Apache-2.0 MediaPipe face-landmarker package published by Comfy-Org and
 verifies its pinned SHA-256 before activation.
 
 The local server listens only on `127.0.0.1:8188`. The launch script reserves
@@ -39,7 +39,7 @@ Use a consented photo to exercise the real local face detector:
 bash scripts/probe_local_face_analysis.sh /path/to/photo.jpg
 ```
 
-The active analysis workflow uses overlapping 1024-pixel tiles so small faces
+This optional local diagnostic workflow uses overlapping 1024-pixel tiles so small faces
 in the project's 5568-by-3712 activity photos are not lost by whole-image
 downscaling. Tile detections are mapped back to source coordinates and deduped
 with NMS. This outputs bounding boxes only. It deliberately marks every detected face as
@@ -49,6 +49,22 @@ The same path can be checked end-to-end through the gateway with:
 ```bash
 bash scripts/probe_local_gateway_analysis.sh /path/to/photo.jpg
 ```
+
+The product's default batch analysis does not call this workflow. It sends the
+complete original-image set to the configured multimodal model in one logical
+analysis request so person discovery, visible context extraction, and proposed
+cross-image grouping share the same evidence. Every proposed Pxx remains subject
+to user confirmation; uncertain matches stay separate. Local code then expands
+each coarse occurrence into a separately labeled zoom tile with its own 0-1000
+grid. A multimodal pass localizes the face inside each tile, maps the result back
+to the source, and reviews the exact deterministic crop without review-only
+padding. A crop may include hair, hats, natural occlusion, and limited
+collar/shoulder context as long as the intended face remains complete and
+dominant. Passed faces are frozen and only failed faces may be relocalized once.
+After that, a single clearly clipped edge may receive one deterministic
+directional expansion and final multimodal review. Severe identity-blocking
+occlusion remains a manual-review condition. Local code draws grids and crops
+pixels only; it does not detect or classify faces in this default path.
 
 After explicitly approving a potentially billable provider call, run the
 synthetic Yunwu image-edit contract probe with:

@@ -96,6 +96,7 @@ class WorkflowService:
                         appearance=PersonAppearance.model_validate(
                             face.get("appearance") or {}
                         ),
+                        analysis_resolution=face.get("analysis_resolution"),
                     )
                     for face in self.repository.list_faces_for_asset(source["id"])
                 ),
@@ -159,7 +160,16 @@ class WorkflowService:
 
     def reset_analysis(self, batch_id: str) -> list[dict]:
         batch = self.repository.get_batch(batch_id)
-        if batch["status"] != BatchStatus.AWAITING_CONFIRMATION:
+        failed_analysis = (
+            batch["status"] == BatchStatus.FAILED
+            and any(
+                job["status"] == JobStatus.FAILED
+                for job in self.repository.latest_stage_jobs(
+                    batch_id, JobStage.ANALYZE
+                )
+            )
+        )
+        if batch["status"] != BatchStatus.AWAITING_CONFIRMATION and not failed_analysis:
             raise InvalidTransition(
                 f"cannot restart person analysis from {batch['status']}"
             )
@@ -268,6 +278,11 @@ class WorkflowService:
     ) -> dict:
         if self.image_api_mode != "multipart_edits":
             raise ValueError("formal generation requires multipart_edits")
+        analysis_issues = self.repository.analysis_review_issues(batch_id)
+        if analysis_issues:
+            raise ValueError(
+                "人物分析仍有未解决问题：" + "；".join(analysis_issues[:5])
+            )
         batch = self.repository.get_batch(batch_id)
         decisions = (
             self._derive_instruction_mappings(batch_id)

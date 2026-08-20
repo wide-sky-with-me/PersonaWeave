@@ -1,43 +1,114 @@
+name: personaweave
+
+x-app-image: &app-image
+  image: personaweave:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+
 services:
   control-plane:
-    build: .
-    command: ["uv", "run", "uvicorn", "personaweave.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    <<: *app-image
+    # Docker Desktop's bridge DNS path cannot reach the host's transparent
+    # outbound TLS route used by some Yunwu installations. Host networking
+    # keeps the service in Docker while using the same outbound route as the
+    # Windows host. The application listens on an internal host-network port;
+    # the ingress service below publishes the stable Windows-facing port.
+    network_mode: host
+    env_file:
+      - .env
     environment:
-      PERSONAWEAVE_DATABASE_PATH: /app/data/personaweave.sqlite3
-      PERSONAWEAVE_ASSET_ROOT: /app/data/assets
-      PERSONAWEAVE_INFERENCE_BASE_URL: http://comfy-gateway:8010
-      PERSONAWEAVE_INFERENCE_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:?set PERSONAWEAVE_GATEWAY_SHARED_KEY}
-      PERSONAWEAVE_YUNWU_API_KEY: ${PERSONAWEAVE_YUNWU_API_KEY:-}
-      PERSONAWEAVE_YUNWU_BASE_URL: ${PERSONAWEAVE_YUNWU_BASE_URL:-https://yunwu.ai/v1}
-      PERSONAWEAVE_YUNWU_VISION_MODEL: ${PERSONAWEAVE_YUNWU_VISION_MODEL:-gpt-5.6-sol}
-    ports:
-      - "8000:8000"
+      PERSONAWEAVE_DATABASE_PATH: ${PERSONAWEAVE_CONTAINER_DATA_ROOT:-/app/data}/personaweave.sqlite3
+      PERSONAWEAVE_ASSET_ROOT: ${PERSONAWEAVE_CONTAINER_DATA_ROOT:-/app/data}/assets
+      PERSONAWEAVE_ASSET_LEGACY_ROOT: ${PERSONAWEAVE_LEGACY_DATA_ROOT:-/mnt/e/yhr/workspace/PersonaWeave/data}/assets
+      # Container-local 127.0.0.1 is never inherited from the host config.
+      PERSONAWEAVE_INFERENCE_BASE_URL: ${PERSONAWEAVE_DOCKER_INFERENCE_BASE_URL:-}
+      PERSONAWEAVE_INFERENCE_API_KEY: ${PERSONAWEAVE_DOCKER_INFERENCE_API_KEY:-}
+    command: ["uvicorn", "personaweave.main:app", "--host", "0.0.0.0", "--port", "${PERSONAWEAVE_INTERNAL_HTTP_PORT:-8110}"]
     volumes:
-      - control-data:/app/data
-    depends_on:
-      comfy-gateway:
-        condition: service_healthy
-
-  comfy-gateway:
-    build: .
-    command: ["uv", "run", "uvicorn", "personaweave.comfy_gateway:app", "--host", "0.0.0.0", "--port", "8010"]
-    environment:
-      PERSONAWEAVE_COMFY_BACKEND_URL: ${PERSONAWEAVE_COMFY_BACKEND_URL:?set PERSONAWEAVE_COMFY_BACKEND_URL}
-      PERSONAWEAVE_COMFY_BACKEND_API_PREFIX: ${PERSONAWEAVE_COMFY_BACKEND_API_PREFIX:-/api}
-      PERSONAWEAVE_COMFY_BACKEND_API_KEY: ${PERSONAWEAVE_COMFY_BACKEND_API_KEY:-}
-      PERSONAWEAVE_COMFY_GATEWAY_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:?set PERSONAWEAVE_GATEWAY_SHARED_KEY}
-      PERSONAWEAVE_COMFY_WORKFLOW_DIR: /app/comfy-workflows
-      PERSONAWEAVE_COMFY_DATABASE_PATH: /app/data/comfy-gateway.sqlite3
-      PERSONAWEAVE_COMFY_ALLOWED_ASSET_HOSTS: ${PERSONAWEAVE_COMFY_ALLOWED_ASSET_HOSTS:-}
-    volumes:
-      - gateway-data:/app/data
-      - ${PERSONAWEAVE_COMFY_WORKFLOW_DIR:-./comfy-workflows}:/app/comfy-workflows:ro
+      - type: bind
+        source: ./data
+        target: ${PERSONAWEAVE_CONTAINER_DATA_ROOT:-/app/data}
+      # Existing development databases may contain WSL file:// URIs. Keep
+      # those assets readable during the container migration; new writes use
+      # PERSONAWEAVE_CONTAINER_DATA_ROOT above.
+      - type: bind
+        source: ./data
+        target: ${PERSONAWEAVE_LEGACY_DATA_ROOT:-/mnt/e/yhr/workspace/PersonaWeave/data}
+    init: true
+    restart: unless-stopped
+    mem_limit: ${PERSONAWEAVE_MEMORY_LIMIT:-2g}
+    memswap_limit: ${PERSONAWEAVE_MEMORY_LIMIT:-2g}
+    cpus: ${PERSONAWEAVE_CPU_LIMIT:-2.0}
+    pids_limit: 256
     healthcheck:
-      test: ["CMD", "uv", "run", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=3)"]
-      interval: 10s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PERSONAWEAVE_INTERNAL_HTTP_PORT:-8110}/api/v1/health', timeout=3)"]
+      interval: 15s
       timeout: 5s
+      start_period: 20s
       retries: 5
 
-volumes:
-  control-data:
-  gateway-data:
+  ingress:
+    image: personaweave:local
+    command: ["python", "-m", "personaweave.tcp_proxy"]
+    environment:
+      PERSONAWEAVE_PROXY_UPSTREAM_HOST: 172.30.0.1
+      PERSONAWEAVE_PROXY_UPSTREAM_PORT: ${PERSONAWEAVE_INTERNAL_HTTP_PORT:-8110}
+      PERSONAWEAVE_PROXY_LISTEN_PORT: 8000
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    ports:
+      - "${PERSONAWEAVE_HTTP_PORT:-8100}:8000"
+    init: true
+    restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+
+  comfy-gateway:
+    <<: *app-image
+    profiles: ["comfy"]
+    command: ["uvicorn", "personaweave.comfy_gateway:app", "--host", "0.0.0.0", "--port", "8010"]
+    env_file:
+      - .env
+    environment:
+      PERSONAWEAVE_COMFY_DATABASE_PATH: /app/data/comfy-gateway.sqlite3
+      PERSONAWEAVE_COMFY_WORKFLOW_DIR: /app/comfy-workflows
+      PERSONAWEAVE_COMFY_GATEWAY_API_KEY: ${PERSONAWEAVE_GATEWAY_SHARED_KEY:-}
+    ports:
+      - "${PERSONAWEAVE_COMFY_GATEWAY_PORT:-8010}:8010"
+    volumes:
+      - type: bind
+        source: ./data/comfy-gateway
+        target: /app/data
+      - type: bind
+        source: ${PERSONAWEAVE_COMFY_WORKFLOW_DIR:-./comfy-workflows}
+        target: /app/comfy-workflows
+        read_only: true
+    init: true
+    restart: unless-stopped
+    mem_limit: ${PERSONAWEAVE_GATEWAY_MEMORY_LIMIT:-1g}
+    memswap_limit: ${PERSONAWEAVE_GATEWAY_MEMORY_LIMIT:-1g}
+    cpus: ${PERSONAWEAVE_GATEWAY_CPU_LIMIT:-1.0}
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1

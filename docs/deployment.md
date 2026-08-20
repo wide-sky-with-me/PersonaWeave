@@ -116,9 +116,36 @@ PERSONAWEAVE_YUNWU_REVIEWER_MODEL_B=second-distinct-visual-review-model
 PERSONAWEAVE_COMFY_WORKFLOW_DIR=/absolute/path/to/validated/workflows
 ```
 
-Then run `docker compose up --build`. SQLite databases and generated assets use
-named volumes; workflow files are mounted read-only so the same container image
-can move between ComfyUI providers.
+Then run `docker compose up --build`. The default stack starts only the
+PersonaWeave control plane and serves the workbench at
+`http://127.0.0.1:8100/app/`; it does not start WSL or a local inference
+process. SQLite databases and generated assets are stored in the repository's
+`./data` directory. The optional ComfyUI gateway is enabled with
+`docker compose --profile comfy up --build`.
+
+The control-plane service uses Docker Desktop host networking so outbound
+HTTPS requests to configured cloud providers follow the same route as the
+Windows host. It listens on the internal host-network port
+`PERSONAWEAVE_INTERNAL_HTTP_PORT` (8110 by default). A small `ingress` service
+publishes the stable `PERSONAWEAVE_HTTP_PORT` (8100 by default) back to
+Windows. Host networking must be enabled in Docker Desktop.
+
+When using that profile, also set
+`PERSONAWEAVE_DOCKER_INFERENCE_BASE_URL=http://127.0.0.1:8010` and
+`PERSONAWEAVE_DOCKER_INFERENCE_API_KEY` to the same value as
+`PERSONAWEAVE_GATEWAY_SHARED_KEY`.
+
+For an existing database created by the WSL development workflow, keep
+`PERSONAWEAVE_LEGACY_DATA_ROOT=/mnt/e/yhr/workspace/PersonaWeave/data` in the
+`.env` file. Compose mounts the same `./data` directory at that compatibility
+path so old `file:///mnt/e/...` asset URIs remain readable. New assets are
+written under `/app/data` and do not require WSL.
+
+The control-plane container has a default 2 GB memory limit, no additional
+container swap allowance, 2 CPU limit and 256 process limit. Adjust
+`PERSONAWEAVE_MEMORY_LIMIT` and `PERSONAWEAVE_CPU_LIMIT` in `.env` for the
+host's capacity. Workflow files are mounted read-only when the optional gateway
+is enabled.
 
 Formal final validation requires both reviewer model variables. The model IDs
 must be distinct; partial configuration or the same ID in both variables is

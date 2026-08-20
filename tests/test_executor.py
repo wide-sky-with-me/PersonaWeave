@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from PIL import Image
+from pydantic import ValidationError
 
 from personaweave.assets import AssetResolver, UnsafeAssetPath
 from personaweave.domain import (
@@ -47,7 +48,83 @@ from personaweave.formal_masks import (
 from personaweave.providers.yunwu import ImageEditPlan, ImageEditReview, ImageEditScores
 from personaweave.provider_errors import ProviderExecutionError, provider_error
 from personaweave.storage import Repository
-from personaweave.workflow import WorkflowService
+from personaweave.workflow import InvalidTransition, WorkflowService
+
+
+def test_connect_error_is_retryable_and_has_actionable_message() -> None:
+    error = httpx.ConnectError("", request=httpx.Request("POST", "https://provider"))
+
+    assert PipelineExecutor._error_code(error) == "provider_unavailable"
+    assert PipelineExecutor._error_message(error) == (
+        "云端模型连接失败，请检查 Docker 网络或代理后重试。"
+    )
+
+
+def test_transport_disconnect_is_retryable_and_has_actionable_message() -> None:
+    error = httpx.RemoteProtocolError(
+        "server disconnected",
+        request=httpx.Request("POST", "https://provider"),
+    )
+
+    assert PipelineExecutor._error_code(error) == "provider_unavailable"
+    assert PipelineExecutor._error_message(error) == (
+        "云端模型连接意外中断，请稍后重试。"
+    )
+
+
+def test_empty_provider_error_uses_exception_type() -> None:
+    assert PipelineExecutor._error_message(RuntimeError()) == "RuntimeError"
+
+
+def test_timeout_error_has_actionable_message() -> None:
+    error = httpx.ReadTimeout("", request=httpx.Request("POST", "https://provider"))
+
+    assert PipelineExecutor._error_code(error) == "provider_timeout"
+    assert PipelineExecutor._error_message(error) == (
+        "云端模型在 600 秒执行窗口内未返回，请稍后重试。"
+    )
+
+
+def test_validation_error_does_not_persist_model_output() -> None:
+    validation_error = None
+    try:
+        BoundingBox.model_validate({"x": "hidden model prose"})
+    except ValidationError as error:
+        validation_error = error
+        message = PipelineExecutor._provider_response_error_message(error)
+    else:
+        raise AssertionError("invalid bounding box should fail validation")
+
+    assert message.startswith("云端模型返回的数据结构不符合要求：BoundingBox.")
+    assert "x [int_parsing]" in message
+    assert "y [missing]" in message
+    assert "hidden model prose" not in message
+    assert validation_error is not None
+    assert PipelineExecutor._error_code(validation_error) == "provider_response_invalid"
+
+
+def test_analysis_payload_uses_bounded_preview_and_original_coordinates(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "large.jpg"
+    Image.new("RGB", (3000, 2000), "blue").save(source, format="JPEG")
+    executor = object.__new__(PipelineExecutor)
+    executor.assets = AssetResolver(tmp_path)
+    executor.advisory_preview_max_edge = 1600
+
+    full_uri, preview_uri, width, height = executor._analysis_image_payload({
+        "storage_uri": source.resolve().as_uri(),
+        "display_code": "I01",
+    })
+
+    def dimensions(uri: str) -> tuple[int, int]:
+        encoded = uri.split(",", 1)[1]
+        with Image.open(BytesIO(base64.b64decode(encoded))) as image:
+            return image.size
+
+    assert (width, height) == (3000, 2000)
+    assert dimensions(full_uri) == (3000, 2000)
+    assert dimensions(preview_uri) == (1600, 1067)
 
 def confirm_edit_contract(
     repository: Repository,
@@ -197,6 +274,22 @@ class FakeGateway:
         )
 
 
+class GatewayBackedBatchAnalyzer:
+    def __init__(self, gateway: FakeGateway):
+        self.gateway = gateway
+        self.received_sources = []
+
+    async def analyze_batch_people(self, sources):
+        self.received_sources = sources
+        return [
+            await self.gateway.analyze(AnalysisRequest(
+                batch_id="batch-analysis",
+                asset_id=source["asset_id"],
+                asset_uri=source["image_uri"],
+            ))
+            for source in sources
+        ]
+
 class UpstreamConfirmedGateway(FakeGateway):
     async def analyze(self, request):
         result = await super().analyze(request)
@@ -256,6 +349,39 @@ class CoordinatedQualityValidator:
 
 
 class FakePersonFusionValidator:
+    async def analyze_batch_people(self, sources):
+        return [AnalysisResult(
+            asset_id=source["asset_id"],
+            provider="fake-multimodal-batch-analysis",
+            model="fake-vision",
+            faces=[FaceObservation(
+                external_face_id=f"{source['source_code']}-V01",
+                bbox={"x": 1, "y": 2, "width": 30, "height": 40},
+                detection_confidence=0.99,
+                suggested_person_key="same-source-person",
+                identity_confidence=0.97,
+                needs_confirmation=True,
+                appearance=PersonAppearance(
+                    apparent_age="young adult",
+                    hair="short dark hair",
+                    eyewear="none",
+                    accessories="none",
+                    body="medium build",
+                    clothing="casual top",
+                    pose="front-facing head and relaxed body",
+                    lighting_occlusion="even light, no visible occlusion",
+                ),
+            )],
+            detection_audit=PersonDetectionAudit(
+                complete=True,
+                detected_face_count=1,
+                visible_face_count=1,
+            ),
+        ) for source in sources]
+
+    async def refine_batch_face_boxes(self, _sources, results):
+        return results
+
     async def analyze_person_appearances(self, *, source_uri, observations):
         assert source_uri.startswith("data:image/jpeg;base64,")
         return {
@@ -294,8 +420,63 @@ class CoordinatedPersonFusionValidator(FakePersonFusionValidator):
             observations=observations,
         )
 
+    async def analyze_batch_people(self, sources):
+        self.calls = [source["source_code"] for source in sources]
+        return await super().analyze_batch_people(sources)
+
+
+class ReviewingPersonFusionValidator(FakePersonFusionValidator):
+    def __init__(self):
+        self.review_calls = 0
+
+    async def review_person_cluster_assignments(self, observations, assignments):
+        self.review_calls += 1
+        assert set(assignments) == {item["code"] for item in observations}
+        return {
+            item["code"]: (f"reviewed:{item['code']}", 0.0)
+            for item in observations
+        }
+
+class FlakyBatchPersonAnalyzer(FakePersonFusionValidator):
+    def __init__(self):
+        self.calls = 0
+
+    async def analyze_batch_people(self, sources):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("temporary batch analysis failure")
+        return await super().analyze_batch_people(sources)
+
+
+class ChunkedBatchPersonAnalyzer(FakePersonFusionValidator):
+    def __init__(self):
+        self.chunk_calls: list[list[str]] = []
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    async def analyze_batch_people(self, sources):
+        self.chunk_calls.append([source["source_code"] for source in sources])
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        try:
+            await asyncio.sleep(0.01)
+            results = await super().analyze_batch_people(sources)
+            chunk_key = "chunk:" + sources[0]["source_code"]
+            for result in results:
+                result.faces[0].suggested_person_key = chunk_key
+            return results
+        finally:
+            self.active_calls -= 1
+
 
 class UncertainPersonFusionValidator(FakePersonFusionValidator):
+    async def analyze_batch_people(self, sources):
+        results = await super().analyze_batch_people(sources)
+        for index, result in enumerate(results):
+            result.faces[0].suggested_person_key = f"vlm:{sources[index]['source_code']}"
+            result.faces[0].identity_confidence = 0.0 if index == 0 else 0.5
+        return results
+
     async def cluster_person_observations(self, observations):
         assert [observation["code"] for observation in observations] == [
             "I01-F01",
@@ -305,6 +486,23 @@ class UncertainPersonFusionValidator(FakePersonFusionValidator):
             "I01-F01": ("vlm:I01-F01", 0.0),
             "I02-F01": ("vlm:I02-F01", 0.5),
         }
+
+
+class FakeTargetedLocalizationValidator:
+    model = "fake-vision"
+
+    def __init__(self):
+        self.broad_search = False
+        self.source_count = 0
+
+    async def refine_batch_face_boxes(self, sources, results, *, broad_search=False):
+        self.broad_search = broad_search
+        self.source_count = len(sources)
+        for result in results:
+            for face in result.faces:
+                face.bbox = BoundingBox(x=8, y=9, width=20, height=22)
+                face.detection_confidence = 0.93
+        return results
 
 
 class FakeSwapGateway:
@@ -406,7 +604,7 @@ def prepare_analysis(tmp_path: Path, gateway: FakeGateway):
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
     image_path = asset_root / "source.jpg"
-    image_path.write_bytes(b"image-bytes")
+    Image.new("RGB", (64, 64), "white").save(image_path, format="JPEG")
     repository = Repository(tmp_path / "executor.sqlite3")
     repository.initialize()
     batch = repository.create_batch("executor")
@@ -420,13 +618,16 @@ def prepare_analysis(tmp_path: Path, gateway: FakeGateway):
     )
     workflow = WorkflowService(repository)
     workflow.start_analysis(batch["id"])
+    analyzer = GatewayBackedBatchAnalyzer(gateway)
     executor = PipelineExecutor(
         repository,
         workflow,
         gateway,  # type: ignore[arg-type]
         AssetResolver(asset_root),
         concurrency=1,
+        advisory_validator=analyzer,  # type: ignore[arg-type]
     )
+    executor.test_batch_analyzer = analyzer  # type: ignore[attr-defined]
     return repository, batch, executor
 
 def prepare_validation(
@@ -592,7 +793,11 @@ async def test_executor_sends_local_assets_as_data_uris(tmp_path: Path) -> None:
     result = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
 
     assert result["completed"] is True
-    assert gateway.received_uri == "data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="
+    assert gateway.received_uri is not None
+    assert gateway.received_uri.startswith("data:image/jpeg;base64,")
+    analyzer = executor.test_batch_analyzer  # type: ignore[attr-defined]
+    assert analyzer.received_sources[0]["width"] == 64
+    assert analyzer.received_sources[0]["height"] == 64
     assert repository.get_batch(batch["id"])["status"] == BatchStatus.AWAITING_CONFIRMATION
 
 
@@ -637,7 +842,141 @@ async def test_analysis_fuses_duplicate_people_across_uploaded_images(tmp_path: 
         face["appearance"]["apparent_age"] == "young adult"
         for face in people[0]["faces"]
     )
-    assert sorted(validator.calls) == ["I01-F01", "I02-F01"]
+    assert sorted(validator.calls) == ["I01", "I02"]
+
+
+@pytest.mark.anyio
+async def test_analysis_applies_post_fusion_cluster_review(tmp_path: Path) -> None:
+    asset_root = tmp_path / "reviewed-assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "reviewed-fusion.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("reviewed fusion")
+    for index, color in enumerate(("red", "blue"), start=1):
+        path = asset_root / f"source-{index}.jpg"
+        Image.new("RGB", (64, 64), color).save(path, format="JPEG")
+        repository.add_asset(
+            batch_id=batch["id"],
+            kind="source",
+            filename=path.name,
+            media_type="image/jpeg",
+            storage_uri=path.resolve().as_uri(),
+            sha256=f"hash-{index}",
+        )
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    validator = ReviewingPersonFusionValidator()
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        concurrency=2,
+        advisory_validator=validator,  # type: ignore[arg-type]
+    )
+
+    result = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
+    people = repository.list_persons(batch["id"])
+
+    assert result["completed"] is True
+    assert validator.review_calls == 1
+    assert len(people) == 2
+    assert all(len(person["faces"]) == 1 for person in people)
+
+
+@pytest.mark.anyio
+async def test_analysis_discovers_sources_in_concurrent_chunks_then_fuses_globally(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "chunked-assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "chunked-analysis.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("chunked analysis")
+    for index, color in enumerate(("red", "blue", "green", "yellow", "purple"), start=1):
+        path = asset_root / f"source-{index}.jpg"
+        Image.new("RGB", (64, 64), color).save(path, format="JPEG")
+        repository.add_asset(
+            batch_id=batch["id"],
+            kind="source",
+            filename=path.name,
+            media_type="image/jpeg",
+            storage_uri=path.resolve().as_uri(),
+            sha256=f"hash-{index}",
+        )
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    validator = ChunkedBatchPersonAnalyzer()
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        concurrency=2,
+        advisory_validator=validator,  # type: ignore[arg-type]
+    )
+
+    result = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
+    people = repository.list_persons(batch["id"])
+
+    assert result["completed"] is True
+    assert validator.chunk_calls == [
+        ["I01", "I02"],
+        ["I03", "I04"],
+        ["I05"],
+    ]
+    assert validator.max_active_calls == 2
+    assert len(people) == 1
+    assert len(people[0]["faces"]) == 5
+    assert people[0]["cluster_key"] == "same-source-person"
+
+
+@pytest.mark.anyio
+async def test_retrying_one_failed_analysis_job_resumes_the_whole_batch(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "batch-retry.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("batch retry")
+    for index, color in enumerate(("red", "blue"), start=1):
+        path = asset_root / f"source-{index}.jpg"
+        Image.new("RGB", (64, 64), color).save(path, format="JPEG")
+        repository.add_asset(
+            batch_id=batch["id"],
+            kind="source",
+            filename=path.name,
+            media_type="image/jpeg",
+            storage_uri=path.resolve().as_uri(),
+            sha256=f"hash-{index}",
+        )
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    analyzer = FlakyBatchPersonAnalyzer()
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        advisory_validator=analyzer,  # type: ignore[arg-type]
+    )
+
+    first = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
+    failed_jobs = repository.latest_stage_jobs(batch["id"], JobStage.ANALYZE)
+    assert first["completed"] is False
+    assert all(job["status"] == JobStatus.FAILED for job in failed_jobs)
+
+    repository.retry_job(failed_jobs[0]["id"])
+    repository.set_batch_status(batch["id"], BatchStatus.ANALYZING)
+    second = await executor.execute_stage(batch["id"], JobStage.ANALYZE)
+    latest = repository.latest_stage_jobs(batch["id"], JobStage.ANALYZE)
+
+    assert second["completed"] is True
+    assert analyzer.calls == 2
+    assert len(latest) == 2
+    assert all(job["status"] == JobStatus.SUCCEEDED for job in latest)
+    assert len(repository.list_persons(batch["id"])) == 1
 
 
 @pytest.mark.anyio
@@ -690,6 +1029,181 @@ async def test_existing_extracted_people_can_be_refused_without_reanalysis(tmp_p
     assert result["merged_count"] == 1
     assert len(people[0]["faces"]) == 2
     assert all(face["identity_confidence"] == 0.97 for face in people[0]["faces"])
+
+
+@pytest.mark.anyio
+async def test_targeted_person_relocalization_updates_every_occurrence_without_regrouping(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "targeted-localization.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("targeted-localization")
+    assets = []
+    for index, color in enumerate(("red", "blue"), start=1):
+        path = asset_root / f"source-{index}.jpg"
+        Image.new("RGB", (64, 64), color).save(path, format="JPEG")
+        assets.append(repository.add_asset(
+            batch_id=batch["id"],
+            kind="source",
+            filename=path.name,
+            media_type="image/jpeg",
+            storage_uri=path.resolve().as_uri(),
+            sha256=f"hash-{index}",
+        ))
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    workflow.complete_analysis(batch["id"], [
+        AnalysisResult(
+            asset_id=asset["id"],
+            provider="initial-analysis",
+            faces=[FaceObservation(
+                external_face_id=f"I{index:02d}-V01",
+                bbox=BoundingBox(x=1, y=2, width=10, height=12),
+                detection_confidence=0.7,
+                suggested_person_key="same-person",
+                identity_confidence=0.95,
+            )],
+            detection_audit=PersonDetectionAudit(
+                complete=True,
+                detected_face_count=1,
+                visible_face_count=1,
+            ),
+        ).model_dump(mode="json")
+        for index, asset in enumerate(assets, start=1)
+    ])
+    validator = FakeTargetedLocalizationValidator()
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        advisory_validator=validator,  # type: ignore[arg-type]
+    )
+    person = repository.list_persons(batch["id"])[0]
+
+    result = await executor.relocalize_person(batch["id"], person["id"])
+    updated = repository.list_persons(batch["id"])[0]
+
+    assert result["person_code"] == person["display_code"]
+    assert result["source_count"] == 2
+    assert result["requires_manual_review"] is False
+    assert result["person_review_issues"] == []
+    assert result["batch_requires_manual_review"] is False
+    assert result["analysis_review_issues"] == []
+    assert validator.broad_search is True
+    assert validator.source_count == 2
+    assert updated["id"] == person["id"]
+    assert [face["bbox"] for face in updated["faces"]] == [
+        {"x": 8, "y": 9, "width": 20, "height": 22},
+        {"x": 8, "y": 9, "width": 20, "height": 22},
+    ]
+
+
+@pytest.mark.anyio
+async def test_targeted_relocalization_preserves_previous_bbox_on_person_collision(
+    tmp_path: Path,
+) -> None:
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    repository = Repository(tmp_path / "localization-collision.sqlite3")
+    repository.initialize()
+    batch = repository.create_batch("localization collision")
+    path = asset_root / "source.jpg"
+    Image.new("RGB", (64, 64), "white").save(path, format="JPEG")
+    asset = repository.add_asset(
+        batch_id=batch["id"],
+        kind="source",
+        filename=path.name,
+        media_type="image/jpeg",
+        storage_uri=path.resolve().as_uri(),
+        sha256="collision-hash",
+    )
+    workflow = WorkflowService(repository)
+    workflow.start_analysis(batch["id"])
+    workflow.complete_analysis(batch["id"], [AnalysisResult(
+        asset_id=asset["id"],
+        provider="initial-analysis",
+        faces=[
+            FaceObservation(
+                external_face_id="I01-V01",
+                bbox=BoundingBox(x=1, y=2, width=10, height=12),
+                detection_confidence=0.7,
+                suggested_person_key="person-a",
+                identity_confidence=0.95,
+            ),
+            FaceObservation(
+                external_face_id="I01-V02",
+                bbox=BoundingBox(x=8, y=9, width=20, height=22),
+                detection_confidence=0.96,
+                suggested_person_key="person-b",
+                identity_confidence=0.97,
+            ),
+        ],
+        detection_audit=PersonDetectionAudit(
+            complete=True,
+            detected_face_count=2,
+            visible_face_count=2,
+        ),
+    ).model_dump(mode="json")])
+    executor = PipelineExecutor(
+        repository,
+        workflow,
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+        advisory_validator=FakeTargetedLocalizationValidator(),  # type: ignore[arg-type]
+    )
+    person = next(
+        item for item in repository.list_persons(batch["id"])
+        if item["cluster_key"] == "person-a"
+    )
+
+    result = await executor.relocalize_person(batch["id"], person["id"])
+    updated = next(
+        item for item in repository.list_persons(batch["id"])
+        if item["id"] == person["id"]
+    )
+
+    assert updated["faces"][0]["bbox"] == {"x": 1, "y": 2, "width": 10, "height": 12}
+    assert updated["faces"][0]["latest_localization_attempt"]["accepted"] is False
+    assert "I01-V02" in updated["faces"][0]["latest_localization_attempt"]["reason"]
+    assert result["failed_occurrence_codes"] == ["I01-V01"]
+    assert result["requires_manual_review"] is True
+
+
+@pytest.mark.anyio
+async def test_targeted_person_relocalization_rejects_concurrent_batch_writes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository = Repository(tmp_path / "relocalization-lock.sqlite3")
+    repository.initialize()
+    asset_root = tmp_path / "assets"
+    asset_root.mkdir()
+    executor = PipelineExecutor(
+        repository,
+        WorkflowService(repository),
+        FakeGateway(),  # type: ignore[arg-type]
+        AssetResolver(asset_root),
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_relocalization(batch_id: str, person_id: str) -> dict[str, Any]:
+        started.set()
+        await release.wait()
+        return {"batch_id": batch_id, "person_id": person_id}
+
+    monkeypatch.setattr(executor, "_relocalize_person", slow_relocalization)
+    first = asyncio.create_task(executor.relocalize_person("batch-1", "person-1"))
+    await started.wait()
+
+    with pytest.raises(InvalidTransition, match="already being re-localized"):
+        await executor.relocalize_person("batch-1", "person-2")
+
+    release.set()
+    assert await first == {"batch_id": "batch-1", "person_id": "person-1"}
 
 
 @pytest.mark.anyio
@@ -1023,6 +1537,57 @@ async def test_swap_reaching_iteration_limit_requires_review(tmp_path: Path) -> 
     assert len(repository.list_assets(batch["id"], "result")) == 1
 
 
+@pytest.mark.anyio
+async def test_later_generation_error_preserves_previous_candidate(
+    tmp_path: Path,
+) -> None:
+    class RejectingReviewValidator(FakeNumberedEditValidator):
+        async def review_numbered_image_edit(self, **kwargs):
+            self.reviewed_result_uri = kwargs["result_uri"]
+            return ImageEditReview(
+                passed=False,
+                scores=ImageEditScores(
+                    instruction_fulfillment=60,
+                    target_identity_consistency=60,
+                    face_naturalness=75,
+                    pose_expression_preservation=70,
+                    source_content_preservation=80,
+                    text_logo_preservation=90,
+                ),
+                issues=[],
+                summary="首轮未达到验收标准",
+                revised_edit_prompt=(
+                    "Keep every immutable constraint and correct only the requested face."
+                ),
+            )
+
+    repository, batch, gateway, executor = prepare_swap(
+        tmp_path,
+        RejectingReviewValidator(),
+    )
+    successful_swap = gateway.swap
+
+    async def fail_second_generation(request):
+        if len(gateway.requests) == 1:
+            raise ProviderExecutionError(provider_error("provider_rate_limited"))
+        return await successful_swap(request)
+
+    gateway.swap = fail_second_generation
+
+    result = await executor.execute_stage(batch["id"], JobStage.SWAP)
+    job = repository.latest_stage_jobs(batch["id"], JobStage.SWAP)[0]
+
+    assert result["completed"] is False
+    assert result["requires_review"] is True
+    assert job["status"] == JobStatus.NEEDS_REVIEW
+    assert job["current_iteration"] == 1
+    assert job["output"]["completed_iterations"] == 1
+    review = job["output"]["generation_review"]
+    assert review["stop_reason"] == "generation_unavailable"
+    assert review["generation_error"]["code"] == "provider_rate_limited"
+    assert len(repository.list_assets(batch["id"], "result")) == 1
+
+
 def test_asset_resolver_rejects_file_outside_asset_root(tmp_path: Path) -> None:
     asset_root = tmp_path / "assets"
     asset_root.mkdir()
@@ -1031,6 +1596,24 @@ def test_asset_resolver_rejects_file_outside_asset_root(tmp_path: Path) -> None:
 
     with pytest.raises(UnsafeAssetPath):
         AssetResolver(asset_root).for_remote(outside.resolve().as_uri())
+
+
+def test_asset_resolver_allows_explicit_read_only_legacy_root(tmp_path: Path) -> None:
+    asset_root = tmp_path / "assets"
+    legacy_root = tmp_path / "legacy-assets"
+    asset_root.mkdir()
+    legacy_root.mkdir()
+    legacy = legacy_root / "source.jpg"
+    legacy.write_bytes(b"legacy")
+
+    resolver = AssetResolver(asset_root, (legacy_root,))
+
+    assert resolver.local_path(legacy.resolve().as_uri()) == legacy.resolve()
+    assert resolver.materialize_result(
+        "batch-1",
+        "source-1",
+        "data:image/jpeg;base64,bmV3",
+    )[0].startswith(asset_root.resolve().as_uri())
 
 
 def test_only_latest_failed_attempt_can_be_retried(tmp_path: Path) -> None:

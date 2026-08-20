@@ -1,9 +1,13 @@
 import asyncio
+import base64
+import hashlib
 import json
-from typing import Annotated, Literal, TypeAlias
+from io import BytesIO
+from typing import Annotated, Any, Callable, Literal, TypeAlias
 from urllib.parse import urlparse
 
 import httpx
+from PIL import Image, ImageDraw
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -15,12 +19,18 @@ from pydantic import (
 )
 
 from personaweave.domain import (
+    AnalysisResult,
     AttributePermission,
+    BoundingBox,
+    FaceObservation,
+    FaceLocalizationAttempt,
     HEAD_ATTRIBUTES,
+    NormalizedBoundingBox,
     PersonAppearance,
     PersonDetectionAudit,
     ReferenceSufficiency,
     SemanticMaskProposal,
+    SourceFaceCondition,
     SourceOccurrenceEvidence,
     SourceOccurrenceReferenceAssessment,
     SourceOperationReferenceCoverage,
@@ -28,17 +38,21 @@ from personaweave.domain import (
     TargetIdentityProfile,
     ValidationRequest,
     ValidationResult,
+    source_face_condition_requires_review,
 )
 from personaweave.providers.gateway import ProviderNotConfigured
+from personaweave.provider_errors import ProviderExecutionError, provider_error
 
 
 def _normalize_exact_bool(value: object) -> object:
     if isinstance(value, bool):
         return value
-    if value == "true":
-        return True
-    if value == "false":
-        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
     raise ValueError("boolean value must be true or false")
 
 
@@ -167,6 +181,17 @@ class LargePersonClustering(BaseModel):
     uncertain_codes: list[str] = Field(default_factory=list)
 
 
+class PersonClusterSwap(BaseModel):
+    left_code: str = Field(min_length=1, max_length=40)
+    right_code: str = Field(min_length=1, max_length=40)
+    confidence: Annotated[float, Field(ge=0, le=1)]
+
+
+class PersonClusterReview(BaseModel):
+    swaps: list[PersonClusterSwap] = Field(default_factory=list)
+    uncertain_codes: list[str] = Field(default_factory=list)
+
+
 class PersonAppearanceObservation(BaseModel):
     code: str = Field(min_length=1, max_length=40)
     appearance: PersonAppearance
@@ -174,6 +199,190 @@ class PersonAppearanceObservation(BaseModel):
 
 class PersonAppearanceAnalysis(BaseModel):
     people: list[PersonAppearanceObservation]
+
+
+class BatchPersonOccurrence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_code: str = Field(min_length=1, max_length=80)
+    bbox: NormalizedBoundingBox
+    detection_confidence: Annotated[float, Field(ge=0, le=1)]
+    person_group_key: str = Field(min_length=1, max_length=120)
+    identity_confidence: Annotated[float, Field(ge=0, le=1)]
+    grouping_uncertain: ExactBool
+    appearance: PersonAppearance
+
+
+class BatchSourcePeople(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_code: str = Field(pattern=r"^I\d+$", max_length=40)
+    complete: ExactBool
+    visible_person_count: int = Field(ge=0, le=128)
+    people: list[BatchPersonOccurrence] = Field(default_factory=list, max_length=128)
+    summary: str = Field(default="", max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_count(self) -> "BatchSourcePeople":
+        if self.visible_person_count != len(self.people):
+            raise ValueError("visible_person_count must equal the returned people count")
+        return self
+
+
+class BatchPersonAnalysis(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sources: list[BatchSourcePeople] = Field(min_length=1, max_length=128)
+
+
+def _project_model_fields(value: object, model: type[BaseModel]) -> object:
+    """Drop auxiliary model prose while preserving missing/invalid contract fields."""
+    if not isinstance(value, dict):
+        return value
+    return {
+        field: value[field]
+        for field in model.model_fields
+        if field in value
+    }
+
+
+def _project_batch_person_analysis(value: object) -> object:
+    """Project a provider response onto the strict batch-analysis contract.
+
+    Vision models sometimes add recap or explanation fields even in JSON mode.
+    Those fields cannot affect authorization or identity grouping and are safe to
+    discard. Required fields and all semantic invariants remain strictly checked
+    by the Pydantic models after this projection.
+    """
+    projected = _project_model_fields(value, BatchPersonAnalysis)
+    if not isinstance(projected, dict):
+        return projected
+    raw_sources = projected.get("sources")
+    if not isinstance(raw_sources, list):
+        return projected
+    sources: list[object] = []
+    for raw_source in raw_sources:
+        source = _project_model_fields(raw_source, BatchSourcePeople)
+        if not isinstance(source, dict):
+            sources.append(source)
+            continue
+        raw_people = source.get("people")
+        if isinstance(raw_people, list):
+            people: list[object] = []
+            for raw_person in raw_people:
+                person = _project_model_fields(raw_person, BatchPersonOccurrence)
+                if isinstance(person, dict):
+                    if "bbox" in person:
+                        person["bbox"] = _project_model_fields(
+                            person["bbox"], NormalizedBoundingBox
+                        )
+                    if "appearance" in person:
+                        person["appearance"] = _project_model_fields(
+                            person["appearance"], PersonAppearance
+                        )
+                people.append(person)
+            source["people"] = people
+        sources.append(source)
+    projected["sources"] = sources
+    return projected
+
+
+class TileBoundingBox(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    x: int = Field(ge=0, lt=1000)
+    y: int = Field(ge=0, lt=1000)
+    width: int = Field(gt=0, le=1000)
+    height: int = Field(gt=0, le=1000)
+
+    @model_validator(mode="after")
+    def validate_grid_bounds(self) -> "TileBoundingBox":
+        if self.x + self.width > 1000 or self.y + self.height > 1000:
+            raise ValueError("tile bbox must remain inside the 0-1000 canvas")
+        return self
+
+
+class PreciseFaceLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_code: str = Field(min_length=1, max_length=80)
+    bbox: TileBoundingBox
+    confidence: Annotated[float, Field(ge=0, le=1)]
+
+
+class PreciseSourceLocations(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_code: str = Field(pattern=r"^I\d+$", max_length=40)
+    locations: list[PreciseFaceLocation] = Field(max_length=128)
+
+
+class FaceCropReviewItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    occurrence_code: str = Field(min_length=1, max_length=80)
+    full_face_visible: ExactBool
+    crop_contains_all_source_visible_face: ExactBool
+    matches_expected_occurrence: ExactBool = False
+    source_face_condition: SourceFaceCondition
+    face_centered: ExactBool
+    tight_face_crop: ExactBool
+    boundary_issue: Literal[
+        "none",
+        "top_clipped",
+        "bottom_clipped",
+        "left_clipped",
+        "right_clipped",
+        "multiple_clipped",
+    ] = "none"
+    unrecoverable_occlusion: ExactBool = False
+    reason: str = Field(default="", max_length=300)
+
+    @field_validator("source_face_condition", mode="before")
+    @classmethod
+    def normalize_source_face_condition(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        return {
+            "minor": "minor_occlusion",
+            "mild_occlusion": "minor_occlusion",
+            "natural_occlusion": "minor_occlusion",
+            "major": "major_occlusion",
+            "severe_occlusion": "major_occlusion",
+            "boundary": "source_boundary",
+            "source_clipped": "source_boundary",
+            "unclear": "unusable",
+            "too_unclear": "unusable",
+        }.get(normalized, normalized)
+
+    @model_validator(mode="after")
+    def canonicalize_legacy_occlusion_flag(self) -> "FaceCropReviewItem":
+        self.unrecoverable_occlusion = source_face_condition_requires_review(
+            self.source_face_condition
+        )
+        return self
+
+    @field_validator("boundary_issue", mode="before")
+    @classmethod
+    def normalize_boundary_issue(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        return {
+            "top": "top_clipped",
+            "bottom": "bottom_clipped",
+            "left": "left_clipped",
+            "right": "right_clipped",
+            "multiple": "multiple_clipped",
+        }.get(normalized, normalized)
+
+
+class FaceCropReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_code: str = Field(pattern=r"^I\d+$", max_length=40)
+    items: list[FaceCropReviewItem] = Field(max_length=128)
 
 
 class _CompiledTargetPayload(BaseModel):
@@ -267,12 +476,13 @@ def _configured_endpoint(base_url: str, api_path: str) -> str:
 
 
 class YunwuMultimodalProvider:
-    """OpenAI-compatible visual QA adapter.
+    """OpenAI-compatible multimodal analysis, planning, and visual QA adapter.
 
-    This adapter is deliberately excluded from biometric identity assignment.
-    It reports visual anomalies but cannot confirm that two faces are the same
-    person.
+    Same-person grouping is limited to visual continuity within one user batch.
+    It never names people or verifies real-world identity.
     """
+
+    PRECISE_LOCALIZATION_CONCURRENCY = 5
 
     def __init__(
         self,
@@ -348,14 +558,1020 @@ class YunwuMultimodalProvider:
             "messages": [{"role": "user", "content": content}],
             "response_format": {"type": "json_object"},
         }
-        response = await self._client.post(
-            self.endpoint,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=payload,
-        )
-        response.raise_for_status()
-        body = response.json()
+        body = await self._post_json_payload(payload)
         return _parse_json_object(body["choices"][0]["message"]["content"])
+
+    async def _post_json_payload(self, payload: dict[str, object]) -> dict:
+        try:
+            async with asyncio.timeout(self.timeout):
+                return await self._post_json_payload_with_retries(payload)
+        except TimeoutError as error:
+            raise httpx.ReadTimeout(
+                f"Yunwu request exceeded the {self.timeout:g}-second wall-clock limit"
+            ) from error
+
+    async def _post_json_payload_with_retries(
+        self,
+        payload: dict[str, object],
+    ) -> dict:
+        request_digest = hashlib.sha256(
+            (
+                self.endpoint
+                + "\n"
+                + json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Idempotency-Key": f"personaweave-v1-{request_digest}",
+        }
+        response: httpx.Response | None = None
+        for attempt in range(2):
+            try:
+                response = await self._client.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+            except httpx.TransportError:
+                if attempt == 1:
+                    raise
+                await asyncio.sleep(2)
+                continue
+            retryable_status = response.status_code == 429 or response.status_code >= 500
+            if not retryable_status or attempt == 1:
+                break
+            retry_after = response.headers.get("Retry-After", "")
+            delay = min(30, int(retry_after)) if retry_after.isdigit() else 2
+            await asyncio.sleep(delay)
+        assert response is not None
+        if response.status_code == 429:
+            raise ProviderExecutionError(provider_error(
+                "provider_rate_limited",
+                upstream_status=response.status_code,
+            ))
+        if response.status_code >= 500:
+            raise ProviderExecutionError(provider_error(
+                "provider_unavailable",
+                upstream_status=response.status_code,
+            ))
+        if response.status_code >= 400:
+            raise ProviderExecutionError(provider_error(
+                "provider_request_rejected",
+                upstream_status=response.status_code,
+            ))
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ValueError("Yunwu response must be a JSON object")
+        return body
+
+    async def analyze_batch_people(
+        self,
+        sources: list[dict[str, Any]],
+    ) -> list[AnalysisResult]:
+        """Discover and group visible people jointly across a complete image batch."""
+        if not sources or len(sources) > 128:
+            raise ValueError("batch person analysis requires 1 to 128 source images")
+        source_codes = [str(source["source_code"]) for source in sources]
+        if len(source_codes) != len(set(source_codes)):
+            raise ValueError("source codes must be unique")
+        shape = {
+            "sources": [{
+                "source_code": source_codes[0],
+                "complete": True,
+                "visible_person_count": 1,
+                "people": [{
+                    "occurrence_code": f"{source_codes[0]}-V01",
+                    "bbox": {"x": 0.1, "y": 0.1, "width": 0.2, "height": 0.3},
+                    "detection_confidence": 0.9,
+                    "person_group_key": "G01",
+                    "identity_confidence": 0.9,
+                    "grouping_uncertain": False,
+                    "appearance": {
+                        "apparent_age": "visible age impression or uncertain",
+                        "face_features": "visible facial traits or uncertain",
+                        "hair": "visible hair or uncertain",
+                        "eyewear": "visible eyewear or none/uncertain",
+                        "accessories": "visible accessories or none/uncertain",
+                        "body": "visible build/context or uncertain",
+                        "clothing": "visible clothing or uncertain",
+                        "pose": "visible pose/gaze or uncertain",
+                        "lighting_occlusion": "lighting, blur and occlusion context",
+                    },
+                }],
+                "summary": "short completeness and uncertainty note",
+            }]
+        }
+        content: list[dict[str, object]] = [{
+            "type": "text",
+            "text": (
+                "Analyze ALL supplied original images jointly as one batch. Enumerate every visible "
+                "real person whose face is discernible enough to be selected for a face edit, including "
+                "profiles, small faces and partially occluded faces. Exclude printed images, screens, "
+                "statues and reflections. Return one conservative normalized face bbox per occurrence "
+                "in the displayed, EXIF-oriented image. Group occurrences across images only when they "
+                "visually depict the same source person. Never put two people from the same source image "
+                "in one group. Do not name anyone or infer sensitive attributes. If a cross-image match "
+                "is uncertain, keep it as a singleton group, set grouping_uncertain=true, and lower "
+                "identity_confidence; never guess. Describe only visible appearance and explicitly write "
+                "'uncertain' when evidence is insufficient. Set complete=true only after checking the "
+                "entire image and make visible_person_count exactly match people. Return every supplied "
+                "source_code exactly once and return JSON only. Coordinates are fractions in [0,1]. "
+                f"Exact source codes: {json.dumps(source_codes)}. Exact shape: "
+                f"{json.dumps(shape, ensure_ascii=False)}"
+            ),
+        }]
+        for source in sources:
+            content.extend([
+                {"type": "text", "text": f"SOURCE {source['source_code']}"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": source.get("analysis_image_uri", source["image_uri"]),
+                        "detail": "original",
+                    },
+                },
+            ])
+        compiled = BatchPersonAnalysis.model_validate(
+            _project_batch_person_analysis(await self._json_completion(content))
+        )
+        returned_codes = [source.source_code for source in compiled.sources]
+        if (
+            len(returned_codes) != len(set(returned_codes))
+            or set(returned_codes) != set(source_codes)
+        ):
+            raise ValueError("batch person analysis must cover every source exactly once")
+        by_code = {source.source_code: source for source in compiled.sources}
+        results: list[AnalysisResult] = []
+        for source in sources:
+            source_code = str(source["source_code"])
+            analysis = by_code[source_code]
+            if not analysis.complete:
+                raise ValueError(f"batch person analysis was incomplete for {source_code}")
+            occurrence_codes = [person.occurrence_code for person in analysis.people]
+            if len(occurrence_codes) != len(set(occurrence_codes)):
+                raise ValueError(f"duplicate occurrence codes returned for {source_code}")
+            group_keys = [person.person_group_key for person in analysis.people]
+            if len(group_keys) != len(set(group_keys)):
+                raise ValueError(f"two people in {source_code} cannot share one group")
+            width = int(source["width"])
+            height = int(source["height"])
+            if width <= 0 or height <= 0:
+                raise ValueError("source dimensions must be positive")
+            faces: list[FaceObservation] = []
+            requires_review = False
+            for index, person in enumerate(analysis.people, start=1):
+                bbox = person.bbox
+                x = min(width - 1, max(0, round(bbox.x * width)))
+                y = min(height - 1, max(0, round(bbox.y * height)))
+                box_width = min(width - x, max(1, round(bbox.width * width)))
+                box_height = min(height - y, max(1, round(bbox.height * height)))
+                uncertain = person.grouping_uncertain or person.identity_confidence < 0.8
+                group_key = (
+                    f"vlm-uncertain:{source_code}:{person.occurrence_code}"
+                    if uncertain
+                    else f"vlm:{person.person_group_key}"
+                )
+                requires_review = requires_review or uncertain
+                faces.append(FaceObservation(
+                    external_face_id=person.occurrence_code or f"{source_code}-V{index:02d}",
+                    bbox={"x": x, "y": y, "width": box_width, "height": box_height},
+                    detection_confidence=person.detection_confidence,
+                    suggested_person_key=group_key,
+                    identity_confidence=person.identity_confidence,
+                    needs_confirmation=True,
+                    appearance=person.appearance,
+                ))
+            results.append(AnalysisResult(
+                asset_id=str(source["asset_id"]),
+                faces=faces,
+                provider="yunwu-multimodal-batch-analysis",
+                model=self.model,
+                detection_audit=PersonDetectionAudit(
+                    available=True,
+                    complete=True,
+                    detected_face_count=len(faces),
+                    visible_face_count=analysis.visible_person_count,
+                    requires_manual_review=requires_review,
+                    summary=analysis.summary,
+                ),
+            ))
+        return results
+
+    async def refine_batch_face_boxes(
+        self,
+        sources: list[dict[str, Any]],
+        results: list[AnalysisResult],
+        *,
+        broad_search: bool = False,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[AnalysisResult]:
+        """Refine coarse batch boxes per image and verify deterministic face crops."""
+        source_by_id = {str(source["asset_id"]): source for source in sources}
+        if set(source_by_id) != {result.asset_id for result in results}:
+            raise ValueError("precise localization inputs do not cover the same source set")
+        semaphore = asyncio.Semaphore(self.PRECISE_LOCALIZATION_CONCURRENCY)
+
+        async def refine_one(result: AnalysisResult) -> AnalysisResult:
+            async with semaphore:
+                try:
+                    async with asyncio.timeout(self.timeout):
+                        refined = await self._refine_source_face_boxes(
+                            source_by_id[result.asset_id],
+                            result,
+                            broad_search=broad_search,
+                        )
+                except TimeoutError as error:
+                    raise httpx.ReadTimeout(
+                        "precise face localization exceeded the per-image "
+                        f"{self.timeout:g}-second wall-clock limit"
+                    ) from error
+                if progress_callback is not None:
+                    progress_callback(result.asset_id)
+                return refined
+
+        return list(await asyncio.gather(*(refine_one(result) for result in results)))
+
+    async def _refine_source_face_boxes(
+        self,
+        source: dict[str, Any],
+        original_result: AnalysisResult,
+        *,
+        broad_search: bool = False,
+    ) -> AnalysisResult:
+        result = original_result.model_copy(deep=True)
+        if not result.faces:
+            return result
+        faces_by_code = {face.external_face_id: face for face in result.faces}
+        anchor_bbox_by_code = {
+            code: face.bbox.model_copy(deep=True)
+            for code, face in faces_by_code.items()
+        }
+        pending_codes = list(faces_by_code)
+        feedback_by_code: dict[str, str] = {}
+        last_review_by_code: dict[str, FaceCropReviewItem] = {}
+        last_confidence_by_code: dict[str, float] = {}
+        last_candidate_by_code: dict[str, FaceObservation] = {}
+        source_occlusion_by_code: dict[str, str] = {}
+        result.localization_attempts = []
+        for attempt in range(1, 3):
+            target_faces = [faces_by_code[code] for code in pending_codes]
+            localization_faces = [
+                face.model_copy(update={
+                    "bbox": anchor_bbox_by_code[face.external_face_id],
+                })
+                for face in target_faces
+            ]
+            locations, tile_by_code = await self._localize_source_faces(
+                source=source,
+                faces=localization_faces,
+                feedback_by_code=feedback_by_code,
+                attempt=attempt,
+                expansion=(
+                    10.0
+                    if broad_search
+                    else (3.0 if attempt == 1 else 6.0)
+                ),
+            )
+            location_by_code = {
+                location.occurrence_code: location for location in locations.locations
+            }
+            if (
+                len(location_by_code) != len(locations.locations)
+                or set(location_by_code) != set(pending_codes)
+            ):
+                raise ValueError(
+                    f"tile localization must cover every pending face in {source['source_code']}"
+                )
+            width = int(source["width"])
+            height = int(source["height"])
+            candidate_by_code: dict[str, FaceObservation] = {}
+            for code in pending_codes:
+                face = faces_by_code[code]
+                location = location_by_code[code]
+                tile = tile_by_code[code]
+                box = location.bbox
+                x = min(width - 1, tile.x + round(box.x / 1000 * tile.width))
+                y = min(height - 1, tile.y + round(box.y / 1000 * tile.height))
+                box_width = min(
+                    width - x,
+                    max(1, round(box.width / 1000 * tile.width)),
+                )
+                box_height = min(
+                    height - y,
+                    max(1, round(box.height / 1000 * tile.height)),
+                )
+                if self._precise_location_is_plausible(location):
+                    candidate_bbox = BoundingBox(
+                        x=x, y=y, width=box_width, height=box_height
+                    )
+                    candidate_confidence = location.confidence
+                else:
+                    candidate_bbox = anchor_bbox_by_code[code].model_copy(deep=True)
+                    candidate_confidence = face.detection_confidence
+                candidate = face.model_copy(update={
+                    "bbox": candidate_bbox,
+                    "detection_confidence": candidate_confidence,
+                })
+                candidate_by_code[code] = candidate
+                last_candidate_by_code[code] = candidate
+                last_confidence_by_code[code] = location.confidence
+            review = await self._review_source_face_crops(
+                source,
+                [candidate_by_code[code] for code in pending_codes],
+            )
+            review_by_code = {item.occurrence_code: item for item in review.items}
+            if (
+                len(review_by_code) != len(review.items)
+                or set(review_by_code) != set(pending_codes)
+            ):
+                raise ValueError(
+                    f"crop review must cover every pending face in {source['source_code']}"
+                )
+            next_pending: list[str] = []
+            feedback_by_code = {}
+            for code in pending_codes:
+                item = review_by_code[code]
+                last_review_by_code[code] = item
+                accepted = bool(
+                    item.crop_contains_all_source_visible_face
+                    and item.matches_expected_occurrence
+                    and item.face_centered
+                    and item.tight_face_crop
+                )
+                candidate = candidate_by_code[code]
+                result.localization_attempts.append(FaceLocalizationAttempt(
+                    occurrence_code=code,
+                    attempt=attempt,
+                    bbox=candidate.bbox,
+                    confidence=location_by_code[code].confidence,
+                    full_face_visible=item.full_face_visible,
+                    crop_contains_all_source_visible_face=(
+                        item.crop_contains_all_source_visible_face
+                    ),
+                    matches_expected_occurrence=item.matches_expected_occurrence,
+                    source_face_condition=item.source_face_condition,
+                    face_centered=item.face_centered,
+                    tight_face_crop=item.tight_face_crop,
+                    accepted=accepted,
+                    boundary_issue=item.boundary_issue,
+                    unrecoverable_occlusion=item.unrecoverable_occlusion,
+                    reason=item.reason,
+                ))
+                if accepted:
+                    faces_by_code[code].bbox = candidate.bbox.model_copy(deep=True)
+                    faces_by_code[code].detection_confidence = (
+                        candidate.detection_confidence
+                    )
+                    if source_face_condition_requires_review(
+                        item.source_face_condition
+                    ):
+                        source_occlusion_by_code[code] = (
+                            item.reason or "source image hides core facial features"
+                        )
+                else:
+                    next_pending.append(code)
+                    feedback_by_code[code] = item.reason or "crop geometry failed"
+            pending_codes = next_pending
+            if not pending_codes:
+                break
+        for repair_attempt in range(3, 5):
+            repair_codes = [
+                code
+                for code in pending_codes
+                if last_review_by_code[code].boundary_issue != "none"
+            ]
+            if not repair_codes:
+                break
+            width = int(source["width"])
+            height = int(source["height"])
+            repair_by_code: dict[str, FaceObservation] = {}
+            for code in repair_codes:
+                candidate = last_candidate_by_code[code]
+                repaired_bbox = self._apply_directional_boundary_repair(
+                    candidate.bbox,
+                    image_width=width,
+                    image_height=height,
+                    issue=last_review_by_code[code].boundary_issue,
+                )
+                repair_by_code[code] = candidate.model_copy(
+                    update={"bbox": repaired_bbox}
+                )
+            repair_faces = [repair_by_code[code] for code in repair_codes]
+            review = await self._review_source_face_crops(source, repair_faces)
+            review_by_code = {item.occurrence_code: item for item in review.items}
+            if (
+                len(review_by_code) != len(review.items)
+                or set(review_by_code) != set(repair_codes)
+            ):
+                raise ValueError(
+                    f"boundary repair review must cover every repaired face in {source['source_code']}"
+                )
+            for code in repair_codes:
+                item = review_by_code[code]
+                last_review_by_code[code] = item
+                accepted = bool(
+                    item.crop_contains_all_source_visible_face
+                    and item.matches_expected_occurrence
+                    and item.face_centered
+                    and item.tight_face_crop
+                )
+                candidate = repair_by_code[code]
+                result.localization_attempts.append(FaceLocalizationAttempt(
+                    occurrence_code=code,
+                    attempt=repair_attempt,
+                    bbox=candidate.bbox,
+                    confidence=last_confidence_by_code[code],
+                    full_face_visible=item.full_face_visible,
+                    crop_contains_all_source_visible_face=(
+                        item.crop_contains_all_source_visible_face
+                    ),
+                    matches_expected_occurrence=item.matches_expected_occurrence,
+                    source_face_condition=item.source_face_condition,
+                    face_centered=item.face_centered,
+                    tight_face_crop=item.tight_face_crop,
+                    accepted=accepted,
+                    boundary_issue=item.boundary_issue,
+                    unrecoverable_occlusion=item.unrecoverable_occlusion,
+                    reason=item.reason,
+                ))
+                last_candidate_by_code[code] = candidate
+                if accepted:
+                    faces_by_code[code].bbox = candidate.bbox.model_copy(deep=True)
+                    faces_by_code[code].detection_confidence = (
+                        candidate.detection_confidence
+                    )
+                    if source_face_condition_requires_review(
+                        item.source_face_condition
+                    ):
+                        source_occlusion_by_code[code] = (
+                            item.reason or "source image hides core facial features"
+                        )
+                    pending_codes.remove(code)
+                    feedback_by_code.pop(code, None)
+                else:
+                    feedback_by_code[code] = item.reason or "boundary repair failed"
+        geometry_verified = not pending_codes
+        audit = result.detection_audit or PersonDetectionAudit(
+            complete=True,
+            detected_face_count=len(result.faces),
+            visible_face_count=len(result.faces),
+        )
+        existing_summary = audit.summary.strip()
+        geometry_summary = (
+            "逐图面部裁剪复核通过。"
+            if geometry_verified
+            else "逐图面部裁剪复核未通过：" + "；".join(
+                f"{code}: {feedback_by_code.get(code, 'crop geometry failed')}"
+                for code in pending_codes
+            )
+        )
+        source_summary = (
+            " 原图面部条件需人工确认：" + "；".join(
+                f"{code}: {reason}"
+                for code, reason in source_occlusion_by_code.items()
+            )
+            if source_occlusion_by_code
+            else ""
+        )
+        result.detection_audit = audit.model_copy(update={
+            "requires_manual_review": bool(
+                audit.requires_manual_review
+                or not geometry_verified
+                or source_occlusion_by_code
+            ),
+            "summary": (
+                f"{existing_summary} {geometry_summary}{source_summary}"
+            ).strip()[:1000],
+        })
+        return result
+
+    @staticmethod
+    def _precise_location_is_plausible(location: PreciseFaceLocation) -> bool:
+        box = location.bbox
+        aspect_ratio = box.width / box.height
+        return bool(
+            location.confidence >= 0.45
+            and min(box.width, box.height) >= 40
+            and 0.3 <= aspect_ratio <= 2.5
+        )
+
+    @staticmethod
+    def _face_anchor_is_unreliable(
+        face: FaceObservation,
+        *,
+        image_width: int,
+        image_height: int,
+    ) -> bool:
+        bbox = face.bbox
+        aspect_ratio = bbox.width / bbox.height
+        minimum_dimension = max(12, round(min(image_width, image_height) * 0.003))
+        return bool(
+            face.detection_confidence < 0.45
+            or min(bbox.width, bbox.height) < minimum_dimension
+            or not 0.3 <= aspect_ratio <= 2.5
+        )
+
+    @staticmethod
+    def _apply_directional_boundary_repair(
+        bbox: BoundingBox,
+        *,
+        image_width: int,
+        image_height: int,
+        issue: Literal[
+            "top_clipped",
+            "bottom_clipped",
+            "left_clipped",
+            "right_clipped",
+            "multiple_clipped",
+        ],
+    ) -> BoundingBox:
+        expansion_ratio = 0.18 if issue == "multiple_clipped" else 0.6
+        horizontal = max(1, round(bbox.width * expansion_ratio))
+        vertical = max(1, round(bbox.height * expansion_ratio))
+        left = bbox.x
+        top = bbox.y
+        right = bbox.x + bbox.width
+        bottom = bbox.y + bbox.height
+        if issue in {"left_clipped", "multiple_clipped"}:
+            left -= horizontal
+        if issue in {"right_clipped", "multiple_clipped"}:
+            right += horizontal
+        if issue in {"top_clipped", "multiple_clipped"}:
+            top -= vertical
+        if issue in {"bottom_clipped", "multiple_clipped"}:
+            bottom += vertical
+        left = max(0, left)
+        top = max(0, top)
+        right = min(image_width, right)
+        bottom = min(image_height, bottom)
+        return BoundingBox(
+            x=left,
+            y=top,
+            width=max(1, right - left),
+            height=max(1, bottom - top),
+        )
+
+    async def _localize_source_faces(
+        self,
+        *,
+        source: dict[str, Any],
+        faces: list[FaceObservation],
+        feedback_by_code: dict[str, str],
+        attempt: int,
+        expansion: float,
+    ) -> tuple[PreciseSourceLocations, dict[str, BoundingBox]]:
+        source_code = str(source["source_code"])
+        tile_uri_by_code, tile_by_code = self._localization_tile_images(
+            source["image_uri"],
+            faces,
+            expansion=expansion,
+        )
+        occurrences = [
+            {
+                "occurrence_code": face.external_face_id,
+                "visible_appearance": face.appearance.model_dump(),
+                "expected_person_appearances": source.get(
+                    "expected_person_appearances", []
+                ),
+                "previous_review_failure": feedback_by_code.get(face.external_face_id, ""),
+            }
+            for face in faces
+        ]
+        instruction = (
+            "Each labeled panel is an independently enlarged source-image tile for exactly one "
+            "occurrence. Precisely localize the FACE inside each matching tile. Coordinates are "
+            "relative to that tile's own 0-1000 cyan grid, never the whole source image. Return a "
+            "tight face rectangle: include the complete visible "
+            "forehead, eyes, nose, mouth, cheeks and chin, plus only minimal surrounding hair. Exclude "
+            "neck, shoulders, chest, arms and clothing. For a profile or occluded face, bound only the "
+            "visible face while retaining the full visible chin and forehead. Use integer coordinates "
+            "on each tile's 0-1000 grid. If a tile contains multiple faces, use the supplied appearance "
+            "and the face closest to the tile center; never switch to a neighboring person. Do not "
+            "The supplied appearance evidence is authoritative: do not choose the face nearest the old "
+            "anchor when it conflicts with that evidence. Use proximity only to break a tie between "
+            "appearance-compatible faces. Do not change occurrence codes, add people, remove people, or "
+            "group identities. Return every "
+            "supplied tile exactly once as JSON."
+            f"\nSOURCE: {source_code}"
+            f"\nOCCURRENCES: {json.dumps(occurrences, ensure_ascii=False)}"
+            + (
+                "\nRETURN SHAPE: {\"source_code\":\""
+                + source_code
+                + "\",\"locations\":[{\"occurrence_code\":\"exact code\","
+                "\"bbox\":{\"x\":\"integer 0-999\",\"y\":\"integer 0-999\","
+                "\"width\":\"positive integer\",\"height\":\"positive integer\"},"
+                "\"confidence\":0.0}]}"
+            )
+        )
+        content: list[dict[str, object]] = [{"type": "text", "text": instruction}]
+        for face in faces:
+            code = face.external_face_id
+            content.extend([
+                {"type": "text", "text": f"INDEPENDENT TILE: {code}"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": tile_uri_by_code[code],
+                        "detail": "original",
+                    },
+                },
+            ])
+        raw_location = await self._json_completion(content)
+        raw_locations = raw_location.get("locations")
+        if isinstance(raw_locations, list):
+            raw_locations = [
+                {
+                    "occurrence_code": item.get("occurrence_code"),
+                    "bbox": (
+                        {
+                            "x": item["bbox"].get("x"),
+                            "y": item["bbox"].get("y"),
+                            "width": item["bbox"].get("width"),
+                            "height": item["bbox"].get("height"),
+                        }
+                        if isinstance(item.get("bbox"), dict)
+                        else item.get("bbox")
+                    ),
+                    "confidence": item.get("confidence"),
+                }
+                if isinstance(item, dict)
+                else item
+                for item in raw_locations
+            ]
+        located = PreciseSourceLocations.model_validate({
+            "source_code": raw_location.get("source_code"),
+            "locations": raw_locations,
+        })
+        if located.source_code != source_code:
+            raise ValueError("precise localization returned a mismatched source code")
+        return located, tile_by_code
+
+    async def _review_source_face_crops(
+        self,
+        source: dict[str, Any],
+        faces: list[FaceObservation],
+    ) -> FaceCropReview:
+        source_code = str(source["source_code"])
+        board_uri = self._face_crop_review_board(source["image_uri"], faces)
+        codes = [face.external_face_id for face in faces]
+        expected_appearances = {
+            face.external_face_id: {
+                "occurrence_appearance": face.appearance.model_dump(),
+                "same_person_cross_image_appearances": source.get(
+                    "expected_person_appearances", []
+                ),
+            }
+            for face in faces
+        }
+        shape = {
+            "source_code": source_code,
+            "items": [{
+                "occurrence_code": codes[0],
+                "full_face_visible": True,
+                "crop_contains_all_source_visible_face": True,
+                "matches_expected_occurrence": True,
+                "source_face_condition": "complete",
+                "face_centered": True,
+                "tight_face_crop": True,
+                "boundary_issue": "none",
+                "unrecoverable_occlusion": False,
+                "reason": "short visible-only explanation",
+            }],
+        }
+        raw_review = await self._json_completion([
+            {
+                "type": "text",
+                "text": (
+                    "Compare each labeled deterministic FACE crop with the full source context supplied "
+                    "before it. The full source is authoritative for deciding whether a missing facial "
+                    "part was cut off by the crop or is already hidden in the source photograph. "
+                    "Judge source condition and crop geometry independently. full_face_visible describes "
+                    "whether the face is complete in the full source itself. "
+                    "Classify source_face_condition as exactly one of: complete; minor_occlusion for small "
+                    "natural overlaps such as glasses, hair strands, a lollipop, a straw, or an object that "
+                    "does not hide core identity features; major_occlusion when a hand, phone, object, or person "
+                    "hides core eyes, nose, mouth, or most of one facial side; source_boundary when the original "
+                    "image edge cuts the face; unusable when blur or distance prevents reliable inspection. "
+                    "Only major_occlusion, source_boundary, and unusable require manual review. "
+                    "Also verify identity localization against EXPECTED_APPEARANCES. "
+                    "matches_expected_occurrence must be false when the crop shows a different source person, "
+                    "including conflicts in stable traits such as eyewear, hair, face shape, or accessories. "
+                    "Do not demand identical pose, expression, lighting, or occlusion across images. "
+                    "crop_contains_all_source_visible_face must be true only when the crop contains every facial "
+                    "pixel that is actually visible in the full source, even if other pixels are inherently "
+                    "occluded there. The crop must also keep the intended face dominant and reasonably centered. "
+                    "Hair, hats, glasses, natural occluders, and a small amount of collar, shoulder, or surrounding "
+                    "context are allowed. Set crop_contains_all_source_visible_face=false when the crop contains "
+                    "the wrong person, omits source-visible forehead, chin, or an essential side, or torso/background "
+                    "clearly dominates. Set boundary_issue "
+                    "to the single clipped edge, multiple_clipped for multiple edges, otherwise none. A "
+                    "boundary issue means facial pixels visible in the full source were excluded by the crop. "
+                    "When source_face_condition is major_occlusion, source_boundary, or unusable, do not request "
+                    "a wider crop to recover source-missing pixels; set unrecoverable_occlusion=true. Keep it "
+                    "false for complete and minor_occlusion. Only also "
+                    "set boundary_issue when the crop independently excludes visible facial pixels. "
+                    "Do not fail merely because hair, a hat, a little neck/clothing, or normal photographic "
+                    "context is visible. Do not "
+                    "identify or regroup people. Return every exact occurrence code once as JSON. "
+                    f"SOURCE: {source_code}. CODES: {json.dumps(codes)}. "
+                    f"EXPECTED_APPEARANCES: {json.dumps(expected_appearances, ensure_ascii=False)}. "
+                    f"SHAPE: {json.dumps(shape, ensure_ascii=False)}"
+                ),
+            },
+            {
+                "type": "text",
+                "text": "FULL SOURCE CONTEXT (authoritative occlusion evidence)",
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": source.get("analysis_image_uri", source["image_uri"]),
+                    "detail": "high",
+                },
+            },
+            {
+                "type": "text",
+                "text": "DETERMINISTIC FACE CROPS TO REVIEW",
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": board_uri, "detail": "high"},
+            },
+        ])
+        raw_review = self._normalize_face_crop_review_payload(
+            raw_review,
+            source_code=source_code,
+            occurrence_codes=codes,
+        )
+        raw_items = raw_review.get("items")
+        if isinstance(raw_items, list):
+            normalized_items: list[object] = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    normalized_items.append(item)
+                    continue
+                boundary_issue, boundary_uncertain = self._normalize_boundary_issue(
+                    item.get("boundary_issue", "none")
+                )
+                crop_contains_all = item.get(
+                    "crop_contains_all_source_visible_face",
+                    bool(
+                        boundary_issue == "none"
+                        and item.get("face_centered")
+                        and item.get("tight_face_crop")
+                        and (
+                            item.get("full_face_visible")
+                            or item.get("unrecoverable_occlusion")
+                        )
+                    ),
+                )
+                if boundary_uncertain:
+                    crop_contains_all = False
+                normalized_items.append({
+                    "occurrence_code": item.get("occurrence_code"),
+                    "full_face_visible": item.get("full_face_visible"),
+                    "crop_contains_all_source_visible_face": crop_contains_all,
+                    "matches_expected_occurrence": item.get(
+                        "matches_expected_occurrence", False
+                    ),
+                    "source_face_condition": item.get(
+                        "source_face_condition",
+                        (
+                            "major_occlusion"
+                            if item.get("unrecoverable_occlusion")
+                            else "complete"
+                        ),
+                    ),
+                    "face_centered": item.get("face_centered"),
+                    "tight_face_crop": item.get("tight_face_crop"),
+                    "boundary_issue": boundary_issue,
+                    "unrecoverable_occlusion": item.get(
+                        "unrecoverable_occlusion", False
+                    ),
+                    "reason": item.get("reason", ""),
+                })
+            raw_items = normalized_items
+        reviewed = FaceCropReview.model_validate({
+            "source_code": raw_review.get("source_code"),
+            "items": raw_items,
+        })
+        if reviewed.source_code != source_code:
+            raise ValueError("crop review returned a mismatched source code")
+        return reviewed
+
+    @staticmethod
+    def _normalize_boundary_issue(value: object) -> tuple[str, bool]:
+        """Return a canonical edge token and whether the provider value was unknown."""
+        if not isinstance(value, str):
+            return "multiple_clipped", True
+        token = value.strip().lower().replace("-", "_").replace(" ", "_")
+        while "__" in token:
+            token = token.replace("__", "_")
+        aliases = {
+            "none": "none",
+            "no": "none",
+            "no_issue": "none",
+            "not_clipped": "none",
+            "fully_visible": "none",
+            "na": "none",
+            "n/a": "none",
+            "not_applicable": "none",
+            "top": "top_clipped",
+            "top_edge": "top_clipped",
+            "top_clipped": "top_clipped",
+            "top_edge_clipped": "top_clipped",
+            "clipped_top": "top_clipped",
+            "bottom": "bottom_clipped",
+            "bottom_edge": "bottom_clipped",
+            "bottom_clipped": "bottom_clipped",
+            "bottom_edge_clipped": "bottom_clipped",
+            "clipped_bottom": "bottom_clipped",
+            "left": "left_clipped",
+            "left_edge": "left_clipped",
+            "left_clipped": "left_clipped",
+            "left_edge_clipped": "left_clipped",
+            "clipped_left": "left_clipped",
+            "right": "right_clipped",
+            "right_edge": "right_clipped",
+            "right_clipped": "right_clipped",
+            "right_edge_clipped": "right_clipped",
+            "clipped_right": "right_clipped",
+            "multiple": "multiple_clipped",
+            "multiple_edges": "multiple_clipped",
+            "multiple_clipped": "multiple_clipped",
+            "multiple_edges_clipped": "multiple_clipped",
+        }
+        normalized = aliases.get(token)
+        return (normalized, False) if normalized is not None else (
+            "multiple_clipped",
+            True,
+        )
+
+    @staticmethod
+    def _normalize_face_crop_review_payload(
+        raw_review: dict[str, Any],
+        *,
+        source_code: str,
+        occurrence_codes: list[str],
+    ) -> dict[str, Any]:
+        candidate: object = raw_review
+        if isinstance(candidate.get(source_code), dict):
+            candidate = candidate[source_code]
+        for wrapper in (
+            "face_crop_review",
+            "crop_review",
+            "review",
+            "result",
+            "output",
+            "data",
+        ):
+            if isinstance(candidate, dict) and isinstance(candidate.get(wrapper), dict):
+                candidate = candidate[wrapper]
+                break
+        if not isinstance(candidate, dict):
+            raise ValueError("crop review response must be a JSON object")
+
+        items: object = candidate.get("items")
+        if not isinstance(items, list):
+            for alias in ("reviews", "results", "faces", "occurrences"):
+                if isinstance(candidate.get(alias), list):
+                    items = candidate[alias]
+                    break
+        if not isinstance(items, list) and isinstance(candidate.get("occurrence_code"), str):
+            items = [candidate]
+        if not isinstance(items, list):
+            keyed_items = []
+            for code in occurrence_codes:
+                item = candidate.get(code)
+                if not isinstance(item, dict):
+                    keyed_items = []
+                    break
+                keyed_items.append({"occurrence_code": code, **item})
+            if keyed_items:
+                items = keyed_items
+        if not isinstance(items, list):
+            keys = ",".join(sorted(str(key) for key in candidate)[:12])
+            raise ValueError(
+                f"crop review response has no bounded item list (keys: {keys})"
+            )
+
+        returned_source = candidate.get(
+            "source_code",
+            raw_review.get("source_code", source_code),
+        )
+        return {"source_code": returned_source, "items": items}
+
+    def _localization_tile_images(
+        self,
+        image_uri: str,
+        faces: list[FaceObservation],
+        *,
+        expansion: float,
+    ) -> tuple[dict[str, str], dict[str, BoundingBox]]:
+        _, encoded = image_uri.split(",", 1)
+        with Image.open(BytesIO(base64.b64decode(encoded))) as image:
+            source = image.convert("RGB")
+        cell_size = 384
+        label_height = 28
+        tile_uri_by_code: dict[str, str] = {}
+        tile_by_code: dict[str, BoundingBox] = {}
+        for face in faces:
+            bbox = face.bbox
+            unreliable_anchor = self._face_anchor_is_unreliable(
+                face,
+                image_width=source.width,
+                image_height=source.height,
+            )
+            minimum_ratio = 0.25 if unreliable_anchor else 0.1
+            minimum_side = max(96, round(min(source.size) * minimum_ratio))
+            side = min(
+                min(source.size),
+                max(minimum_side, round(max(bbox.width, bbox.height) * expansion)),
+            )
+            center_x = bbox.x + bbox.width / 2
+            center_y = bbox.y + bbox.height / 2
+            left = min(max(0, round(center_x - side / 2)), max(0, source.width - side))
+            top = min(max(0, round(center_y - side / 2)), max(0, source.height - side))
+            right = min(source.width, left + side)
+            bottom = min(source.height, top + side)
+            tile = BoundingBox(
+                x=left,
+                y=top,
+                width=right - left,
+                height=bottom - top,
+            )
+            tile_by_code[face.external_face_id] = tile
+            content_size = cell_size - label_height
+            crop = source.crop((left, top, right, bottom)).resize(
+                (content_size, content_size),
+                Image.Resampling.LANCZOS,
+            )
+            cell = Image.new("RGB", (cell_size, cell_size), "white")
+            content_left = (cell_size - content_size) // 2
+            cell.paste(crop, (content_left, label_height))
+            draw = ImageDraw.Draw(cell)
+            draw.text((8, 7), face.external_face_id, fill=(0, 0, 0))
+            for step in range(0, 1001, 250):
+                x = content_left + round(step / 1000 * (content_size - 1))
+                y = label_height + round(
+                    step / 1000 * (content_size - 1)
+                )
+                draw.line((x, label_height, x, cell_size), fill=(0, 220, 220), width=1)
+                draw.line(
+                    (content_left, y, content_left + content_size, y),
+                    fill=(0, 220, 220),
+                    width=1,
+                )
+            output = BytesIO()
+            cell.save(output, format="JPEG", quality=92, optimize=True)
+            tile_uri_by_code[face.external_face_id] = (
+                "data:image/jpeg;base64,"
+                + base64.b64encode(output.getvalue()).decode("ascii")
+            )
+        return tile_uri_by_code, tile_by_code
+
+    def _face_crop_review_board(
+        self,
+        image_uri: str,
+        faces: list[FaceObservation],
+    ) -> str:
+        _, encoded = image_uri.split(",", 1)
+        with Image.open(BytesIO(base64.b64decode(encoded))) as image:
+            source = image.convert("RGB")
+        cell_size = 300
+        label_height = 28
+        columns = min(5, max(1, len(faces)))
+        rows = (len(faces) + columns - 1) // columns
+        board = Image.new("RGB", (columns * cell_size, rows * cell_size), "white")
+        for index, face in enumerate(faces):
+            bbox = face.bbox
+            crop = source.crop((
+                bbox.x,
+                bbox.y,
+                min(source.width, bbox.x + bbox.width),
+                min(source.height, bbox.y + bbox.height),
+            ))
+            crop.thumbnail(
+                (cell_size - 12, cell_size - label_height - 12),
+                Image.Resampling.LANCZOS,
+            )
+            cell = Image.new("RGB", (cell_size, cell_size), "white")
+            cell.paste(crop, ((cell_size - crop.width) // 2, label_height + 4))
+            ImageDraw.Draw(cell).text(
+                (8, 7), face.external_face_id, fill=(0, 0, 0)
+            )
+            board.paste(cell, ((index % columns) * cell_size, (index // columns) * cell_size))
+        output = BytesIO()
+        board.save(output, format="JPEG", quality=92, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(
+            output.getvalue()
+        ).decode("ascii")
 
     async def compile_target_identity(
         self,
@@ -591,8 +1807,8 @@ class YunwuMultimodalProvider:
                 },
             }]
         }
-        compiled = _CompiledPermissionsPayload.model_validate(
-            await self._json_completion([{
+        expected_codes = [str(operation["person_code"]) for operation in operations]
+        raw_compiled = await self._json_completion([{
                 "type": "text",
                 "text": (
                     "Compile immutable per-person head-attribute permissions from the user's exact "
@@ -611,8 +1827,22 @@ class YunwuMultimodalProvider:
                     f"SHAPE: {json.dumps(schema_hint, ensure_ascii=False)}"
                 ),
             }])
-        )
-        expected_codes = [str(operation["person_code"]) for operation in operations]
+        if (
+            isinstance(raw_compiled, dict)
+            and "operations" not in raw_compiled
+            and set(raw_compiled) == set(expected_codes)
+        ):
+            normalized_operations = []
+            for code in expected_codes:
+                permissions = raw_compiled[code]
+                if isinstance(permissions, dict) and set(permissions) == {"permissions"}:
+                    permissions = permissions["permissions"]
+                normalized_operations.append({
+                    "person_code": code,
+                    "permissions": permissions,
+                })
+            raw_compiled = {"operations": normalized_operations}
+        compiled = _CompiledPermissionsPayload.model_validate(raw_compiled)
         returned_codes = [item.person_code for item in compiled.operations]
         if (
             len(returned_codes) != len(set(returned_codes))
@@ -684,9 +1914,11 @@ class YunwuMultimodalProvider:
             "Propose authorization mask geometry for this exact source image. Return arbitrary "
             "normalized polygon contours, not ellipses or bounding boxes. Coordinates must be finite "
             "and inside [0,1]. Include only visible head pixels needed by editable confirmed faces; "
-            "use exclude contours for protected attributes, occluders, and neighboring people. Never "
-            "add faces, change mappings, authorize protected people or attributes, or widen ambiguous "
-            "scope. Repeat exact supplied IDs and permission partitions. Return JSON only, at most 64 "
+            "use exclude contours for protected attributes, occluders, and neighboring people. Every "
+            "include or exclude contour must repeat the IDs and permission partition of the editable "
+            "face whose authorization mask it modifies. Protected faces must never be emitted as "
+            "contour owners. Never add faces, change mappings, authorize protected people or attributes, "
+            "or widen ambiguous scope. Return JSON only, at most 64 "
             "contours and 64 points per contour. Empty editable scope requires empty contours.\n"
             f"EXACT FACE BBOXES/CODES/AUTHORIZATION: {json.dumps(faces, ensure_ascii=False)}\n"
             f"PROTECTED PEOPLE: {json.dumps(protected_people, ensure_ascii=False)}\n"
@@ -703,6 +1935,37 @@ class YunwuMultimodalProvider:
             or compiled.source_asset_code != source_asset_code
         ):
             raise ValueError("semantic mask compiler returned mismatched source identity")
+        face_by_id = {
+            str(face["face_instance_id"]): face
+            for face in faces
+            if face.get("face_instance_id")
+        }
+        editable_faces = [
+            face for face in faces
+            if face.get("action") != "keep"
+        ]
+        if len(editable_faces) == 1:
+            editable = editable_faces[0]
+            editable_id = str(editable["face_instance_id"])
+            editable_permissions = AttributePermission(
+                editable=list(editable.get("editable_attributes", [])),
+                protected=list(editable.get("protected_attributes", [])),
+            )
+            normalized_contours = []
+            for contour in compiled.contours:
+                if (
+                    contour.operation == "exclude"
+                    and contour.face_instance_id in face_by_id
+                    and contour.face_instance_id != editable_id
+                ):
+                    contour = contour.model_copy(update={
+                        "face_instance_id": editable_id,
+                        "person_id": str(editable["person_id"]),
+                        "person_code": str(editable["person_code"]),
+                        "permissions": editable_permissions,
+                    })
+                normalized_contours.append(contour)
+            compiled = compiled.model_copy(update={"contours": normalized_contours})
         return compiled
 
     async def audit_person_detection(
@@ -756,12 +2019,51 @@ class YunwuMultimodalProvider:
             }],
             "response_format": {"type": "json_object"},
         }
-        response = await self._client.post(
-            self.endpoint,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=payload,
-        )
-        response.raise_for_status()
+        request_digest = hashlib.sha256(
+            (
+                self.endpoint
+                + "\n"
+                + json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Idempotency-Key": f"personaweave-v1-{request_digest}",
+        }
+        response: httpx.Response | None = None
+        for attempt in range(2):
+            response = await self._client.post(
+                self.endpoint,
+                headers=headers,
+                json=payload,
+            )
+            retryable_status = response.status_code == 429 or response.status_code >= 500
+            if not retryable_status or attempt == 1:
+                break
+            retry_after = response.headers.get("Retry-After", "")
+            delay = min(30, int(retry_after)) if retry_after.isdigit() else 2
+            await asyncio.sleep(delay)
+        assert response is not None
+        if response.status_code == 429:
+            raise ProviderExecutionError(provider_error(
+                "provider_rate_limited",
+                upstream_status=response.status_code,
+            ))
+        if response.status_code >= 500:
+            raise ProviderExecutionError(provider_error(
+                "provider_unavailable",
+                upstream_status=response.status_code,
+            ))
+        if response.status_code >= 400:
+            raise ProviderExecutionError(provider_error(
+                "provider_request_rejected",
+                upstream_status=response.status_code,
+            ))
         body = response.json()
         audit = PersonDetectionAudit.model_validate(
             _parse_json_object(body["choices"][0]["message"]["content"])
@@ -877,32 +2179,256 @@ class YunwuMultimodalProvider:
             await self._json_completion(content)
         )
         known = set(codes)
-        duplicate_members = [
-            member
-            for group in clustering.duplicate_groups
-            for member in group.members
-        ]
-        returned = [*duplicate_members, *clustering.uncertain_codes]
-        if len(returned) != len(set(returned)) or not set(returned).issubset(known):
-            raise ValueError("large person clustering returned duplicate or unknown observations")
+
+        def validate_clustering(
+            candidate: LargePersonClustering,
+        ) -> list[PersonCluster]:
+            duplicate_members = [
+                member
+                for group in candidate.duplicate_groups
+                for member in group.members
+            ]
+            returned = [*duplicate_members, *candidate.uncertain_codes]
+            if len(returned) != len(set(returned)) or not set(returned).issubset(known):
+                raise ValueError(
+                    "large person clustering returned duplicate or unknown observations"
+                )
+            for group in candidate.duplicate_groups:
+                if len(group.members) < 2:
+                    raise ValueError(
+                        "large person duplicate groups require at least two observations"
+                    )
+            return [
+                group
+                for group in candidate.duplicate_groups
+                if len({member.split("-F", 1)[0] for member in group.members})
+                != len(group.members)
+            ]
+
+        conflicting_groups = validate_clustering(clustering)
+        if conflicting_groups:
+            conflicting_codes = sorted({
+                member
+                for group in conflicting_groups
+                for member in group.members
+            })
+            clustering = LargePersonClustering.model_validate(
+                await self._json_completion([
+                    *content,
+                    {
+                        "type": "text",
+                        "text": (
+                            "CORRECTION REQUIRED: the previous JSON illegally grouped multiple "
+                            "people from the same source image. Re-evaluate only the grouping, retain "
+                            "the exact supplied codes, and return a complete replacement JSON object. "
+                            "Every duplicate group must contain at most one code from each Ixx source. "
+                            "Move any match that remains ambiguous to uncertain_codes. "
+                            f"Conflicting codes: {json.dumps(conflicting_codes, ensure_ascii=False)}. "
+                            "Previous invalid JSON: "
+                            + json.dumps(clustering.model_dump(mode="json"), ensure_ascii=False)
+                        ),
+                    },
+                ])
+            )
+            conflicting_groups = validate_clustering(clustering)
+
+        safe_groups: list[PersonCluster] = []
+        uncertain = set(clustering.uncertain_codes)
         for group in clustering.duplicate_groups:
-            if len(group.members) < 2:
-                raise ValueError("large person duplicate groups require at least two observations")
-            source_codes = {member.split("-F", 1)[0] for member in group.members}
-            if len(source_codes) != len(group.members):
-                raise ValueError("large person clustering cannot merge faces from the same source")
+            members_by_source: dict[str, list[str]] = {}
+            for member in group.members:
+                members_by_source.setdefault(member.split("-F", 1)[0], []).append(member)
+            conflicting_sources = {
+                source_code
+                for source_code, members in members_by_source.items()
+                if len(members) > 1
+            }
+            safe_members = [
+                member
+                for member in group.members
+                if member.split("-F", 1)[0] not in conflicting_sources
+            ]
+            uncertain.update(
+                member
+                for source_code in conflicting_sources
+                for member in members_by_source[source_code]
+            )
+            if len(safe_members) >= 2:
+                safe_groups.append(group.model_copy(update={"members": safe_members}))
+            else:
+                uncertain.update(safe_members)
 
         assignments: dict[str, tuple[str, float]] = {}
-        for group in clustering.duplicate_groups:
+        for group in safe_groups:
             group_key = "vlm:" + "|".join(sorted(group.members))
             for member in group.members:
                 assignments[member] = (group_key, group.confidence)
-        uncertain = set(clustering.uncertain_codes)
         for code in codes:
             if code not in assignments:
                 confidence = 0.0 if code in uncertain else 0.5
                 assignments[code] = (f"vlm:{code}", confidence)
         return assignments
+
+    async def review_person_cluster_assignments(
+        self,
+        observations: list[dict[str, str]],
+        assignments: dict[str, tuple[str, float]],
+    ) -> dict[str, tuple[str, float]]:
+        """Correct only high-confidence reciprocal swaps in a proposed partition."""
+        codes = [observation["code"] for observation in observations]
+        if len(codes) != len(set(codes)) or set(codes) != set(assignments):
+            raise ValueError("cluster review inputs must cover every observation exactly once")
+        observation_by_code = {
+            observation["code"]: observation for observation in observations
+        }
+        members_by_key: dict[str, list[str]] = {}
+        for code, (group_key, _confidence) in assignments.items():
+            members_by_key.setdefault(group_key, []).append(code)
+        proposed_groups = [
+            (f"G{index:02d}", sorted(members))
+            for index, (_key, members) in enumerate(
+                sorted(members_by_key.items(), key=lambda item: sorted(item[1])),
+                start=1,
+            )
+        ]
+        board_uri = self._person_cluster_review_board(
+            observation_by_code,
+            proposed_groups,
+        )
+        proposed_text = "\n".join(
+            f"{group_id}: {', '.join(members)}"
+            for group_id, members in proposed_groups
+        )
+        group_id_by_code = {
+            code: group_id
+            for group_id, members in proposed_groups
+            for code in members
+        }
+        shape = {
+            "swaps": [],
+            "uncertain_codes": [],
+        }
+        reviewed = PersonClusterReview.model_validate(
+            await self._json_completion([
+                {
+                    "type": "text",
+                    "text": (
+                        "You are the final within-batch visual identity consistency reviewer. The "
+                        "single contact sheet contains every detected face exactly once. Each tile is "
+                        "labeled with its current candidate group and immutable occurrence code. "
+                        "Check facial identity, not row position, clothing, pose, expression, lighting, "
+                        "hat, glasses, or image order. Do not identify or name real people and do not "
+                        "repartition the board. Preserve every current assignment unless there is a "
+                        "clear reciprocal swap: two codes from the same Ixx source are in two different "
+                        "groups, and each face clearly belongs in the other code's group. Return only "
+                        "those reciprocal pairs in swaps. Use uncertain_codes only for a visibly "
+                        "inconsistent code that cannot be corrected by such a reciprocal pair. Never "
+                        "list a correct member, never invent a code, never use a code more than once, "
+                        "and return empty arrays when the proposal is already consistent. A swap must "
+                        "have confidence at least 0.90; otherwise put both codes in uncertain_codes.\n"
+                        f"CURRENT PROPOSAL:\n{proposed_text}\n"
+                        f"RETURN JSON ONLY: {json.dumps(shape, ensure_ascii=False)}"
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": board_uri, "detail": "original"},
+                },
+            ])
+        )
+        known = set(codes)
+        referenced = [
+            code
+            for swap in reviewed.swaps
+            for code in (swap.left_code, swap.right_code)
+        ] + reviewed.uncertain_codes
+        if not set(referenced).issubset(known):
+            raise ValueError("cluster review returned an unknown observation code")
+        if len(referenced) != len(set(referenced)):
+            raise ValueError("cluster review referenced an observation more than once")
+
+        corrected = dict(assignments)
+        uncertain = set(reviewed.uncertain_codes)
+        for swap in reviewed.swaps:
+            left_source = swap.left_code.split("-F", 1)[0]
+            right_source = swap.right_code.split("-F", 1)[0]
+            if left_source != right_source:
+                raise ValueError("cluster review swaps must come from the same source")
+            if group_id_by_code[swap.left_code] == group_id_by_code[swap.right_code]:
+                raise ValueError("cluster review swaps must cross two proposed groups")
+            if swap.confidence < 0.9:
+                uncertain.update((swap.left_code, swap.right_code))
+                continue
+            left_group, left_confidence = assignments[swap.left_code]
+            right_group, right_confidence = assignments[swap.right_code]
+            corrected[swap.left_code] = (
+                right_group,
+                min(right_confidence, swap.confidence),
+            )
+            corrected[swap.right_code] = (
+                left_group,
+                min(left_confidence, swap.confidence),
+            )
+
+        members_by_corrected_key: dict[str, list[str]] = {}
+        for code, (group_key, _confidence) in corrected.items():
+            if code not in uncertain:
+                members_by_corrected_key.setdefault(group_key, []).append(code)
+
+        verified: dict[str, tuple[str, float]] = {}
+        for members in members_by_corrected_key.values():
+            source_codes = {member.split("-F", 1)[0] for member in members}
+            if len(source_codes) != len(members):
+                raise ValueError("cluster review produced a same-source group conflict")
+            group_key = "vlm-reviewed:" + "|".join(sorted(members))
+            group_confidence = min(corrected[member][1] for member in members)
+            for member in members:
+                verified[member] = (group_key, group_confidence)
+        for code in uncertain:
+            verified[code] = (f"vlm-uncertain:{code}", 0.0)
+        return verified
+
+    @staticmethod
+    def _person_cluster_review_board(
+        observation_by_code: dict[str, dict[str, str]],
+        proposed_groups: list[tuple[str, list[str]]],
+    ) -> str:
+        tiles = [
+            (group_id, code, observation_by_code[code]["crop_uri"])
+            for group_id, members in proposed_groups
+            for code in members
+        ]
+        max_group_size = max(len(members) for _group_id, members in proposed_groups)
+        columns = min(len(tiles), min(8, max(5, max_group_size)))
+        rows = (len(tiles) + columns - 1) // columns
+        cell_size = max(72, min(256, 2048 // columns, 2048 // rows))
+        label_height = max(16, min(24, cell_size // 5))
+        board = Image.new("RGB", (columns * cell_size, rows * cell_size), "white")
+        for index, (group_id, code, crop_uri) in enumerate(tiles):
+            _, encoded = crop_uri.split(",", 1)
+            with Image.open(BytesIO(base64.b64decode(encoded))) as image:
+                crop = image.convert("RGB")
+            crop.thumbnail(
+                (cell_size - 8, cell_size - label_height - 8),
+                Image.Resampling.LANCZOS,
+            )
+            cell = Image.new("RGB", (cell_size, cell_size), (248, 248, 248))
+            cell.paste(
+                crop,
+                ((cell_size - crop.width) // 2, label_height + 4),
+            )
+            draw = ImageDraw.Draw(cell)
+            draw.rectangle((0, 0, cell_size - 1, cell_size - 1), outline=(80, 80, 80))
+            draw.text((5, 4), f"{group_id} {code}", fill=(0, 0, 0))
+            board.paste(
+                cell,
+                ((index % columns) * cell_size, (index // columns) * cell_size),
+            )
+        output = BytesIO()
+        board.save(output, format="JPEG", quality=94, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(
+            output.getvalue()
+        ).decode("ascii")
 
     async def analyze_person_appearances(
         self,
