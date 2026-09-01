@@ -1,0 +1,71 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.pytest_cache/
+.ruff_cache/
+.pytype/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files (keep a sanitized example if one is added)
+.env
+.env.*
+!.env.example
+
+# Editors and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# Generated runtime data and results
+outputs/
+api_results/
+results/
+data/task/
+**/tmp_data/
+
+# Local image datasets are ignored by default. The minimal, curated API test
+# fixtures below are intentionally versioned and must remain redistributable.
+data/
+!tests/fixtures/
+!tests/fixtures/**
+
+# Frontend dependencies and build output
+web/node_modules/
+web/dist/
+web/.vite/
+web/.cache/
+*.tsbuildinfo
+
+# Model policy: binary weights and downloaded archives never enter regular Git.
+# Recreate them with: uv run python scripts/download_models.py
+models/*
+!models/README.md
+
+# Optional local model caches created by runtimes
+*.engine
+*.plan
+*.trt

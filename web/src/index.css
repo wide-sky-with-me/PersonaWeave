@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base Reset & Color Scheme ─────────────────────────────── */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-zinc-200 font-sans text-sm tracking-tight;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* Focus ring — accessible, non-disruptive */
+  :focus-visible {
+    outline: 2px solid rgba(91, 95, 239, 0.7);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  /* Controlled scrollbar — 5px, restrained */
+  ::-webkit-scrollbar        { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 99px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(91, 95, 239, 0.45);
+  }
+
+  /* Range input global reset */
+  input[type='range'] {
+    @apply appearance-none bg-transparent cursor-pointer;
+  }
+  input[type='range']::-webkit-slider-runnable-track {
+    @apply h-1.5 rounded-full bg-surface-3;
+  }
+  input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    @apply w-3.5 h-3.5 rounded-full -mt-1 bg-primary border border-primary-border shadow-primary;
+  }
+  input[type='range']:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px rgba(91,95,239,0.25);
+  }
+
+  /* Select base */
+  select {
+    @apply bg-surface-3 border border-border rounded-lg px-2.5 py-1.5 text-xs text-zinc-200
+           focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30
+           transition-colors cursor-pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 16 16'%3E%3Cpath stroke='%2371717a' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 14px;
+    padding-right: 28px;
+  }
+
+  /* Textarea base */
+  textarea {
+    @apply bg-surface-3 border border-border rounded-xl p-3 text-sm text-zinc-200
+           placeholder:text-zinc-600
+           focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary/30
+           resize-none transition-colors;
+  }
+
+  /* Checkbox */
+  input[type='checkbox'] {
+    @apply accent-primary w-3.5 h-3.5 rounded cursor-pointer;
+  }
+}
+
+/* ─── Component Classes ──────────────────────────────────────── */
+@layer components {
+  /* Panels */
+  .panel {
+    @apply bg-surface border border-border;
+  }
+  .panel-elevated {
+    @apply bg-surface-2 border border-border shadow-card;
+  }
+  .glass {
+    background: rgba(17, 17, 21, 0.80);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .glass-sm {
+    background: rgba(17, 17, 21, 0.70);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+  }
+
+  /* Section header within a panel */
+  .section-header {
+    @apply flex items-center gap-2 text-xs font-semibold text-zinc-300 uppercase tracking-wider;
+  }
+
+  /* Icon badge accent circles */
+  .icon-badge {
+    @apply w-6 h-6 rounded-lg flex items-center justify-center shrink-0;
+  }
+  .icon-badge-primary { @apply icon-badge bg-primary-muted text-primary; }
+  .icon-badge-accent  { @apply icon-badge bg-accent-muted text-accent;   }
+  .icon-badge-warn    { @apply icon-badge bg-warn-muted text-warn;       }
+  .icon-badge-ok      { @apply icon-badge bg-ok-muted text-ok;           }
+
+  /* Status chips — compact, semantic */
+  .chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium border leading-none;
+  }
+  .chip-ok      { @apply chip bg-ok-muted text-ok border-ok-border;       }
+  .chip-warn    { @apply chip bg-warn-muted text-warn border-warn-border;  }
+  .chip-err     { @apply chip bg-err-muted text-err border-err-border;     }
+  .chip-info    { @apply chip bg-info-muted text-info border-info-border;  }
+  .chip-primary { @apply chip bg-primary-muted text-primary border-primary-border; }
+  .chip-accent  { @apply chip bg-accent-muted text-accent border-accent-border;   }
+  .chip-neutral { @apply chip bg-surface-3 text-zinc-400 border-border;            }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 font-medium
+           transition-all duration-150 cursor-pointer select-none
+           focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/70
+           active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none;
+  }
+  .btn-sm  { @apply btn px-2.5 py-1.5 text-xs rounded-lg; }
+  .btn-md  { @apply btn px-3.5 py-2   text-xs rounded-xl; }
+  .btn-lg  { @apply btn px-4   py-2.5 text-sm rounded-xl; }
+
+  .btn-primary  { @apply btn bg-primary hover:bg-primary-hover text-white shadow-primary; }
+  .btn-accent   { @apply btn bg-accent  hover:bg-accent-hover  text-white shadow-cyan;   }
+  .btn-ghost    { @apply btn text-zinc-400 hover:text-zinc-100 hover:bg-surface-hover border border-transparent hover:border-border; }
+  .btn-outline  { @apply btn text-zinc-300 bg-surface-3 hover:bg-surface-hover border border-border hover:border-border-md; }
+  .btn-danger   { @apply btn text-zinc-400 hover:text-red-400 hover:bg-err-muted; }
+
+  /* Segmented control track */
+  .seg-track {
+    @apply flex items-center gap-0.5 p-1 bg-surface-3 rounded-xl border border-border;
+  }
+  .seg-item {
+    @apply flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium
+           text-zinc-500 hover:text-zinc-200 transition-all cursor-pointer;
+  }
+  .seg-item-active {
+    @apply seg-item bg-surface-hover text-zinc-100 shadow-inset border border-border;
+  }
+  .seg-item-primary {
+    @apply seg-item-active !bg-primary/15 !text-primary !border-primary-border;
+  }
+
+  /* Panel divider */
+  .divider { @apply border-t border-border; }
+
+  /* Monospaced value badge */
+  .val-badge {
+    @apply font-mono text-2xs font-semibold px-1.5 py-0.5 rounded bg-surface-3 border border-border text-zinc-300;
+  }
+  .val-badge-primary { @apply val-badge !bg-primary-muted !text-primary !border-primary-border; }
+  .val-badge-accent  { @apply val-badge !bg-accent-muted  !text-accent  !border-accent-border;  }
+  .val-badge-warn    { @apply val-badge !bg-warn-muted    !text-warn    !border-warn-border;    }
+}
+
+/* ─── Utility Extensions ─────────────────────────────────────── */
+@layer utilities {
+  /* Subtle inset shadow for pressed/active states */
+  .shadow-inset {
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.40);
+  }
+
+  /* Thin hairline bottom border for separators */
+  .border-b-px { border-bottom-width: 1px; }
+
+  /* Text truncation helpers */
+  .text-truncate { @apply truncate overflow-hidden whitespace-nowrap; }
+
+  /* Smooth width transitions for progress bars */
+  .transition-width { transition: width 0.3s ease; }
+
+  /* Animate in utilities */
+  .animate-in {
+    animation-fill-mode: both;
+  }
+  .fade-in    { animation-name: fadeIn; animation-duration: 150ms; animation-timing-function: ease-out; }
+  .slide-up   { animation-name: slideUp; animation-duration: 200ms; animation-timing-function: ease-out; }
+  .zoom-in-95 { animation-name: zoomIn95; animation-duration: 150ms; animation-timing-function: ease-out; }
+
+  @keyframes zoomIn95 {
+    from { opacity: 0; transform: scale(0.95); }
+    to   { opacity: 1; transform: scale(1);    }
+  }
+
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}

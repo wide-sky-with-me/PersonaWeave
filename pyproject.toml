@@ -1,0 +1,83 @@
+[project]
+name = "personaweave"
+version = "0.1.0"
+description = "Identity-preserving multi-person face swapping with reviewed whole-image AI refinement"
+readme = "README.md"
+authors = [{ name = "wide-sky-with-me" }]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "insightface>=1.0.1",
+    "litellm>=1.98.0",
+    "numpy>=2.4.6",
+    "nvidia-cublas-cu12>=12.9.2.10",
+    "nvidia-cuda-runtime-cu12>=12.9.79",
+    "nvidia-cudnn-cu12>=9.24.0.43",
+    "nvidia-cufft-cu12>=11.4.1.4",
+    "nvidia-curand-cu12>=10.3.10.19",
+    "onnx>=1.22.0",
+    "onnxruntime-gpu==1.20.2",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=12.3.0",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+    "scipy>=1.17.1",
+    "tqdm>=4.70.0",
+    "uvicorn>=0.52.4",
+]
+
+[project.scripts]
+personaweave = "cli:main"
+personaweave-import-portraits = "api.portrait_library_import:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.12.0",
+    "pytest>=9.1.1",
+    "ruff>=0.16.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+    'ignore:`estimate` is deprecated since version 0\.26 and will be removed in version 2\.2.*:FutureWarning:insightface\.utils\.face_align',
+]
+[tool.uv]
+override-dependencies = [
+    "onnxruntime ; sys_platform == 'never'"
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "B008",   # Do not perform function call in argument defaults
+    "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+    "RUF001", # Ambiguous characters in docstrings/comments/filenames (e.g. Chinese punctuation)
+    "RUF002", # Ambiguous characters in docstrings
+    "RUF003", # Ambiguous characters in comments
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
