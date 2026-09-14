@@ -96,7 +96,7 @@ def test_pixel_boosted_inswapper_face_keeps_visible_identity_strength():
 
     # This 140px face uses a 256px working crop, so the result must retain enough
     # generated identity to be visibly different from the 100-valued target.
-    assert 168 <= int(result[205, 190, 0]) <= 176
+    assert 186 <= int(result[205, 190, 0]) <= 194
 
 
 def test_inswapper_identity_blend_strength_increases_generated_face_visibility():
@@ -133,7 +133,7 @@ def test_inswapper_identity_blend_strength_increases_generated_face_visibility()
         swapper=FlatSwapper(),
         enable_dense_mask=False,
         manual_mask=None,
-        identity_blend_strength=0.88,
+        identity_blend_strength=0.95,
         enable_color_transfer=False,
     )
 
@@ -169,6 +169,165 @@ def test_hyperswap_learned_mask_limits_profile_paste_region():
     )
 
     assert np.array_equal(result, canvas)
+
+
+def _flat_swap_scene():
+    """Shared canvas/target/swapper fixture matching the identity-blend tests above."""
+    canvas = np.full((400, 400, 3), 100, dtype=np.uint8)
+    target = SimpleNamespace(
+        bbox=np.asarray([130.0, 120.0, 250.0, 260.0]),
+        kps=np.asarray([[160, 170], [220, 170], [190, 205], [168, 235], [212, 235]], dtype=np.float32),
+    )
+
+    class FlatSwapper:
+        spec = SimpleNamespace(name="inswapper_128", input_size=(128, 128), crop_template="inswapper_128")
+
+        @staticmethod
+        def infer_aligned(crop, _embedding):
+            return np.full_like(crop, 200)
+
+    return canvas, target, FlatSwapper()
+
+
+def test_color_transfer_ring_strength_zero_is_equivalent_to_disabled():
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline.parser = None
+    pipeline.occluder = None
+    pipeline.region_parser = None
+    canvas, target, swapper = _flat_swap_scene()
+
+    disabled = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+    )
+    zero_strength = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=True,
+        color_transfer_ring_strength=0.0,
+    )
+
+    # A ring strength of 0 must fully cancel the boundary-ring correction, not just
+    # shrink it -- this is the safety floor callers fall back to.
+    assert np.array_equal(disabled, zero_strength)
+
+
+def test_color_transfer_ring_strength_default_still_applies_the_safe_baseline():
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline.parser = None
+    pipeline.occluder = None
+    pipeline.region_parser = None
+    canvas, target, swapper = _flat_swap_scene()
+
+    disabled = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+    )
+    default_strength = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=True,
+    )
+
+    # Making the ring configurable must not silently disable the existing default
+    # (0.45 / 15px) boundary-ring behavior.
+    assert not np.array_equal(disabled, default_strength)
+
+
+def test_face_restoration_is_off_by_default_without_touching_self_restorer():
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline.parser = None
+    pipeline.occluder = None
+    pipeline.region_parser = None
+    # `restorer` is intentionally left unset: enable_face_restoration defaults to
+    # False, so this must short-circuit before ever reading self.restorer.
+    canvas, target, swapper = _flat_swap_scene()
+
+    result = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+    )
+
+    assert result.shape == canvas.shape
+
+
+def test_face_restoration_blends_through_the_swap_mask_by_strength():
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline.parser = None
+    pipeline.occluder = None
+    pipeline.region_parser = None
+    canvas, target, swapper = _flat_swap_scene()
+
+    class RecordingRestorer:
+        def __init__(self):
+            self.calls = []
+
+        def restore(self, crop, fidelity_weight=0.75):
+            self.calls.append(fidelity_weight)
+            return np.full_like(crop, 250)
+
+    pipeline.restorer = RecordingRestorer()
+
+    baseline = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+    )
+    half = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+        enable_face_restoration=True,
+        restoration_strength=0.5,
+        restoration_fidelity_weight=0.9,
+    )
+    full = pipeline.swap_single_face_facefusion(
+        canvas,
+        target,
+        np.ones(512, dtype=np.float32),
+        swapper=swapper,
+        enable_dense_mask=False,
+        manual_mask=None,
+        enable_color_transfer=False,
+        enable_face_restoration=True,
+        restoration_strength=1.0,
+    )
+
+    # Restoration must be a dial (baseline < half < full toward the restored 250
+    # value), never an unconditional full replacement of the swap output.
+    assert int(baseline[205, 190, 0]) < int(half[205, 190, 0]) < int(full[205, 190, 0])
+    assert pipeline.restorer.calls == [0.9, 0.75]
 
 
 def test_multi_mapping_reports_the_stable_person_id_that_was_actually_swapped():
@@ -211,7 +370,9 @@ def test_multi_mapping_reports_the_stable_person_id_that_was_actually_swapped():
 
     assert result.faces_swapped == 1
     assert result.swapped_person_indices == [42]
-    assert result.person_outcomes == [
+    assert [
+        {key: value for key, value in outcome.items() if key != "diagnostics"} for outcome in result.person_outcomes
+    ] == [
         {
             "person_index": 42,
             "status": "SWAPPED",

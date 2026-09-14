@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PortraitAssetItem } from '../types';
+import type { PortraitAssetItem } from '@/types';
 import { portraitYawFromLabel, selectDiversePortraitAssets } from './portraitAssetSelection';
 
 const asset = (label: string, category: PortraitAssetItem['category'] = 'angle'): PortraitAssetItem => ({

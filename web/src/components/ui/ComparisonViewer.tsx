@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { fitImageWithinViewport, type ViewportSize } from '@/utils/imageViewport';
 
 interface ComparisonViewerProps {
   beforeSrc: string;
@@ -7,6 +8,8 @@ interface ComparisonViewerProps {
   afterLabel?: string;
   imageLabel?: string;
   className?: string;
+  viewportSize?: ViewportSize;
+  zoom?: number;
 }
 
 interface ImageState {
@@ -31,6 +34,8 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
   afterLabel = '处理后',
   imageLabel = '图片处理结果',
   className = '',
+  viewportSize,
+  zoom = 1,
 }) => {
   const [position, setPosition] = useState(50);
   const [beforeState, setBeforeState] = useState<ImageState | null>(null);
@@ -43,13 +48,18 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
   const beforeError = beforeState?.src === beforeSrc && beforeState.status === 'error';
   const afterError = afterState?.src === afterSrc && afterState.status === 'error';
   const dimensionsMatch = Boolean(
-    beforeReady
-      && afterReady
-      && beforeState.width === afterState.width
-      && beforeState.height === afterState.height,
+    beforeReady && afterReady && beforeState.width === afterState.width && beforeState.height === afterState.height,
   );
   const comparisonReady = beforeReady && afterReady && dimensionsMatch;
-  const viewportRatio = beforeReady ? `${beforeState.width} / ${beforeState.height}` : '16 / 9';
+  const viewportRatio = beforeReady ? beforeState.width + ' / ' + beforeState.height : '16 / 9';
+  const boundedSize = viewportSize
+    ? fitImageWithinViewport(
+        beforeReady ? beforeState.width : 16,
+        beforeReady ? beforeState.height : 9,
+        Math.max(1, viewportSize.width - 2),
+        Math.max(1, viewportSize.height - 2),
+      )
+    : null;
 
   const updateFromPointer = (element: HTMLElement, clientX: number) => {
     const bounds = element.getBoundingClientRect();
@@ -66,26 +76,62 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
 
   if (beforeReady && afterReady && !dimensionsMatch) {
     return (
-      <figure className={`space-y-2 ${className}`}>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <div className="overflow-hidden rounded-xl border border-border bg-black">
+      <figure
+        className={'space-y-2 ' + className + (viewportSize ? ' flex flex-col' : '')}
+        style={
+          viewportSize
+            ? { width: viewportSize.width * zoom, height: viewportSize.height * zoom, flexShrink: 0 }
+            : undefined
+        }
+      >
+        <div
+          className={viewportSize ? 'grid min-h-0 flex-1 grid-cols-2 gap-2' : 'grid grid-cols-1 gap-2 sm:grid-cols-2'}
+        >
+          <div
+            className={
+              'overflow-hidden rounded-xl border border-border bg-black' +
+              (viewportSize ? ' flex min-h-0 flex-col' : '')
+            }
+          >
             <div className="border-b border-border bg-surface-3 px-3 py-2 text-xs text-zinc-300">{beforeLabel}</div>
-            <img src={beforeSrc} alt={`${imageLabel}：${beforeLabel}`} className="h-auto w-full object-contain" draggable={false} />
+            <img
+              src={beforeSrc}
+              alt={`${imageLabel}：${beforeLabel}`}
+              className={viewportSize ? 'min-h-0 w-full flex-1 object-contain' : 'h-auto w-full object-contain'}
+              draggable={false}
+            />
           </div>
-          <div className="overflow-hidden rounded-xl border border-border bg-black">
+          <div
+            className={
+              'overflow-hidden rounded-xl border border-border bg-black' +
+              (viewportSize ? ' flex min-h-0 flex-col' : '')
+            }
+          >
             <div className="border-b border-border bg-surface-3 px-3 py-2 text-xs text-zinc-300">{afterLabel}</div>
-            <img src={afterSrc} alt={`${imageLabel}：${afterLabel}`} className="h-auto w-full object-contain" draggable={false} />
+            <img
+              src={afterSrc}
+              alt={`${imageLabel}：${afterLabel}`}
+              className={viewportSize ? 'min-h-0 w-full flex-1 object-contain' : 'h-auto w-full object-contain'}
+              draggable={false}
+            />
           </div>
         </div>
-        <figcaption role="alert" className="rounded-lg border border-warn-border bg-warn-muted px-3 py-2 text-xs text-warn">
-          两张图片尺寸不一致（{beforeState.width}×{beforeState.height} / {afterState.width}×{afterState.height}），无法可靠叠加，已切换为并排检查。
+        <figcaption
+          role="alert"
+          className="rounded-lg border border-warn-border bg-warn-muted px-3 py-2 text-xs text-warn"
+        >
+          两张图片尺寸不一致（{beforeState.width}×{beforeState.height} / {afterState.width}×{afterState.height}
+          ），无法可靠叠加，已切换为并排检查。
         </figcaption>
       </figure>
     );
   }
 
   return (
-    <figure className={`space-y-2 ${className}`}>
+    <figure
+      className={`space-y-2 ${className}`}
+      style={boundedSize ? { width: boundedSize.width * zoom + 2, flexShrink: 0 } : undefined}
+    >
       <div className="overflow-hidden rounded-xl border border-border bg-black shadow-card">
         <div
           data-testid="comparison-viewport"
@@ -122,15 +168,18 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
             updateFromPointer(event.currentTarget, event.clientX);
           }}
           onPointerUp={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
           }}
           onPointerCancel={(event) => {
-            if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
           }}
         >
           <img
             key={beforeSrc}
             src={beforeSrc}
+            data-testid="comparison-before-layer"
             alt={`${imageLabel}：${beforeLabel}`}
             className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill object-left-top"
             draggable={false}
@@ -150,36 +199,39 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
             aria-hidden="true"
           />
 
-        {(!beforeReady || !afterReady) && (
-          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/60 px-6 text-center text-xs text-zinc-300" role="status">
-            {beforeError || afterError
-              ? `对比图片加载失败：${beforeError ? beforeLabel : afterLabel}`
-              : '正在加载前后对比图片…'}
-          </div>
-        )}
-        <span className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-border-md bg-black/75 px-2 py-1 text-xs font-medium text-zinc-200 backdrop-blur-sm">
-          {afterLabel}
-        </span>
-        <span className="pointer-events-none absolute right-3 top-3 z-10 rounded-md border border-border-md bg-black/75 px-2 py-1 text-xs font-medium text-zinc-200 backdrop-blur-sm">
-          {beforeLabel}
-        </span>
-        <div
-          data-testid="comparison-divider"
-          className="pointer-events-none absolute inset-y-0 z-10 w-px -translate-x-1/2 bg-primary shadow-primary"
-          style={{ left: `${position}%` }}
-          aria-hidden="true"
-        />
-        <span
-          data-testid="comparison-handle"
-          className="pointer-events-none absolute top-1/2 z-10 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-primary-border bg-surface-2 text-sm text-primary shadow-elevated"
-          style={{ left: `clamp(20px, ${position}%, calc(100% - 20px))` }}
-          aria-hidden="true"
-        >
-          ↔
-        </span>
-        <span className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded bg-black/65 px-2 py-1 text-[10px] text-zinc-300 opacity-70 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
-          在图片上左右拖动
-        </span>
+          {(!beforeReady || !afterReady) && (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/60 px-6 text-center text-xs text-zinc-300"
+              role="status"
+            >
+              {beforeError || afterError
+                ? `对比图片加载失败：${beforeError ? beforeLabel : afterLabel}`
+                : '正在加载前后对比图片…'}
+            </div>
+          )}
+          <span className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-border-md bg-black/75 px-2 py-1 text-xs font-medium text-zinc-200 backdrop-blur-sm">
+            {afterLabel}
+          </span>
+          <span className="pointer-events-none absolute right-3 top-3 z-10 rounded-md border border-border-md bg-black/75 px-2 py-1 text-xs font-medium text-zinc-200 backdrop-blur-sm">
+            {beforeLabel}
+          </span>
+          <div
+            data-testid="comparison-divider"
+            className="pointer-events-none absolute inset-y-0 z-10 w-px -translate-x-1/2 bg-primary shadow-primary"
+            style={{ left: `${position}%` }}
+            aria-hidden="true"
+          />
+          <span
+            data-testid="comparison-handle"
+            className="pointer-events-none absolute top-1/2 z-10 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-primary-border bg-surface-2 text-sm text-primary shadow-elevated"
+            style={{ left: `clamp(20px, ${position}%, calc(100% - 20px))` }}
+            aria-hidden="true"
+          >
+            ↔
+          </span>
+          <span className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded bg-black/65 px-2 py-1 text-[10px] text-zinc-300 opacity-70 transition-opacity group-hover:opacity-100 group-focus:opacity-100">
+            在图片上左右拖动
+          </span>
         </div>
       </div>
     </figure>

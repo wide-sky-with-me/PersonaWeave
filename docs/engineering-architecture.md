@@ -1,83 +1,78 @@
-# 工程架构与 AI 开发约束
+# 工程架构与开发边界
 
-本文是 PersonaWeave 工程边界、代码归属和兼容策略的权威说明。它不重复具体换脸或 AI 精修算法；这些行为分别以 [facefusion-local-swap.md](./facefusion-local-swap.md) 和 [ai-refinement.md](./ai-refinement.md) 为准。
+本文规定依赖方向、模块拆分和兼容策略。目录速览见 [架构概述](../DESIGN.md)，业务约束见 [本地换脸](facefusion-local-swap.md)、[整图精修](ai-refinement.md)。
 
-## 1. 依赖方向
+## 依赖与职责
 
-```text
-Web Studio (web/src)
-        ↓ HTTP contracts
-API / orchestration (api)
-        ↓ domain calls
-Core algorithms and provider boundaries (core)
-        ↓
-ONNX Runtime / LiteLLM / DMX protocols
-```
+依赖单向流动：`web/src → api → core → provider/runtime`。
 
-- `web/src/components` 负责渲染和局部交互；跨组件工作区状态归 Zustand，服务端异步状态归 TanStack Query，纯计算归 `web/src/utils`，可复用的有状态交互归 `web/src/hooks`。
-- `api` 负责 HTTP 契约、任务编排、持久化和发布边界，不实现人脸算法或供应商协议。
-- `core` 负责可独立调用的领域算法、模型推理和 AI provider 适配，不得反向导入 `api`。
-- `core/providers` 只适配供应商协议；业务选择使用稳定别名，不直接认识供应商 SDK。
-- `core/__init__.py` 与 `api/__init__.py` 必须无副作用。具体类型从定义模块导入，避免读取 schema 时启动 FastAPI，或读取 AI 网关时加载 ONNX/InsightFace。该边界由 `tests/test_package_boundaries.py` 验证。
+- Web 组件负责展示及局部交互，Zustand 管工作区，TanStack Query 管远程状态。精修和历史归 `features/`，测试随功能放置；跨目录使用 `@/`，同目录使用相对引用。
+- `api/app.py` 装配中间件、路由和静态站点，`lifecycle.py` 创建/关闭共享服务。路由从 `request.app.state` 读取服务，可选 AI 服务通过 `dependencies.py` 访问。
+- `api/portable.py` 是 Windows CPU/GPU 便携生产入口，复用现有应用和生命周期；`scripts/build_windows_portable.py` 负责固定依赖及资产打包，`build_windows_gpu_upgrade.py` 与 `upgrade_windows_gpu.py` 是差分交付工具，不引入另一条推理路径。升级只修改清单内程序文件，持有同一运行锁，校验全部载荷后逐文件原子替换、最后发布 manifest；中断允许从旧/新摘要混合状态重试。交付契约见 [Windows 便携版](windows-portable.md)。
+- 本地批任务归 `api/tasks/`；对话精修会话的命令、状态、SQLite、事件与发布归 `api/refinement/`。跨功能图片 I/O 归 `api/media.py`，素材库与导入归 `api/portraits/`。这些领域模块不得反向导入路由或应用入口。
+- `core` 不导入 `api`。`core/__init__.py` 与 `api/__init__.py` 无副作用，不重新导出模型、不创建应用或设置运行状态。
+- `core/ai/configuration.py` 和 `types.py` 不加载 LiteLLM、provider 或推理模型；业务通过 `AIGateway` 访问，供应商协议交由 LiteLLM 原生 Router endpoint，禁止仓内手写供应商 HTTP 或私有协议回退。视觉使用 `Router.acompletion`，图像使用 `Router.aimage_edit`（LiteLLM 1.98.0 在实例上动态注册该方法，不得仅检查类属性就判定不支持）。
+- `core/swapper.py` 只做 `infer_aligned()` 推理并声明共享对齐模板；对齐、保护遮罩、校色和回贴由流水线统一执行。纯姿态/质量规则归 `core/face_metrics.py`。
 
-## 2. 生产、诊断与退役代码
+## 工作台任务控制
 
-代码必须能被归入以下一种状态：
+准备页的角色映射、单图/批量换脸、AI 首轮授权、任务重连与 ZIP 导出统一在右侧 `ParameterPanel`；窄屏使用“换脸控制”抽屉。顶部准备项仅为状态标签，底部 `BatchStatusBar` 只展示任务状态、进度与耗时，不放按钮或开关。
 
-| 状态 | 允许位置 | 要求 |
-| --- | --- | --- |
-| 生产 | `core/`、`api/`、`web/src/` | 必须从当前 API/CLI/UI 入口可达，并有对应行为测试和现行文档 |
-| 诊断/评测 | `scripts/` | 必须明确标注不属于生产路径；模型与别名从生产配置读取，不复制清单 |
-| 退役 | Git 历史、明确标记的历史 Changelog | 不得继续保留生产导出、启动检查、下载依赖或仅为其存在而保留的测试 |
+`App` 唯一挂载 [`useBatchPipeline`](../web/src/hooks/useBatchPipeline.ts)，负责批量提交、服务端轮询、已关联任务恢复与导出；通过属性将同一控制器交给桌面/抽屉侧栏和状态栏，不使用窗口自定义事件转发。关闭侧栏或切换工作区不卸载控制器；提交前同步读取工作区运行状态，避免重复请求。AI 首轮授权默认关闭，单张目标也可显式授权走批任务接续精修；单图试换仍仅执行本地换脸。侧栏打开映射对话框时关闭抽屉，避免遮挡。
 
-本次里程碑审计删除了已退出整图精修契约的 `core/localized_refinement.py`，以及仅被旧诊断脚本调用的 CodeFormer/GFPGAN `core/enhancer.py` 和三个脚本。现行精修禁止局部候选合成；现行本地换脸也禁止全脸修复，因此继续保留这些实现会制造一条看似可用但与生产契约冲突的“影子架构”。历史原因仍可在 `CHANGELOG.md` 中查阅，但历史文字不是可达性证据。
+回归见 [`BatchControls.test.tsx`](../web/src/components/studio/BatchControls.test.tsx) 与 [`ResponsiveWorkflowAccess.test.tsx`](../web/src/components/layout/ResponsiveWorkflowAccess.test.tsx)。
 
-## 3. 单一事实源
+## 拆分与单一事实源
 
-| 事实 | 唯一可执行来源 | 消费方式 |
-| --- | --- | --- |
-| VLM 模型与角色 | `config/ai_gateway.yaml` 的 `model_list` / `vision_roles` | `AIGateway.vision_alias()` |
-| 图像模型、默认项与生成尺寸能力 | 同一 YAML 的 `image_models` / `default_image_alias` / `generation` | 后端目录 API、`RefinementService`、前端动态列表、评测脚本 |
-| 本地模型下载源与摘要 | `scripts/download_models.py` 的 `MODEL_URLS` / `MODEL_SHA256` | 下载后强制 SHA-256 校验 |
-| API 请求/响应 | `api/schemas.py` | FastAPI response/request model 与前端对应类型 |
-| 批任务状态 | SQLite 持久化快照 | 摘要列表后按 ID 获取详情；浏览器状态不能覆盖服务端事实 |
+按变化原因拆分展示、纯计算、外部 I/O、状态机和持久化。同一状态机的连续步骤保留在一个编排器，不增加多层单行转发。抽象须消除重复事实、隔离副作用或形成可独立测试的稳定边界，否则保留直观函数。
 
-前端不得维护模型别名排序表；只把服务端 `default_alias` 放在首位，其余保持配置顺序。模型分辨率不能通过别名字符串判断。新增模型若缺少 `generation` 能力声明，网关必须启动失败，而不是套用一个静默默认值。对应证据为 `tests/test_ai_gateway_config.py`、`tests/test_refinement_service.py` 和 `tests/test_documentation_consistency.py`。
+精修会话事实源是 `api/refinement/store.py`，连续执行步骤位于 `api/refinement/service.py`；契约与批量接续分别在同域 `contracts.py` / `batch.py`。Core 的 `conversation.py` 只负责三证据诊断、单图生成与建议性复评，不访问 API/SQLite/发布目录；`image_ops.py` 复用纯尺寸与编码规则。前端按画布、对话、版本与人物参考组织，查看版、修改基图、已接受版独立；SSE 仅通知快照失效，浏览器不是任务状态机。保护画笔仍属于本地换脸，集中于 `useManualProtectionBrush`。
 
-## 4. 模块拆分准则
+| 事实 | 可执行来源 |
+| --- | --- |
+| AI 角色、别名、默认模型和生成尺寸能力 | `config/ai_gateway.yaml` |
+| 模型下载来源及摘要 | `scripts/download_models.py` |
+| 请求/响应契约 | 通用 `api/schemas.py`；精修 `api/refinement/contracts.py`；模型输出与共享输入预算 `core/refinement/contracts.py` |
+| 任务状态 | 服务端 SQLite 快照 |
+| 运行耗时估计 | 已完成任务的真实 `cost_ms`；样本不足时返回 `0` 表示暂无可靠估计 |
 
-拆分依据是“变化原因”，不是任意行数：
+原生 `model_list` 是视觉与图像 deployment 的唯一连接/模型来源，稳定别名允许多 deployment。`image_models` 仅含 `model_name`、`display_name`、`description`、`generation`；不得再放 `provider`/`params` 或复制路由。业务不得按别名猜测模型能力；`generation` 明确三选一：`size: auto`、离散 `sizes`、动态 `max_side/min_side/grid/max_pixels?/delimiter`，缺失或冲突声明必须配置验证失败并禁用可选 AI，API 仍提供本地换脸与已存会话/档案访问，而不是整体启动失败。默认 `size: auto` 不承诺 4K。fallback 必须同能力，图像还必须有相同 generation；默认 Router `num_retries: 0`、图像 deployment `max_retries: 0`，显式增加重试由用户承担重复付费风险。前端只将服务端默认模型置顶，其余保持配置顺序；不另建可用性或排序表。算法常量可靠近算法，但须有注释与测试，不能伪造精确性能数字。
 
-- 纯展示、算法计算、外部 I/O、任务状态机和持久化分别演进时，应放在不同模块。
-- 同一状态机的连续步骤留在一个编排器中；不要为了缩短文件制造多层一行转发。
-- `TargetCanvas` 的保护画笔状态已移入 `useManualProtectionBrush`，因为画布 mask 序列化可独立变化；`RefinementModal` 的人脸缩略图和复评报告已移入 `RefinementReviewPanels`，因为展示变化不应触碰任务编排。
-- 新抽象至少应消除一份重复事实、隔离一种副作用或形成可单测的稳定边界；否则优先保留直观函数。
-- Yaw、参考图质量、输出可见变化和极端侧脸兼容性集中在纯领域模块 `core/face_metrics.py`；API、流水线和诊断脚本不得再从编排器中绕行导入这些规则。
+## 生产、诊断与退役
 
-## 5. 兼容与删除策略
+| 分类 | 要求 |
+| --- | --- |
+| 生产 | 从当前 API/CLI/UI 入口可达，有行为测试与现行契约 |
+| 诊断/评测 | 放在 `scripts/` 并明确标注非生产；复用配置和请求模型，产物保存在独立诊断目录 |
+| 退役 | 只留 Git 或明确标记的 Changelog；清理源码、导出、启动检查、下载依赖和专属测试 |
 
-兼容分支必须同时具备：明确调用方、回归测试、弃用说明和删除条件。缺少这些证据的“也许有人用”分支不得永久存在。
+删除前交叉核对生产入口、测试、文档和运行资产，不能仅凭文件名或缺少 import 判死。独立 CLI 也是入口：根目录 `cli.py` 是受支持源码启动器；保留的诊断脚本必须复用现行契约，不能为旧测试恢复退役生产路径。禁止保留与现行契约冲突的备用流水线。
 
-- 旧 `GET /api/v1/batch-tasks` 有既有客户端风险，因此作为 deprecated 接口保留；新代码只使用任务历史摘要接口。
-- 旧持久化精修状态 `LOCALIZING` 只为读取已落盘任务保留，新任务不得产生。
-- AI Gateway 的旧单模型 `image_edit` 配置没有现存配置或调用方，已删除；当前只接受 `image_models` 目录。
+兼容分支须具备明确调用方、回归测试、弃用说明和删除条件；不为未知旧实现永久增加 `hasattr` 或宽泛异常兜底。旧完整批任务列表仍 deprecated，新代码只读摘要；旧精修仅 `api/refinement/legacy.py` 与 `api/routes/legacy_refinement.py` 保留档案读取、质量评价及人工接受，旧生成/计划/诊断/取消/重试返回 410。删除档案边界须先作出历史保留/迁移决定；旧 LOCALIZING 等状态只解释历史数据，不得混入新 turn。具体契约见 [任务历史](task-history.md) 和 [精修契约](ai-refinement.md)。
 
-删除前必须用入口引用、测试引用、文档契约和运行资产四方面交叉核实。删除后同步清理导出、下载器、启动预检、测试和现行文档，避免“死实现没了，死配置还在”。
+精修与 legacy 的删除文件暂存/失败恢复共用 `api/refinement/deletion.py`，具体记录状态和 SQL 删除仍由各自 store/archive 管理。前端选择删除的逐条结果归 `web/src/hooks/useRecordDeletion.ts`，精修缓存/轻量关联清理由 `features/refinement/sessionCache.ts` 管理；它只清除失效关联，不回灌旧图片、映射或画笔。
 
-## 6. 硬编码判断
+## 打包与验证
 
-并非所有常量都是问题。算法阈值可以靠近算法并命名、注释和测试；跨层事实、供应商能力、模型目录、状态集合和用户可见默认值必须有单一来源。
+`pyproject.toml` 声明顶层 `api` / `core` / `utils` 的打包位置；CLI 从安装包解析。模型、AI YAML 和本机运行数据不随 wheel 打包，部署须显式提供相应资产。包入口不通过重新导出掩盖失效引用。
 
-批任务耗时不再使用固定“每图 0.35 秒”。`TaskManager` 从近期成功/部分成功结果的真实 `cost_ms` 中取中位数估算；没有样本时返回 `0` 表示暂无可靠估计。不能为了界面看起来完整而伪造精确数字。
+Python 使用 uv + Ruff，前端使用 pnpm + 固定版本 Prettier。前端格式为 2 空格、单引号、120 字符；构建产物和锁文件不参与格式化。运行命令见 [README](../README.md#开发与验证)。
 
-## 7. 变更完成标准
+- `tests/test_package_boundaries.py`：包入口、纯配置隔离及禁止反向依赖。
+- `tests/test_facefusion_pipeline.py`、`tests/test_swap_diagnostics.py`：当前换脸、保护遮罩与回贴。
+- `tests/test_ai_gateway_config.py`、`tests/test_download_models.py`：配置与资产契约。
+- `tests/test_documentation_consistency.py`：高风险重复事实、文档链接与章节引用。
 
-一次工程变更只有在以下条件同时满足时才算完成：
+行为变更须同步权威文档、摘要和 Changelog，执行 Ruff、相关 Python 回归；跨模块重构执行完整 pytest，前端变更执行类型检查、Vitest 和构建。文档-only 变更执行文档一致性检查；修改 Python 测试时仍执行 Ruff。交付前清理临时文件。证据要求见 [文档治理](documentation-governance.md)。
 
-1. 生产入口、数据边界和失败语义未被无意改变；有意改变已更新 schema 与权威文档。
-2. 删除项的导出、下载、启动检查和仅服务旧实现的测试已一并处理。
-3. 配置和文档之间的高风险重复事实具有机械一致性测试。
-4. Python 通过 Ruff 与完整 pytest；Web 通过 TypeScript 检查、完整 Vitest 和生产构建。
-5. 没有临时输出、测试密钥、真实路径或大模型资产被误纳入源码交付。
+## 界面交互与可视验证
 
-文档事实治理规则见 [documentation-governance.md](./documentation-governance.md)。
+目标画布的视图工具与身份定位位于顶部，角色映射仍决定真正的换脸对象；当前图的精修/下载各有一个固定入口，结果操作栏占据独立布局空间，不覆盖图像。窄屏保留导航文字，工具不压缩成竖排，工作区使用动态视口高度。快捷键说明通过 Radix 对话框提供焦点约束、Escape 关闭与焦点恢复；隐藏准备页或打开对话框时暂停画布快捷键，窗口失焦结束临时原图对比。处理中锁定右栏参数与目标图移除；单图同步请求没有可用进度时仅显示等待状态。
+
+历史加载、错误与空列表分别展示；列表/详情共用中文状态标签，列表日期采用中文格式，批量选择支持半选并在删除时锁定。精修空页面提供回到准备与选择已有图片的路径。CSS 和 Framer Motion 遵循系统减少动态效果偏好。
+
+生产实现见 [`CanvasTopToolbar`](../web/src/components/studio/CanvasTopToolbar.tsx)、[`CanvasResultActionBar`](../web/src/components/studio/CanvasResultActionBar.tsx)、[`useStudioShortcuts`](../web/src/hooks/useStudioShortcuts.ts)；快捷键隔离和操作入口回归随组件/Hook 测试维护。非生产浏览器脚本 [`smoke_studio_ui.py`](../scripts/smoke_studio_ui.py) 使用固定图片与拦截接口，覆盖准备、结果、历史、精修的桌面/窄屏截图与几何检查，不将模拟响应当成真实模型能力验证。
+
+## 编辑工程持久化边界
+
+`api/projects/` 隔离工程 SQLite、图片快照与旧记录恢复；`api/routes/projects.py` 只装配 HTTP。`web/src/features/projects/` 隔离序列化媒体、自动保存与显式恢复，组件负责保存反馈和历史入口。工程只持久化编辑输入、结果副本和轻量精修选择，不成为任务/接受状态的第二事实源。先完整校验后更新 Zustand，原图拓扑与人物编号保留；既有只读历史测试仍有效。细节与证据见 [工程契约](task-history.md#complete-studio-projects-and-explicit-recovery)。

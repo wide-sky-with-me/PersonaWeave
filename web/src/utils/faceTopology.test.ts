@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DetectedFaceBox } from '../types';
+import type { DetectedFaceBox } from '@/types';
 import { buildFacePositionLabels, relabelFaceSafely } from './faceTopology';
 
 const faces: DetectedFaceBox[] = [

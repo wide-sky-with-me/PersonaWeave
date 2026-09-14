@@ -1,44 +1,22 @@
-import React, { lazy, Suspense, useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import {
-  Columns,
-  Maximize2,
-  ZoomIn,
-  Upload,
-  UserCheck,
-  Sparkles,
-  CheckCircle,
-  Clock,
-  AlertCircle,
-  Eye,
-  EyeOff,
-  Crosshair,
-  Zap,
-  Paintbrush,
-  Eraser,
-  Trash2,
-  Undo2,
-  Redo2,
-  X,
-  BrainCircuit,
-} from 'lucide-react';
-import { motion } from 'framer-motion';
-import { useStudioStore } from '../../stores/useStudioStore';
-import { api } from '../../services/api';
-import { LazyModalFallback } from '../ui/ErrorBoundary';
-const RefinementModal = lazy(() => import('./RefinementModal').then((module) => ({ default: module.RefinementModal })));
-import { relabelFaceSafely } from '../../utils/faceTopology';
-import type { RefinementWorkspaceState, TargetImageItem } from '../../types';
-import { useIdentityClustering } from '../../hooks/useIdentityClustering';
-import { validateImageFiles } from '../../utils/imageFiles';
-import {
-  comparisonPositionFromPointer,
-  FACE_MARKER_PADDING,
-  faceBoxToPercentage,
-  fitImageWithinViewport,
-  type ViewportSize,
-} from '../../utils/imageViewport';
-import { useToast } from '../ui/ToastProvider';
-import { useManualProtectionBrush } from '../../hooks/useManualProtectionBrush';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Columns, Upload, Zap, Eye } from 'lucide-react';
+import { useStudioStore } from '@/stores/useStudioStore';
+import { api } from '@/services/api';
+import { useWorkbenchStore } from '@/features/refinement/workbenchStore';
+import { relabelFaceSafely } from '@/utils/faceTopology';
+import type { PersonMappingItem, TargetImageItem } from '@/types';
+import { useIdentityClustering } from '@/hooks/useIdentityClustering';
+import { validateImageFiles } from '@/utils/imageFiles';
+import { splitSourceReferences } from '@/utils/sourceReferences';
+import { comparisonPositionFromPointer, fitImageWithinViewport, type ViewportSize } from '@/utils/imageViewport';
+import { useToast } from '@/components/ui/ToastProvider';
+import { useManualProtectionBrush } from '@/hooks/useManualProtectionBrush';
+import { useStudioShortcuts } from '@/hooks/useStudioShortcuts';
+import { CanvasTopToolbar } from './CanvasTopToolbar';
+import { CanvasResultActionBar } from './CanvasResultActionBar';
+import { CanvasFaceMarkersOverlay } from './CanvasFaceMarkersOverlay';
+import { CanvasBatchFilmstrip } from './CanvasBatchFilmstrip';
+import { CanvasBrushToolbar } from './CanvasBrushToolbar';
 export const TargetCanvas: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageStageRef = useRef<HTMLDivElement>(null);
@@ -52,11 +30,16 @@ export const TargetCanvas: React.FC = () => {
   } | null>(null);
   const [isArbitrating, setIsArbitrating] = useState(false);
   const [vlmReasoning, setVlmReasoning] = useState<string | null>(null);
-  const [isRefinementOpen, setIsRefinementOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const workspaceView = useWorkbenchStore((state) => state.view);
+  const openRefinement = useWorkbenchStore((state) => state.openTarget);
   const toast = useToast();
   const {
     sourceGallery,
+    sourcePeople,
     personMappings,
+    setPersonMappings,
+    parameters,
     targetImages,
     activeTargetIndex,
     setActiveTargetIndex,
@@ -86,7 +69,6 @@ export const TargetCanvas: React.FC = () => {
   const manualMaskDataUrl = currentImage?.manualMask?.dataUrl ?? null;
   const canUndoMask = Boolean(currentImage?.manualMask?.undoStack.length);
   const canRedoMask = Boolean(currentImage?.manualMask?.redoStack.length);
-  const currentTargetId = currentImage?.id ?? null;
   const {
     canvasRef: paintCanvasRef,
     clear: handleClearMask,
@@ -104,9 +86,22 @@ export const TargetCanvas: React.FC = () => {
     setMaskDataUrl: setManualMaskDataUrl,
     viewMode,
   });
-  const persistRefinementWorkspace = useCallback((workspace: RefinementWorkspaceState) => {
-    if (currentTargetId) updateTargetImageById(currentTargetId, { refinementWorkspace: workspace });
-  }, [currentTargetId, updateTargetImageById]);
+
+  const [isHoldingOriginal, setIsHoldingOriginal] = useState(false);
+
+  useStudioShortcuts({
+    enabled: workspaceView === 'prepare' && Boolean(currentImage),
+    viewMode,
+    setViewMode,
+    brushSize,
+    setBrushSize,
+    undoManualMask,
+    redoManualMask,
+    canUndoMask,
+    canRedoMask,
+    onHoldCompareChange: setIsHoldingOriginal,
+  });
+
   const { isClustering, clusteringError } = useIdentityClustering({
     targetImages,
     updateTargetImageById,
@@ -135,9 +130,7 @@ export const TargetCanvas: React.FC = () => {
         stage.clientHeight - verticalPadding,
       );
       setImageViewportSize((current) =>
-        current && next &&
-        Math.abs(current.width - next.width) < 0.5 &&
-        Math.abs(current.height - next.height) < 0.5
+        current && next && Math.abs(current.width - next.width) < 0.5 && Math.abs(current.height - next.height) < 0.5
           ? current
           : next,
       );
@@ -163,26 +156,65 @@ export const TargetCanvas: React.FC = () => {
     return sorted;
   }, [targetImages]);
 
-  // Handle batch images upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  // Handle batch images upload via input or drag-and-drop
+  const processAndAddFiles = async (files: FileList | File[]) => {
     if (!files?.length) return;
     const { accepted, errors } = await validateImageFiles(files);
-    const reads = accepted.map(({ file, width, height }, idx) => new Promise<TargetImageItem>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64Str = reader.result as string;
-        resolve({ id: `tgt_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`, name: file.name, url: base64Str, base64Data: base64Str, imageWidth: width, imageHeight: height, status: 'IDLE' });
-      };
-      reader.onerror = () => reject(new Error(`无法读取 ${file.name}`));
-      reader.readAsDataURL(file);
-    }));
+    const reads = accepted.map(
+      ({ file, width, height }, idx) =>
+        new Promise<TargetImageItem>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const base64Str = reader.result as string;
+            resolve({
+              id: `tgt_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+              name: file.name,
+              url: base64Str,
+              base64Data: base64Str,
+              imageWidth: width,
+              imageHeight: height,
+              status: 'IDLE',
+            });
+          };
+          reader.onerror = () => reject(new Error(`无法读取 ${file.name}`));
+          reader.readAsDataURL(file);
+        }),
+    );
     const settled = await Promise.allSettled(reads);
-    const newItems = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-    const readErrors = settled.flatMap((result) => result.status === 'rejected' ? [String(result.reason?.message ?? result.reason)] : []);
+    const newItems = settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
+    const readErrors = settled.flatMap((result) =>
+      result.status === 'rejected' ? [String(result.reason?.message ?? result.reason)] : [],
+    );
     if (newItems.length) addTargetImages(newItems);
-    if (errors.length || readErrors.length) toast({ title: '部分图片无法使用', description: [...errors, ...readErrors].join('；'), kind: 'error' });
+    if (errors.length || readErrors.length)
+      toast({ title: '部分图片无法使用', description: [...errors, ...readErrors].join('；'), kind: 'error' });
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) await processAndAddFiles(e.target.files);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragOver(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    if (e.dataTransfer?.files?.length) {
+      await processAndAddFiles(e.dataTransfer.files);
+    }
   };
 
   // The divider lives inside the image, so all pointer math must use that same viewport.
@@ -205,8 +237,6 @@ export const TargetCanvas: React.FC = () => {
     }
   };
 
-  const [editingFaceIndex, setEditingFaceIndex] = useState<number | null>(null);
-
   // Reassign a specific face's Global Person ID manually without creating an impossible topology.
   const handleReassignFaceGlobalId = (faceIndex: number, newGid: number) => {
     if (!currentImage?.faces) return;
@@ -218,7 +248,6 @@ export const TargetCanvas: React.FC = () => {
     }
     updateTargetImageById(currentImage.id, { faces: relabeled.faces });
     setSelectedTargetPersonId(newGid);
-    setEditingFaceIndex(null);
     setVlmReasoning(`✨ 已手动将 ${faceIndex} 号位置人脸调整归属为全局目标人物 #${newGid}`);
     setTimeout(() => setVlmReasoning(null), 4000);
   };
@@ -235,13 +264,12 @@ export const TargetCanvas: React.FC = () => {
       // Find another photo in the batch that has this selectedTargetPersonId
       const otherImgWithPerson = targetImages.find(
         (t, idx) =>
-          idx !== activeTargetIndex &&
-          t.faces?.some((f) => (f.global_person_id ?? f.index) === selectedTargetPersonId)
+          idx !== activeTargetIndex && t.faces?.some((f) => (f.global_person_id ?? f.index) === selectedTargetPersonId),
       );
 
       if (otherImgWithPerson && otherImgWithPerson.faces) {
         const refFace = otherImgWithPerson.faces.find(
-          (f) => (f.global_person_id ?? f.index) === selectedTargetPersonId
+          (f) => (f.global_person_id ?? f.index) === selectedTargetPersonId,
         );
         if (refFace) {
           refImageUrl = otherImgWithPerson.base64Data || otherImgWithPerson.url;
@@ -281,14 +309,10 @@ export const TargetCanvas: React.FC = () => {
       if (orphanFace && missingGid !== null) {
         // Find reference image containing missingGid
         const refImg = targetImages.find(
-          (t, idx) =>
-            idx !== activeTargetIndex &&
-            t.faces?.some((f) => (f.global_person_id ?? f.index) === missingGid)
+          (t, idx) => idx !== activeTargetIndex && t.faces?.some((f) => (f.global_person_id ?? f.index) === missingGid),
         );
         if (refImg && refImg.faces) {
-          const refFace = refImg.faces.find(
-            (f) => (f.global_person_id ?? f.index) === missingGid
-          );
+          const refFace = refImg.faces.find((f) => (f.global_person_id ?? f.index) === missingGid);
           if (refFace) {
             refImageUrl = refImg.base64Data || refImg.url;
             refPersonIndex = refFace.index;
@@ -300,7 +324,9 @@ export const TargetCanvas: React.FC = () => {
 
     // 3. VLM identity references must be anchored by another target-batch face.
     if (!refImageUrl) {
-      setVlmReasoning('⚠️ 当前目标批次中没有可确认的同人物锚点。请重新运行身份聚类，或手动解决人物归属；不会使用源素材作为目标身份参考。');
+      setVlmReasoning(
+        '⚠️ 当前目标批次中没有可确认的同人物锚点。请重新运行身份聚类，或手动解决人物归属；不会使用源素材作为目标身份参考。',
+      );
       setTimeout(() => setVlmReasoning(null), 8000);
       return;
     }
@@ -331,8 +357,8 @@ export const TargetCanvas: React.FC = () => {
           setSelectedTargetPersonId(targetGlobalId);
           setVlmReasoning(
             `🤖 VLM 智能纠错成功：已将 #${res.matched_person_index} 号位置人脸精准归属为目标人物 #${targetGlobalId} (${Math.round(
-              res.confidence * 100
-            )}% 置信度) — ${res.reasoning}`
+              res.confidence * 100,
+            )}% 置信度) — ${res.reasoning}`,
           );
         } else {
           setVlmReasoning(`⚠️ ${res.reasoning || '未检测到 VLM API Key，已降级回退至本地特征排序'}`);
@@ -348,229 +374,91 @@ export const TargetCanvas: React.FC = () => {
     }
   };
 
+  const handleDownloadCurrentResult = () => {
+    const url = currentImage?.refinedUrl || currentImage?.processedUrl;
+    if (!url) return;
+    const link = document.createElement('a');
+    link.href = url;
+    const baseName = currentImage.name.replace(/\.[^/.]+$/, '') || 'result';
+    link.download = `${baseName}_swapped.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast({ title: '已开始下载高清结果图', kind: 'info' });
+  };
+
+  const handleAssignSourcePerson = (targetPersonId: number, faceIndex: number, sourcePersonId: number | null) => {
+    if (sourcePersonId === null) {
+      setPersonMappings(personMappings.filter((m) => m.person_index !== targetPersonId));
+      toast({ title: `人物 #${targetPersonId} 已设为保持原样（不换脸）`, kind: 'info' });
+      return;
+    }
+
+    const sourceEntry = sourcePeople.find((p) => p.id === sourcePersonId);
+    if (!sourceEntry) return;
+    const references = sourceGallery.filter((r) => r.personId === sourcePersonId);
+    const { source_asset_ids, source_manual_images } = splitSourceReferences(references);
+
+    const newMapping: PersonMappingItem = {
+      person_index: targetPersonId,
+      target_reference_url: currentImage?.base64Data || currentImage?.url || '',
+      target_reference_person_index: faceIndex,
+      source_identity_id:
+        source_asset_ids.length === 0 && source_manual_images.length === 0 ? sourceEntry.libraryIdentityId : undefined,
+      source_asset_ids,
+      source_manual_images,
+      source_mode: parameters.source_mode,
+      label: sourceEntry.name,
+    };
+
+    const nextMappings = personMappings.filter((m) => m.person_index !== targetPersonId);
+    nextMappings.push(newMapping);
+    setPersonMappings(nextMappings);
+
+    toast({
+      title: `已指定人物 #${targetPersonId} → ${sourceEntry.name}`,
+      description: references.length ? `已绑定 ${references.length} 张参考图` : '该源人物暂无参考图，请在左侧上传',
+      kind: 'success',
+    });
+  };
+
   const detectedFaces = currentImage?.faces || [];
 
   return (
     <div className="relative flex-1 flex flex-col h-full bg-[#0a0a0d] overflow-hidden select-none">
-      {currentImage?.processedUrl && isRefinementOpen && (
-        <Suspense fallback={<LazyModalFallback label="AI 精修" />}>
-          <RefinementModal
-            key={currentImage.id}
-            target={currentImage}
-            selectedPersonId={selectedTargetPersonId}
-            fallbackPersonIds={personMappings.map((mapping) => mapping.person_index)}
-            workspace={currentImage.refinementWorkspace}
-            onWorkspaceChange={persistRefinementWorkspace}
-            onClose={() => setIsRefinementOpen(false)}
-            onAccepted={(url) => updateTargetImageById(currentImage.id, { refinedUrl: url })}
-          />
-        </Suspense>
-      )}
-
       {/* Hidden File Input for Batch / Single Target Uploads */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        accept="image/*"
-        onChange={handleFileUpload}
-        className="hidden"
-      />
+      <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={handleFileUpload} className="hidden" />
 
       {/* Top Toolbar */}
-      <div className="min-h-14 px-2 py-2 sm:px-5 border-b border-white/10 flex flex-wrap items-center justify-between gap-2 bg-[#121215]/80 backdrop-blur-md shrink-0">
-        {/* Left: Active Image Info & Global Person Selector */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-4">
-          <span className="text-sm font-semibold text-zinc-200 truncate max-w-[180px]">
-            {currentImage ? currentImage.name : '未选择图片'}
-          </span>
-
-          {currentImage && (
-            <label className="flex items-center gap-1.5 rounded-lg border border-white/5 bg-zinc-900 px-2.5 py-1 text-xs">
-              <span className="flex items-center gap-1 font-medium text-zinc-400">
-                <Crosshair className="h-3.5 w-3.5 text-indigo-400" />
-                替换目标
-              </span>
-              <select
-                value={selectedTargetPersonId ?? 'all'}
-                onChange={(event) => setSelectedTargetPersonId(event.target.value === 'all' ? null : Number(event.target.value))}
-                className="h-7 min-w-[108px] rounded-md border border-border bg-surface-3 px-2 font-mono text-xs font-semibold text-zinc-200"
-                aria-label="选择要替换的目标人物"
-              >
-                <option value="all">全部人物</option>
-                {distinctGlobalPersons.map((gid) => (
-                  <option key={gid} value={gid}>人物 #{gid}</option>
-                ))}
-              </select>
-            </label>
-          )}
-        </div>
-
-        {/* Right: Face Markers Toggle, Multi-Person Matrix, VLM Arbiter & View Mode Selectors */}
-        <div className="flex max-w-full items-center gap-2 overflow-x-auto pb-1">
-          {/* Multi-Person Matrix Mapping Button */}
-
-          {/* AI VLM Arbitrate Button */}
-          {currentImage && (targetImages.length > 1 || sourceGallery.length > 0) && (
-            <button
-              onClick={handleVlmArbitrate}
-              disabled={isArbitrating}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-gradient-to-r from-purple-600/20 to-indigo-600/20 border border-purple-500/40 text-purple-300 hover:from-purple-600/30 hover:to-indigo-600/30 transition-all shadow-sm active:scale-95 disabled:opacity-50"
-              title="调用多模态视觉大模型综合五官、发型、衣服款式进行智能纠错"
-            >
-              <Sparkles className={`w-3.5 h-3.5 text-purple-400 ${isArbitrating ? 'animate-spin' : ''}`} />
-              <span>{isArbitrating ? 'AI 视觉纠错中...' : 'AI 大模型纠错'}</span>
-            </button>
-          )}
-
-          {currentImage?.processedUrl && (
-            <button
-              onClick={() => setIsRefinementOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-gradient-to-r from-cyan-600/20 to-purple-600/20 border border-cyan-500/40 text-cyan-200 hover:from-cyan-600/30 hover:to-purple-600/30 transition-all"
-              title="多模态评审换脸问题，并按人工需求调用生图模型精修"
-            >
-              <BrainCircuit className="w-3.5 h-3.5" />
-              AI 评审精修
-            </button>
-          )}
-          {/* Face Markers Toggle */}
-          {currentImage && (
-            <button
-              onClick={() => setShowFaceMarkers(!showFaceMarkers)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                showFaceMarkers
-                  ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/40 shadow-sm'
-                  : 'bg-zinc-900 text-zinc-400 border-white/10 hover:text-zinc-200'
-              }`}
-              title="在画面上显示/隐藏所有人脸检测定位框与编号"
-            >
-              {showFaceMarkers ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-              <span>人脸定位框</span>
-            </button>
-          )}
-
-          {/* View Modes */}
-          <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-white/5">
-            <button
-              onClick={() => setViewMode('SINGLE')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                viewMode === 'SINGLE'
-                  ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-              <span>单图</span>
-            </button>
-            <button
-              onClick={() => setViewMode('SPLIT')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                viewMode === 'SPLIT'
-                  ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <Columns className="w-3.5 h-3.5" />
-              <span>前后对比</span>
-            </button>
-            <button
-              onClick={() => setViewMode('MAGNIFIER')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                viewMode === 'MAGNIFIER'
-                  ? 'bg-indigo-600/30 text-indigo-300 border border-indigo-500/40'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              <ZoomIn className="w-3.5 h-3.5" />
-              <span>放大镜</span>
-            </button>
-            <button
-              onClick={() => setViewMode('BRUSH')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                viewMode === 'BRUSH'
-                  ? 'bg-amber-600/30 text-amber-300 border border-amber-500/40'
-                  : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-              title="手动涂抹保护笔：绘制不希望被换脸替换的区域（发饰、眼镜、胎记等）"
-            >
-              <Paintbrush className="w-3.5 h-3.5" />
-              <span>保护笔</span>
-            </button>
-          </div>
-        </div>
-      </div>
+      <CanvasTopToolbar
+        currentImageName={currentImage?.name}
+        hasCurrentImage={Boolean(currentImage)}
+        selectedTargetPersonId={selectedTargetPersonId}
+        onSelectTargetPersonId={setSelectedTargetPersonId}
+        distinctGlobalPersons={distinctGlobalPersons}
+        canVlmArbitrate={targetImages.length > 1 || sourceGallery.length > 0}
+        isArbitrating={isArbitrating}
+        onVlmArbitrate={handleVlmArbitrate}
+        showFaceMarkers={showFaceMarkers}
+        onToggleShowFaceMarkers={() => setShowFaceMarkers(!showFaceMarkers)}
+        viewMode={viewMode}
+        onChangeViewMode={setViewMode}
+      />
 
       {/* Brush Floating Toolbar */}
       {viewMode === 'BRUSH' && (
-        <div className="absolute top-16 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 px-3 sm:px-4 py-2 rounded-2xl bg-zinc-900/90 backdrop-blur-xl border border-amber-500/40 shadow-2xl flex items-center gap-3.5 overflow-x-auto z-40 animate-in fade-in slide-in-from-top-2">
-          <div id="brush-canvas-help" className="flex items-center gap-1.5 text-xs text-amber-300 font-medium">
-            <Paintbrush className="w-4 h-4" />
-            <span>保护笔；键盘可操作工具栏，绘制需使用触控笔、触摸或鼠标。</span>
-          </div>
-          <div className="h-4 w-px bg-white/10" />
-          <button
-            onClick={() => setIsEraser(false)}
-            className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
-              !isEraser
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Paintbrush className="w-3.5 h-3.5" />
-            <span>画笔</span>
-          </button>
-          <button
-            onClick={() => setIsEraser(true)}
-            className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
-              isEraser
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Eraser className="w-3.5 h-3.5" />
-            <span>橡皮</span>
-          </button>
-          <div className="flex items-center gap-2 text-xs text-zinc-300">
-            <span className="text-xs text-zinc-400">粗细:</span>
-            <input
-              aria-label="保护画笔粗细"
-              type="range"
-              min="10"
-              max="60"
-              value={brushSize}
-              onChange={(e) => setBrushSize(Number(e.target.value))}
-              className="w-20 h-11 accent-amber-500 cursor-pointer"
-            />
-            <span className="font-mono text-xs text-amber-300">{brushSize}px</span>
-          </div>
-          <button
-            onClick={undoManualMask}
-            disabled={!canUndoMask}
-            className="min-w-11 min-h-11 p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
-            title="撤销遮罩编辑"
-            aria-label="撤销遮罩编辑"
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={redoManualMask}
-            disabled={!canRedoMask}
-            className="min-w-11 min-h-11 p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
-            title="重做遮罩编辑"
-            aria-label="重做遮罩编辑"
-          >
-            <Redo2 className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleClearMask}
-            disabled={!manualMaskDataUrl}
-            className="min-h-11 px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 disabled:opacity-30 disabled:pointer-events-none transition-colors flex items-center gap-1"
-            title="清空当前涂抹遮罩"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>清空</span>
-          </button>
-        </div>
+        <CanvasBrushToolbar
+          isEraser={isEraser}
+          onToggleEraser={setIsEraser}
+          brushSize={brushSize}
+          onChangeBrushSize={setBrushSize}
+          canUndo={canUndoMask}
+          onUndo={undoManualMask}
+          canRedo={canRedoMask}
+          onRedo={redoManualMask}
+          hasMaskData={Boolean(manualMaskDataUrl)}
+          onClear={handleClearMask}
+        />
       )}
 
       {/* Center Main Stage / Canvas */}
@@ -580,24 +468,56 @@ export const TargetCanvas: React.FC = () => {
         onPointerLeave={() => {
           setMagnifierData(null);
         }}
-        className="flex-1 min-h-0 relative flex items-center justify-center p-5 overflow-hidden"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className="flex-1 min-h-0 relative flex items-center justify-center p-5 overflow-hidden bg-dot-grid"
       >
-        {!currentImage ? (
-          /* Empty State */
-          <div className="flex flex-col items-center justify-center text-center p-8 max-w-sm">
-            <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-white/10 flex items-center justify-center text-zinc-400 mb-4 shadow-xl">
-              <Upload className="w-8 h-8 text-indigo-400" />
+        {isDragOver && (
+          <div className="absolute inset-4 z-50 rounded-3xl border-2 border-dashed border-cyan-400 bg-cyan-950/80 backdrop-blur-md flex flex-col items-center justify-center gap-3 text-cyan-200 pointer-events-none animate-in fade-in shadow-[0_0_50px_rgba(6,182,212,0.25)]">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300 shadow-cyan">
+              <Upload className="w-8 h-8 animate-bounce" />
             </div>
-            <h3 className="text-sm font-semibold text-zinc-100 mb-4">
-              暂无待处理照片
-            </h3>
+            <p className="text-sm font-semibold tracking-tight">释放以添加图片至待处理批次</p>
+            <p className="text-xs text-cyan-400/80 font-mono">支持多图批量拖入 · 自动提取面部特征</p>
+          </div>
+        )}
+
+        {!currentImage ? (
+          /* Empty State with Cyber/Studio Precision Blueprint design */
+          <div className="flex flex-col items-center justify-center text-center p-8 max-w-md animate-in fade-in zoom-in-95">
+            <div className="relative mb-6">
+              <div className="w-20 h-20 rounded-3xl bg-surface-2 border border-white/10 flex items-center justify-center text-zinc-400 shadow-elevated relative z-10">
+                <Upload className="w-9 h-9 text-primary animate-pulse" />
+              </div>
+              <div className="absolute -inset-2 rounded-3xl bg-primary/20 blur-xl -z-10" />
+            </div>
+            <h3 className="text-base font-semibold text-zinc-100 mb-1.5 tracking-tight">暂无待处理照片</h3>
+            <p className="text-xs text-zinc-400 max-w-xs mb-6 leading-relaxed">
+              支持单张写真或多人合影。拖拽照片至此区域，或点击下方按钮导入
+            </p>
             <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium shadow-lg shadow-indigo-600/25 active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+              className="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-xs font-semibold shadow-primary active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
             >
               <Upload className="w-4 h-4" />
-              选择待换图片
+              <span>选择待换图片</span>
             </button>
+            <div className="mt-8 flex items-center gap-4 text-2xs text-zinc-500 font-mono">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary/60" />
+                自动人脸定位
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400/60" />
+                全局身份聚类
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400/60" />
+                JPG · PNG · WebP
+              </span>
+            </div>
           </div>
         ) : (
           /* Loaded Canvas Viewport (Tightly bounded to image dimensions) */
@@ -610,7 +530,7 @@ export const TargetCanvas: React.FC = () => {
             {/* Base Image */}
             <img
               src={
-                viewMode !== 'SPLIT' && (currentImage.refinedUrl || currentImage.processedUrl)
+                !isHoldingOriginal && viewMode !== 'SPLIT' && (currentImage.refinedUrl || currentImage.processedUrl)
                   ? currentImage.refinedUrl || currentImage.processedUrl
                   : currentImage.url
               }
@@ -625,16 +545,32 @@ export const TargetCanvas: React.FC = () => {
                   });
                 }
               }}
-              className={imageViewportSize
-                ? 'block h-full w-full object-fill object-left-top pointer-events-none select-none'
-                : 'block h-auto w-auto max-h-[calc(100vh-270px)] max-w-full object-fill object-left-top pointer-events-none select-none'}
+              className={
+                imageViewportSize
+                  ? 'block h-full w-full object-fill object-left-top pointer-events-none select-none'
+                  : 'block h-auto w-auto max-h-[calc(100vh-270px)] max-w-full object-fill object-left-top pointer-events-none select-none'
+              }
             />
+
+            {/* Hold to compare original indicator banner */}
+            {isHoldingOriginal && Boolean(currentImage.refinedUrl || currentImage.processedUrl) && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 px-4 py-1.5 rounded-full bg-cyan-950/90 border border-cyan-400/50 text-cyan-200 text-xs font-semibold shadow-[0_0_25px_rgba(6,182,212,0.4)] backdrop-blur-md z-40 flex items-center gap-2 animate-in fade-in">
+                <Eye className="w-3.5 h-3.5 text-cyan-400 animate-pulse" />
+                <span>正在临时对比原图 (松开 \ 键还原)</span>
+              </div>
+            )}
 
             {/* Clustering indicator on top left of image */}
             {(isClustering || clusteringError) && (
-              <div className={`absolute top-3 left-3 px-3 py-1.5 rounded-lg bg-black/85 backdrop-blur-md border text-xs font-medium flex items-center gap-2 shadow-lg z-30 ${clusteringError ? 'border-red-500/40 text-red-300' : 'border-cyan-500/40 text-cyan-400'}`}>
+              <div
+                className={`absolute top-3 left-3 px-3 py-1.5 rounded-lg bg-black/85 backdrop-blur-md border text-xs font-medium flex items-center gap-2 shadow-lg z-30 ${clusteringError ? 'border-red-500/40 text-red-300' : 'border-cyan-500/40 text-cyan-400'}`}
+              >
                 <Zap className={`w-3.5 h-3.5 ${isClustering ? 'animate-spin' : ''}`} />
-                <span>{clusteringError ? `身份聚类失败：${clusteringError}。修改图片或重新上传可重试。` : '跨图全局人物身份聚类中...'}</span>
+                <span>
+                  {clusteringError
+                    ? `身份聚类失败：${clusteringError}。修改图片或重新上传可重试。`
+                    : '跨图全局人物身份聚类中...'}
+                </span>
               </div>
             )}
 
@@ -646,121 +582,26 @@ export const TargetCanvas: React.FC = () => {
             )}
 
             {/* 🎯 Interactive Face Markers Overlay with Global Consistent IDs */}
-            {showFaceMarkers &&
-              detectedFaces.length > 0 &&
-              !currentImage.processedUrl && (
-                <div className="absolute inset-0 pointer-events-none z-20">
-                  {detectedFaces.map((face) => {
-                    const personId = face.global_person_id ?? face.index;
-                    const isSelected = selectedTargetPersonId === personId;
-                    const w = currentImage.imageWidth || 1;
-                    const h = currentImage.imageHeight || 1;
-                    // SCRFD returns a tight recognition ROI. Expand only the visual marker,
-                    // especially below the ROI, so the frame reads as a complete face box;
-                    // matching and swap coordinates continue using the untouched detector box.
-                    const box = faceBoxToPercentage(face.bbox, w, h, FACE_MARKER_PADDING);
-                    if (!box) return null;
-
-                    return (
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        key={face.index}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedTargetPersonId(personId);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            setSelectedTargetPersonId(personId);
-                          }
-                        }}
-                        style={{
-                          left: `${box.left}%`,
-                          top: `${box.top}%`,
-                          width: `${box.width}%`,
-                          height: `${box.height}%`,
-                        }}
-                        className={`absolute rounded-xl transition-all pointer-events-auto cursor-pointer flex flex-col items-center justify-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white ${
-                          isSelected
-                            ? 'border-2 border-cyan-400 bg-cyan-400/25 shadow-[0_0_25px_rgba(6,182,212,0.6)] ring-4 ring-cyan-400/40 z-30'
-                            : 'border-2 border-dashed border-white/60 bg-black/25 hover:border-indigo-400 hover:bg-indigo-500/20 hover:scale-[1.02] z-10'
-                        }`}
-                        aria-label={`选择目标人物 ${personId}，位置人脸 ${face.index}`}
-                        aria-pressed={isSelected}
-                        title={`目标人物 #${personId} (点击选定，点击标签可调整全局编号)`}
-                      >
-                        {/* Number Badge with Consistent Global ID */}
-                        <div className="relative -translate-y-1/2 flex flex-col items-center">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditingFaceIndex(editingFaceIndex === face.index ? null : face.index);
-                            }}
-                            className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold shadow-lg transition-all whitespace-nowrap flex items-center gap-1 ${
-                              isSelected
-                                ? 'bg-cyan-400 text-black border border-cyan-200 shadow-cyan-400/50'
-                                : 'bg-zinc-900/95 text-zinc-100 border border-white/30 hover:border-cyan-400'
-                            }`}
-                            title="点击手动修改人物编号"
-                          >
-                            <span>{isSelected ? `🎯 #${personId} 目标` : `👤 #${personId}`}</span>
-                          </button>
-
-                          {/* Quick Global ID Reassignment Popover */}
-                          {editingFaceIndex === face.index && (
-                            <div
-                              onClick={(e) => e.stopPropagation()}
-                              className="absolute top-full mt-1.5 p-2 rounded-xl bg-zinc-950/95 border border-cyan-500/50 shadow-2xl backdrop-blur-md z-50 flex flex-col gap-1.5 min-w-[140px] animate-in fade-in zoom-in-95"
-                            >
-                              <div className="text-xs text-zinc-400 font-sans font-medium px-1 flex items-center justify-between">
-                                <span>调整归属人物:</span>
-                                <button
-                                  onClick={() => setEditingFaceIndex(null)}
-                                  className="text-zinc-500 hover:text-white"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                              <div className="flex items-center gap-1 flex-wrap">
-                                {distinctGlobalPersons.map((gid) => (
-                                  <button
-                                    key={gid}
-                                    onClick={() => handleReassignFaceGlobalId(face.index, gid)}
-                                    className={`px-2 py-0.5 rounded text-xs font-mono font-bold transition-all ${
-                                      personId === gid
-                                        ? 'bg-cyan-500 text-black'
-                                        : 'bg-zinc-800 text-zinc-300 hover:bg-white/10 hover:text-white'
-                                    }`}
-                                  >
-                                    #{gid}
-                                  </button>
-                                ))}
-                                <button
-                                  onClick={() => {
-                                    const maxId = Math.max(...distinctGlobalPersons, 0);
-                                    handleReassignFaceGlobalId(face.index, maxId + 1);
-                                  }}
-                                  className="px-2 py-0.5 rounded text-xs font-sans text-indigo-300 bg-indigo-900/40 border border-indigo-500/30 hover:bg-indigo-800/60"
-                                  title="分配为全新独立人物"
-                                >
-                                  +新人物
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+            {showFaceMarkers && detectedFaces.length > 0 && !currentImage.processedUrl && (
+              <CanvasFaceMarkersOverlay
+                faces={detectedFaces}
+                imageWidth={currentImage.imageWidth || 1}
+                imageHeight={currentImage.imageHeight || 1}
+                selectedTargetPersonId={selectedTargetPersonId}
+                onSelectTargetPersonId={setSelectedTargetPersonId}
+                personMappings={personMappings}
+                sourcePeople={sourcePeople}
+                sourceGallery={sourceGallery}
+                distinctGlobalPersons={distinctGlobalPersons}
+                onAssignSourcePerson={handleAssignSourcePerson}
+                onReassignFaceGlobalId={handleReassignFaceGlobalId}
+              />
+            )}
 
             {/* Render both comparison images in the same box. A nested clipped wrapper plus
                 object-contain can be rasterized on a separate fractional GPU layer, causing
                 a visible one-pixel vertical jump even when both files have identical dimensions. */}
-            {viewMode === 'SPLIT' && (currentImage.refinedUrl || currentImage.processedUrl) && (
+            {viewMode === 'SPLIT' && !isHoldingOriginal && (currentImage.refinedUrl || currentImage.processedUrl) && (
               <img
                 src={currentImage.refinedUrl || currentImage.processedUrl}
                 alt="Processed Result Overlay"
@@ -772,7 +613,7 @@ export const TargetCanvas: React.FC = () => {
             )}
 
             {/* Split Comparison Divider Line */}
-            {viewMode === 'SPLIT' && (currentImage.refinedUrl || currentImage.processedUrl) && (
+            {viewMode === 'SPLIT' && !isHoldingOriginal && (currentImage.refinedUrl || currentImage.processedUrl) && (
               <div
                 data-testid="target-comparison-control"
                 role="slider"
@@ -820,7 +661,10 @@ export const TargetCanvas: React.FC = () => {
                   className="pointer-events-none absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-indigo-500 shadow-lg shadow-indigo-500/80"
                   style={{ left: `${splitPosition}%` }}
                 >
-                  <div aria-hidden="true" className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-11 h-11 rounded-full bg-indigo-600 border-2 border-white flex items-center justify-center text-white shadow-xl pointer-events-none">
+                  <div
+                    aria-hidden="true"
+                    className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-11 h-11 rounded-full bg-indigo-600 border-2 border-white flex items-center justify-center text-white shadow-xl pointer-events-none"
+                  >
                     <Columns className="w-4 h-4" />
                   </div>
                 </div>
@@ -860,10 +704,9 @@ export const TargetCanvas: React.FC = () => {
               >
                 <img
                   src={
-                    currentImage.refinedUrl ||
-                    currentImage.processedUrl ||
-                    currentImage.base64Data ||
-                    currentImage.url
+                    !isHoldingOriginal && (currentImage.refinedUrl || currentImage.processedUrl)
+                      ? currentImage.refinedUrl || currentImage.processedUrl
+                      : currentImage.base64Data || currentImage.url
                   }
                   className="absolute max-w-none pointer-events-none block select-none"
                   style={{
@@ -881,105 +724,36 @@ export const TargetCanvas: React.FC = () => {
                 </div>
                 {/* Magnifier info badge */}
                 <div className="absolute bottom-2 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-black/85 backdrop-blur-md text-xs font-mono text-cyan-300 border border-cyan-400/30 shadow-md whitespace-nowrap">
-                  {currentImage.processedUrl ? '300% 换脸后质感细节' : '300% 原图细节'}
+                  {isHoldingOriginal
+                    ? '300% 原图细节对比'
+                    : currentImage.refinedUrl
+                      ? '300% 精修后质感细节'
+                      : currentImage.processedUrl
+                        ? '300% 换脸后质感细节'
+                        : '300% 原图细节'}
                 </div>
               </div>
             )}
-
-            {/* Bottom floating badge */}
-            <div className="absolute bottom-3 left-3 flex items-center gap-2 z-20">
-              <div className="px-3 py-1 rounded-lg bg-black/80 backdrop-blur-md border border-white/10 text-xs font-medium flex items-center gap-1.5 text-zinc-300">
-                <UserCheck className="w-3.5 h-3.5 text-cyan-400" />
-                <span>
-                  {selectedTargetPersonId !== null
-                    ? `锁定目标人物: #${selectedTargetPersonId} 号`
-                    : '替换模式: 全员'}
-                </span>
-                {detectedFaces.length > 0 && (
-                  <span className="text-zinc-400 text-xs">
-                    (本图检测到 {detectedFaces.length} 处人脸)
-                  </span>
-                )}
-              </div>
-              {currentImage.status === 'SUCCESS' && (
-                <div className="px-3 py-1 rounded-lg bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs font-mono flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>已完成 ({currentImage.costMs} ms)</span>
-                </div>
-              )}
-              {currentImage.swapWarning && (
-                <div className="max-w-md rounded-lg border border-amber-500/30 bg-amber-500/15 px-3 py-1 text-xs text-amber-200 backdrop-blur-md">
-                  部分人物未换：{currentImage.swapWarning}
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>
+      {currentImage?.status === 'SUCCESS' && (currentImage.refinedUrl || currentImage.processedUrl) && (
+        <CanvasResultActionBar
+          currentImage={currentImage}
+          onOpenRefinement={openRefinement}
+          onDownload={handleDownloadCurrentResult}
+        />
+      )}
 
       {/* Bottom Batch Filmstrip Thumbnails Carousel */}
-      <div className="h-20 border-t border-white/10 bg-[#121215]/90 backdrop-blur-xl px-5 flex items-center gap-3 overflow-x-auto shrink-0">
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isProcessing}
-          className="w-14 h-14 rounded-xl border border-dashed border-white/20 hover:border-indigo-500/60 bg-zinc-900/60 hover:bg-indigo-500/5 flex flex-col items-center justify-center text-zinc-400 hover:text-indigo-400 transition-all shrink-0 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          title="添加更多待换脸图片"
-        >
-          <Upload className="w-4 h-4" />
-          <span className="text-xs mt-0.5 font-medium">加图</span>
-        </button>
-
-        <div className="flex items-center gap-2.5 overflow-x-auto py-1">
-          {targetImages.map((item, idx) => {
-            const isActive = idx === activeTargetIndex;
-            return (
-              <motion.div
-                key={item.id}
-                whileHover={{ scale: 1.05 }}
-                className={`group relative w-14 h-14 rounded-xl border-2 transition-all shrink-0 bg-black/50 ${
-                  isActive ? 'border-indigo-500 shadow-lg shadow-indigo-500/30' : 'border-white/10 hover:border-white/30 opacity-70 hover:opacity-100'
-                }`}
-              >
-                <button type="button" onClick={() => setActiveTargetIndex(idx)} aria-label={`选择图片 ${idx + 1}：${item.name}`} aria-pressed={isActive} className="absolute inset-0 overflow-hidden rounded-[10px] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300">
-                <img
-                  src={item.refinedUrl || item.processedUrl || item.url}
-                  alt={item.name}
-                  className="w-full h-full object-cover"
-                />
-                </button>
-                <div className="absolute top-0.5 left-0.5 px-1.5 rounded bg-black/70 text-xs font-mono text-zinc-300 font-semibold">
-                  #{idx + 1}
-                </div>
-
-                {/* Delete / Remove image button on hover */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeTargetImage(idx);
-                  }}
-                  className="absolute -top-2 -right-2 w-11 h-11 rounded-full bg-black/80 hover:bg-red-500 text-zinc-200 hover:text-white flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition-all z-10"
-                  title="移除此图片"
-                  aria-label={`移除图片 ${idx + 1}：${item.name}`}
-                >
-                  <X className="w-3 h-3" />
-                </button>
-
-                <div className="absolute bottom-0.5 right-0.5">
-                  {item.status === 'SUCCESS' && (
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400 drop-shadow" />
-                  )}
-                  {item.status === 'PROCESSING' && (
-                    <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin drop-shadow" />
-                  )}
-                  {item.status === 'FAILED' && (
-                    <AlertCircle className="w-3.5 h-3.5 text-red-400 drop-shadow" />
-                  )}
-                </div>
-              </motion.div>
-            );
-          })}
-        </div>
-      </div>
+      <CanvasBatchFilmstrip
+        targetImages={targetImages}
+        activeTargetIndex={activeTargetIndex}
+        onSelectTargetIndex={setActiveTargetIndex}
+        onRemoveTargetImage={removeTargetImage}
+        onUploadClick={() => fileInputRef.current?.click()}
+        isProcessing={isProcessing}
+      />
     </div>
   );
 };

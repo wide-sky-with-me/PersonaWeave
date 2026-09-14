@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
+  Download,
+  RotateCw,
   Sliders,
   Shield,
   Palette,
@@ -8,11 +10,82 @@ import {
   Cpu,
   ChevronDown,
   ChevronUp,
+  RotateCcw,
+  Users,
+  Sparkles,
+  SunMedium,
+  ShieldCheck,
 } from 'lucide-react';
-import { useStudioStore } from '../../stores/useStudioStore';
-import { api } from '../../services/api';
-import { buildQuickSwapPayload } from '../../utils/swapPayload';
-import { useToast } from '../ui/ToastProvider';
+import { useStudioStore } from '@/stores/useStudioStore';
+import type { BatchPipeline } from '@/hooks/useBatchPipeline';
+import { api } from '@/services/api';
+import { buildQuickSwapPayload } from '@/utils/swapPayload';
+import { useToast } from '@/components/ui/ToastProvider';
+import type { SwapParameters } from '@/types';
+
+/* ── Scenario Presets definition ────────────────────────────── */
+interface PresetItem {
+  id: string;
+  name: string;
+  desc: string;
+  icon: React.ComponentType<{ className?: string }>;
+  params: Partial<SwapParameters>;
+}
+
+const PRESETS: PresetItem[] = [
+  {
+    id: 'portrait',
+    name: '写真质感',
+    desc: '高保真写真质感，强化正脸细节与五官清晰度',
+    icon: Sparkles,
+    params: {
+      swapper_model: 'auto',
+      identity_blend_strength: 0.92,
+      similarity_threshold: 0.35,
+      color_transfer_mode: 'boundary',
+      enable_dense_mask: true,
+    },
+  },
+  {
+    id: 'fast',
+    name: '极速日常',
+    desc: '快速出图，泛化能力强，适合多场景抓拍与日常照',
+    icon: Zap,
+    params: {
+      swapper_model: 'inswapper_128',
+      identity_blend_strength: 0.9,
+      similarity_threshold: 0.35,
+      color_transfer_mode: 'boundary',
+      enable_dense_mask: true,
+    },
+  },
+  {
+    id: 'atmosphere',
+    name: '复杂光影',
+    desc: '适度保留原片侧影高光，减少侧脸与暗光生硬边界',
+    icon: SunMedium,
+    params: {
+      swapper_model: 'auto',
+      identity_blend_strength: 0.85,
+      similarity_threshold: 0.3,
+      color_transfer_mode: 'boundary',
+      enable_dense_mask: true,
+    },
+  },
+  {
+    id: 'occlusion',
+    name: '遮挡防护',
+    desc: '收紧识别截断，预防眼镜、饰品与发丝穿模贴图',
+    icon: ShieldCheck,
+    params: {
+      swapper_model: 'auto',
+      identity_blend_strength: 0.88,
+      similarity_threshold: 0.42,
+      color_transfer_mode: 'boundary',
+      enable_dense_mask: true,
+    },
+  },
+];
 
 /* ── Collapsible section wrapper ────────────────────────────── */
 const Section: React.FC<{
@@ -27,13 +100,14 @@ const Section: React.FC<{
 
   const accentClasses: Record<string, string> = {
     primary: 'text-primary',
-    accent:  'text-accent',
-    warn:    'text-warn',
+    accent: 'text-accent',
+    warn: 'text-warn',
   };
 
   return (
     <div className="rounded-xl border border-border bg-surface-2 overflow-hidden">
       <button
+        aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-surface-hover transition-colors"
       >
@@ -72,28 +146,36 @@ const ParamSlider: React.FC<{
   const badgeClass =
     accent === 'warn' ? 'val-badge-warn' : accent === 'accent' ? 'val-badge-accent' : 'val-badge-primary';
 
+  const accentColor = accent === 'warn' ? '#f59e0b' : accent === 'accent' ? '#06b6d4' : '#5b5fef';
+  const percentage = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+
   return (
-    <div className="space-y-2 pt-2">
+    <div className="space-y-1.5 pt-2">
       <div className="flex items-center justify-between">
-        <label htmlFor={`parameter-${label}`} className="text-xs text-zinc-400">{label}</label>
+        <label htmlFor={`parameter-${label}`} className="text-xs font-medium text-zinc-300">
+          {label}
+        </label>
         <span className={badgeClass}>{format ? format(value) : value}</span>
       </div>
-      <input
-        id={`parameter-${label}`}
-        aria-label={label}
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        className="w-full"
-        style={{
-          accentColor: accent === 'warn' ? '#f59e0b' : accent === 'accent' ? '#06b6d4' : '#5b5fef',
-        }}
-      />
+      <div className="relative flex items-center">
+        <input
+          id={`parameter-${label}`}
+          aria-label={label}
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          className="w-full h-1.5 rounded-full transition-all cursor-pointer"
+          style={{
+            background: `linear-gradient(to right, ${accentColor} 0%, ${accentColor} ${percentage}%, rgba(255, 255, 255, 0.08) ${percentage}%, rgba(255, 255, 255, 0.08) 100%)`,
+            accentColor,
+          }}
+        />
+      </div>
       {hints && (
-        <div className="flex justify-between text-2xs text-zinc-600 font-mono">
+        <div className="flex justify-between text-2xs text-zinc-500 font-mono">
           <span>{hints[0]}</span>
           <span>{hints[1]}</span>
           <span>{hints[2]}</span>
@@ -103,11 +185,12 @@ const ParamSlider: React.FC<{
   );
 };
 
-
 /* ── Main component ─────────────────────────────────────────── */
-export const ParameterPanel: React.FC = () => {
+import { snapshotRefinementInput } from '@/features/refinement/sessionRecipe';
+
+export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) => {
   const toast = useToast();
-  const [isSingleRunning, setIsSingleRunning] = useState(false);
+  const [singlePending, setIsSingleRunning] = useState(false);
   const {
     parameters,
     updateParameters,
@@ -120,13 +203,50 @@ export const ParameterPanel: React.FC = () => {
     activeTargetIndex,
     updateTargetImageById,
     isProcessing,
+    batchProgress,
   } = useStudioStore();
 
+  const isSingleRunning =
+    singlePending || (!isProcessing && targetImages.some((target) => target.status === 'PROCESSING'));
   const currentTarget = targetImages[activeTargetIndex] || null;
+
+  const activePresetId = useMemo(() => {
+    for (const preset of PRESETS) {
+      const p = preset.params;
+      const match =
+        (p.swapper_model === undefined || p.swapper_model === parameters.swapper_model) &&
+        (p.identity_blend_strength === undefined ||
+          Math.abs(p.identity_blend_strength - parameters.identity_blend_strength) < 0.005) &&
+        (p.similarity_threshold === undefined ||
+          Math.abs(p.similarity_threshold - parameters.similarity_threshold) < 0.005) &&
+        (p.color_transfer_mode === undefined || p.color_transfer_mode === parameters.color_transfer_mode);
+      if (match) return preset.id;
+    }
+    return 'custom';
+  }, [parameters]);
+
+  const handleApplyPreset = (preset: PresetItem) => {
+    updateParameters({
+      ...preset.params,
+      allow_research_models:
+        preset.params.swapper_model === 'hyperswap_1c_256' ? true : parameters.allow_research_models,
+    });
+    toast({
+      title: `已套用「${preset.name}」预设`,
+      description: preset.desc,
+      kind: 'info',
+    });
+  };
 
   /* Run quick single preview on current canvas image */
   const handleQuickSingleSwap = async () => {
-    if (!currentTarget || sourceGallery.length === 0 || isProcessing) return;
+    if (
+      !currentTarget ||
+      !sourceGallery.length ||
+      useStudioStore.getState().isProcessing ||
+      useStudioStore.getState().targetImages.some((target) => target.status === 'PROCESSING')
+    )
+      return;
 
     const built = buildQuickSwapPayload(
       { sourcePeople, sourceGallery, targetImages, personMappings },
@@ -140,12 +260,17 @@ export const ParameterPanel: React.FC = () => {
     }
     if (built.autoCreated) setPersonMappings(built.mappings);
     const submittedTargetId = currentTarget.id;
+    const refinementSnapshot = snapshotRefinementInput(currentTarget, built.payload.person_mappings ?? [], '');
 
     setIsSingleRunning(true);
     updateTargetImageById(submittedTargetId, {
       status: 'PROCESSING',
       refinedUrl: undefined,
-      refinementWorkspace: undefined,
+      acceptedRefinement: undefined,
+      refinementSessionId: undefined,
+      refinementInput: undefined,
+      pendingRefinement: undefined,
+      refinementError: undefined,
     });
 
     try {
@@ -153,18 +278,21 @@ export const ParameterPanel: React.FC = () => {
 
       const swapData = res.data;
       updateTargetImageById(submittedTargetId, {
-        processedUrl:        swapData.processed_base64 || swapData.processed_url,
-        refinedUrl:          undefined,
-        refinementWorkspace: undefined,
-        status:              'SUCCESS',
-        costMs:              swapData.cost_ms,
-        facesDetected:       swapData.faces_detected,
-        facesSwapped:        swapData.faces_swapped,
-        swappedPersonIds:    swapData.swapped_person_indices,
-        personOutcomes:      swapData.person_outcomes,
-        swapWarning:         swapData.warning,
+        processedUrl: swapData.processed_base64 || swapData.processed_url,
+        refinedUrl: undefined,
+        refinementInput: {
+          ...refinementSnapshot,
+          baseline_image_url: swapData.processed_base64 || swapData.processed_url,
+        },
+        status: 'SUCCESS',
+        costMs: swapData.cost_ms,
+        facesDetected: swapData.faces_detected,
+        facesSwapped: swapData.faces_swapped,
+        swappedPersonIds: swapData.swapped_person_indices,
+        personOutcomes: swapData.person_outcomes,
+        swapWarning: swapData.warning,
         matchedSimilarities: swapData.matched_similarities,
-        modelRouting:        swapData.model_routing,
+        modelRouting: swapData.model_routing,
       });
       if (swapData.warning) {
         toast({ title: '部分人物未完成换脸', description: swapData.warning, kind: 'warning' });
@@ -173,30 +301,122 @@ export const ParameterPanel: React.FC = () => {
       console.error('Quick swap failed:', err);
       updateTargetImageById(submittedTargetId, {
         status: 'FAILED',
-        error:  err.response?.data?.message || err.message || '换脸处理失败',
+        error: err.response?.data?.message || err.message || '换脸处理失败',
       });
     } finally {
       setIsSingleRunning(false);
     }
   };
 
+  const handleResetDefaults = () => {
+    updateParameters({
+      similarity_threshold: 0.35,
+      identity_blend_strength: 0.9,
+      enable_color_transfer: true,
+      color_transfer_mode: 'boundary',
+      enable_dense_mask: true,
+      source_mode: 'best-match',
+      swapper_model: 'auto',
+      allow_research_models: false,
+    });
+    toast({ title: '已恢复算法推荐默认参数', kind: 'info' });
+  };
+
   return (
     <div className="flex flex-col h-full bg-surface select-none overflow-hidden">
       {/* ── Panel header ── */}
-      <div className="flex items-center justify-between px-4 h-10 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-4 h-11 border-b border-border shrink-0">
         <div className="flex items-center gap-2">
           <div className="icon-badge-primary">
-            <Sliders className="w-3.5 h-3.5" />
+            <Sliders className="w-4 h-4" />
           </div>
-          <span className="text-xs font-semibold text-zinc-200">算法调优</span>
+          <span className="text-xs font-bold text-zinc-100">3. 换脸控制</span>
         </div>
+        <button
+          type="button"
+          onClick={handleResetDefaults}
+          disabled={isProcessing || isSingleRunning}
+          className="btn btn-ghost btn-sm text-zinc-300 hover:text-white gap-1 text-xs px-2.5 py-1 h-7 rounded-lg"
+          title="恢复推荐默认算法参数"
+        >
+          <RotateCcw className="w-3.5 h-3.5 text-primary" />
+          <span>重置默认</span>
+        </button>
       </div>
 
       {/* ── Scrollable param body ── */}
-      <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-2">
+      <fieldset
+        disabled={isProcessing || isSingleRunning}
+        className="flex-1 overflow-y-auto min-h-0 min-w-0 p-3 space-y-2.5"
+      >
+        {/* Multi-person matrix trigger */}
+        <button
+          type="button"
+          onClick={() => setIsMatrixOpen(true)}
+          disabled={!targetImages.length || isProcessing || isSingleRunning}
+          className="w-full flex items-center justify-between p-2.5 rounded-xl border border-border bg-surface-2 hover:border-primary-border hover:bg-surface-hover transition-all text-left text-xs group cursor-pointer"
+          title="打开合影人物映射矩阵，配置源人物与目标人脸对应关系"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-1.5 rounded-lg bg-accent-muted text-accent shrink-0">
+              <Users className="w-4 h-4 group-hover:scale-110 transition-transform" />
+            </div>
+            <div>
+              <div className="font-bold text-zinc-100">角色映射</div>
+              <div className="text-2xs text-zinc-400">
+                {personMappings.length > 0 ? `已配置 ${personMappings.length} 组人物绑定` : '配置源人物与目标人脸对应'}
+              </div>
+            </div>
+          </div>
+          <span
+            className={`chip ${personMappings.length > 0 ? 'chip-accent' : 'chip-neutral'} text-xs font-mono font-medium shrink-0`}
+          >
+            {personMappings.length > 0 ? `${personMappings.length} 人已映射` : '点击配置'}
+          </span>
+        </button>
+
+        {/* ── Scenario Presets selector ── */}
+        <div className="rounded-xl border border-border bg-surface-2 p-3 space-y-2.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-bold text-zinc-200 flex items-center gap-1.5">
+              <Sparkles className="w-4 h-4 text-accent" />
+              场景推荐预设
+            </span>
+            {activePresetId === 'custom' && <span className="chip chip-neutral text-xs font-medium">自定义微调</span>}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {PRESETS.map((preset) => {
+              const isActive = activePresetId === preset.id;
+              const Icon = preset.icon;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  aria-pressed={isActive}
+                  onClick={() => handleApplyPreset(preset)}
+                  disabled={isProcessing || isSingleRunning}
+                  className={`relative flex items-start gap-2 p-2.5 rounded-xl text-left transition-all border cursor-pointer ${
+                    isActive
+                      ? 'border-accent/70 bg-gradient-to-br from-accent/20 to-accent/5 text-cyan-100 ring-1 ring-accent/40 shadow-[0_0_16px_rgba(6,182,212,0.18)] font-medium'
+                      : 'border-white/[0.08] bg-surface-3/60 hover:bg-surface-hover text-zinc-200 hover:border-white/20'
+                  }`}
+                  title={preset.desc}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-zinc-100">
+                      <Icon className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-cyan-300' : 'text-zinc-400'}`} />
+                      {preset.name}
+                    </div>
+                    <p className="mt-1.5 line-clamp-2 text-xs leading-relaxed text-zinc-400">{preset.desc}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
 
         {/* ── Model selection ── */}
-        <Section icon={<Cpu className="w-3.5 h-3.5" />} title="换脸模型" accent="accent">
+        <Section icon={<Cpu className="w-4 h-4" />} title="换脸模型" accent="accent">
           <div className="pt-2 space-y-2.5">
             <select
               value={parameters.swapper_model}
@@ -207,65 +427,64 @@ export const ParameterPanel: React.FC = () => {
                   allow_research_models: model === 'hyperswap_1c_256' ? true : parameters.allow_research_models,
                 });
               }}
-              className="w-full"
+              className="w-full text-xs font-medium"
             >
-              <option value="auto">自动 · 稳定基线</option>
+              <option value="auto">自动 · 稳定基线 (InSwapper)</option>
               <option value="inswapper_128">InSwapper 128 · 稳定基线</option>
-              <option value="hyperswap_1c_256">HyperSwap 256 · 质量优先 / ResearchRAIL</option>
-              <option value="ghost_1_256">Ghost 256 · 实验性，不推荐</option>
+              <option value="hyperswap_1c_256">HyperSwap 256 · 质量优先 (高清特写)</option>
+              <option value="ghost_1_256">Ghost 256 · 实验性模型</option>
             </select>
 
-            <label className="flex items-start gap-2 text-2xs leading-relaxed text-zinc-500 cursor-pointer">
+            <label className="flex items-start gap-2 text-xs leading-normal text-zinc-300 cursor-pointer">
               <input
                 type="checkbox"
                 checked={parameters.allow_research_models}
                 onChange={(e) => updateParameters({ allow_research_models: e.target.checked })}
                 className="mt-0.5"
               />
-              <span>允许研究模型（HyperSwap / ResearchRAIL 评估场景）</span>
+              <span>允许研究模型（HyperSwap 高清特写评估）</span>
             </label>
 
-            <p className="text-2xs leading-relaxed text-zinc-600">
-              自动模式默认使用稳定的 InSwapper；明确允许研究模型后，大尺寸高置信人脸可路由到 HyperSwap。Ghost 仅保留手动实验。
+            <p className="text-xs leading-normal text-zinc-400">
+              自动模式优先使用稳定成熟的 InSwapper；开启允许研究模型后，大尺寸高置信人脸可选用 HyperSwap。
             </p>
           </div>
         </Section>
 
         {/* ── Identity blend strength ── */}
-        <Section icon={<Zap className="w-3.5 h-3.5" />} title="身份融合强度" accent="warn">
+        <Section icon={<Zap className="w-4 h-4" />} title="身份融合强度" accent="warn">
           <ParamSlider
             label="换入特征强度"
             value={parameters.identity_blend_strength}
             min={0.45}
-            max={0.90}
+            max={0.95}
             step={0.01}
             onChange={(v) => updateParameters({ identity_blend_strength: v })}
             format={(v) => `${Math.round(v * 100)}%`}
             accent="warn"
-            hints={['45% 保守', '72% 均衡', '90% 强烈']}
+            hints={['45% 保守自然', '90% 默认推荐', '95% 强烈换入']}
           />
-          <p className="text-2xs leading-relaxed text-zinc-600">
-            控制 InSwapper 换入身份的可见程度；小脸和大侧脸仍会自动降低实际强度以减少破面。
+          <p className="text-xs leading-normal text-zinc-400">
+            默认 90% 显著强化换入人物的五官特征；发丝与饰品保护机制保持生效。
           </p>
         </Section>
 
-
         {/* ── Similarity threshold ── */}
-        <Section icon={<Shield className="w-3.5 h-3.5" />} title="余弦匹配阈值 (τ)" accent="primary">
+        <Section icon={<Shield className="w-4 h-4" />} title="余弦匹配阈值 (τ)" accent="primary">
           <ParamSlider
-            label="相似度截断"
+            label="相似度截断阈值"
             value={parameters.similarity_threshold}
-            min={0.20}
-            max={0.80}
+            min={0.2}
+            max={0.8}
             step={0.01}
             onChange={(v) => updateParameters({ similarity_threshold: v })}
             format={(v) => v.toFixed(2)}
-            hints={['0.20 宽松', '0.38 推荐', '0.80 严格']}
+            hints={['0.20 宽松适配', '0.35 推荐基准', '0.80 严格匹配']}
           />
         </Section>
 
         {/* ── Color harmonization ── */}
-        <Section icon={<Palette className="w-3.5 h-3.5" />} title="光影色温适配" accent="accent">
+        <Section icon={<Palette className="w-4 h-4" />} title="光影色温适配" accent="accent">
           <div className="pt-2 space-y-2">
             <select
               value={parameters.color_transfer_mode}
@@ -273,40 +492,117 @@ export const ParameterPanel: React.FC = () => {
                 const mode = e.target.value as 'off' | 'boundary';
                 updateParameters({ color_transfer_mode: mode, enable_color_transfer: mode !== 'off' });
               }}
-              className="w-full"
+              className="w-full text-xs font-medium"
             >
-              <option value="off">关闭</option>
-              <option value="boundary">仅边界（生产默认）</option>
+              <option value="boundary">边界平滑环（推荐：仅平滑边缘过渡）</option>
+              <option value="off">关闭色彩平滑</option>
             </select>
-            <p className="text-2xs leading-relaxed text-zinc-600">
-              生产换脸路径只修正换脸边缘的窄过渡环，不改变脸部本体色调与整体饱和度。
+            <p className="text-xs leading-normal text-zinc-400">
+              仅修正人脸边缘的过渡缝隙，严格保留换脸区域与原图环境的色调饱和度。
             </p>
           </div>
         </Section>
-      </div>
+      </fieldset>
 
       {/* ── Action footer ── */}
-      <div className="border-t border-border p-3 space-y-2 shrink-0">
-        {/* Multi-person matrix */}
-
-        {/* Quick single swap */}
-        <button
-          onClick={handleQuickSingleSwap}
-          disabled={!currentTarget || sourceGallery.length === 0 || isSingleRunning || isProcessing}
-          className="w-full btn btn-lg btn-primary justify-center"
+      <div className="border-t border-border p-3 space-y-2.5 shrink-0 max-h-[55%] overflow-y-auto bg-surface-1/80">
+        <label
+          className={`flex items-start gap-2.5 rounded-xl border p-2.5 text-xs cursor-pointer ${batch.aiRefinement ? 'border-cyan-500/40 bg-cyan-950/30' : 'border-border bg-surface-2'}`}
         >
-          {isSingleRunning ? (
-            <>
-              <Zap className="w-3.5 h-3.5 animate-spin" />
-              <span>运算中…</span>
-            </>
-          ) : (
-            <>
-              <Play className="w-3.5 h-3.5 fill-white" />
-              <span>当前图快速试换</span>
-            </>
-          )}
-        </button>
+          <input
+            type="checkbox"
+            checked={batch.aiRefinement}
+            disabled={isProcessing || isSingleRunning}
+            onChange={(event) => batch.setAiRefinement(event.target.checked)}
+            className="mt-0.5 accent-cyan-500"
+          />
+          <span>
+            <span className="font-semibold text-zinc-100">换脸后接续 AI 首轮精修</span>
+            <span className="mt-1 block leading-relaxed text-zinc-400">
+              授权本次任务分析与必要的一次生图，可能产生模型费用；单图试换仅执行本地换脸。
+            </span>
+          </span>
+        </label>
+        {batch.queryError && (
+          <div role="alert" className="rounded-lg border border-err/30 bg-err/10 p-2.5 text-xs text-err">
+            <p className="break-words">{batch.queryError}</p>
+            {batch.canRetry && (
+              <button onClick={batch.retryConnection} className="btn btn-sm btn-outline mt-2 w-full justify-center">
+                <RotateCw className="h-3 w-3" />
+                重试连接
+              </button>
+            )}
+          </div>
+        )}
+        {/* Dynamic Action: Batch or Single */}
+        {targetImages.length > 1 || batch.aiRefinement ? (
+          <div className="space-y-2 pt-0.5">
+            <button
+              type="button"
+              onClick={batch.startBatch}
+              disabled={!targetImages.length || !sourceGallery.length || isProcessing || isSingleRunning}
+              className="w-full btn btn-lg btn-primary justify-center gap-2 font-bold text-sm shadow-lg shadow-indigo-600/25"
+              title={`启动全部 ${targetImages.length} 张图片的批量换脸流水线`}
+            >
+              {isProcessing ? (
+                <>
+                  <Zap className="w-4 h-4 animate-spin" />
+                  <span>批量运行中 ({batchProgress}%)</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4 fill-white" />
+                  <span>{targetImages.length > 1 ? `启动批量换脸 (${targetImages.length} 张)` : '开始换脸并精修'}</span>
+                </>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={handleQuickSingleSwap}
+              disabled={!currentTarget || sourceGallery.length === 0 || isSingleRunning || isProcessing}
+              className="w-full btn btn-sm btn-outline justify-center text-xs text-zinc-200 hover:text-white font-medium py-2"
+              title="仅在当前单图上快速试换，预览参数效果"
+            >
+              {isSingleRunning ? (
+                <>
+                  <Zap className="w-3.5 h-3.5 animate-spin text-accent" />
+                  <span>单图试换中…</span>
+                </>
+              ) : (
+                <span>仅试换当前图 (#{activeTargetIndex + 1})</span>
+              )}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleQuickSingleSwap}
+            disabled={!currentTarget || sourceGallery.length === 0 || isSingleRunning || isProcessing}
+            className="w-full btn btn-lg btn-primary justify-center gap-2 font-bold text-sm shadow-lg shadow-indigo-600/25"
+          >
+            {isSingleRunning ? (
+              <>
+                <Zap className="w-4 h-4 animate-spin" />
+                <span>换脸运算中…</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 fill-white" />
+                <span>开始单图换脸</span>
+              </>
+            )}
+          </button>
+        )}
+        {batch.completedCount > 0 && (
+          <button
+            onClick={batch.downloadZip}
+            disabled={batch.isExporting || isProcessing}
+            className="btn btn-sm btn-outline w-full justify-center gap-1.5 text-xs"
+          >
+            <Download className="h-3.5 w-3.5 text-accent" />
+            {batch.isExporting ? '正在打包…' : '导出批量结果 ZIP'}
+          </button>
+        )}
       </div>
     </div>
   );

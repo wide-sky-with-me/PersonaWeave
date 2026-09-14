@@ -30,11 +30,21 @@ def test_safe_extract_zip_rejects_path_traversal(tmp_path, member):
     assert not (tmp_path.parent / "escape.onnx").exists()
 
 
-def test_retired_face_restorers_are_not_runtime_assets():
-    retired = {"codeformer.onnx", "gfpgan_1.4.onnx"}
+def test_gfpgan_face_restorer_is_not_a_runtime_asset():
+    """GFPGAN has no identity/fidelity control, unlike CodeFormer (core/restorer.py),
+    so it was not part of the masked, opt-in restoration reintroduction and stays retired."""
+    retired = {"gfpgan_1.4.onnx"}
 
     assert retired.isdisjoint(MODEL_URLS)
     assert all(not any(name in path for name in retired) for path in REQUIRED_MODELS)
+
+
+def test_codeformer_restorer_is_optional_not_startup_required():
+    """CodeFormer (core/restorer.py) is a production capability reachable via the
+    `enable_face_restoration` API parameter, but it stays opt-in and off by default
+    (see core/pipeline.py), so it must not become a hard startup requirement like the
+    detector/recognizer/inswapper models in REQUIRED_MODELS."""
+    assert not any("codeformer.onnx" in path for path in REQUIRED_MODELS)
 
 
 def test_every_download_has_a_pinned_digest():

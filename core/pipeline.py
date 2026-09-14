@@ -26,7 +26,11 @@ from core.model_router import RoutingDecision, SwapperModelRouter
 from core.occluder import FaceOccluder
 from core.recognizer import FaceRecognizer
 from core.region_parser import RegionFaceParser
+from core.restorer import CodeFormerRestorer
+from core.swap_diagnostics import bbox_mask_mean, mask_component, select_source_embedding, validated_mask
 from core.swapper import (
+    ARCFACE_112_V1_TEMPLATE,
+    ARCFACE_128_TEMPLATE,
     GHOST_1_256_SPEC,
     HYPERSWAP_1C_256_SPEC,
     INSWAPPER_128_SPEC,
@@ -36,6 +40,7 @@ from core.swapper import (
     implode_pixel_boost,
 )
 from utils.gpu_helper import get_optimal_providers
+from utils.image_io import read_image
 
 
 @dataclass
@@ -125,6 +130,15 @@ class PersonaWeavePipeline:
                 self.region_parser = None
         else:
             self.region_parser = None
+        restorer_path = os.path.join(models_dir, CodeFormerRestorer.MODEL_FILENAME)
+        if os.path.exists(restorer_path):
+            try:
+                self.restorer = CodeFormerRestorer(restorer_path, providers=self.providers)
+            except Exception as exc:
+                print(f"[Warning] Failed to load CodeFormer restoration model: {exc}")
+                self.restorer = None
+        else:
+            self.restorer = None
         print("PersonaWeave Pipeline initialized successfully.")
 
     def get_swapper(self, model_name: str):
@@ -169,7 +183,7 @@ class PersonaWeavePipeline:
             if not os.path.exists(path):
                 print(f"[Warning] Source image not found: {path}")
                 continue
-            img = cv2.imread(path)
+            img = read_image(path)
             if img is None:
                 print(f"[Warning] Failed to load image: {path}")
                 continue
@@ -196,15 +210,6 @@ class PersonaWeavePipeline:
 
         return references
 
-    def create_identity_gallery(self, image_paths: list[str]) -> np.ndarray:
-        """
-        Builds a single fused identity anchor embedding from multiple reference images.
-        """
-        refs = self.load_source_references(image_paths)
-        embs = [r["embedding"] for r in refs]
-        weights = [r.get("quality_score", 0.5) for r in refs]
-        return self.recognizer.build_gallery_embedding(embs, weights)
-
     def extract_target_reference_embedding(self, image_path: str) -> np.ndarray:
         """
         Extracts the identity embedding of a specific target person to be replaced.
@@ -212,7 +217,7 @@ class PersonaWeavePipeline:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Target reference image not found: {image_path}")
 
-        img = cv2.imread(image_path)
+        img = read_image(image_path)
         if img is None:
             raise ValueError(f"Failed to decode image from: {image_path}")
 
@@ -228,26 +233,21 @@ class PersonaWeavePipeline:
         source_references: list[dict],
         gallery_embedding: np.ndarray,
         mode: str = "best-match",
+        *,
+        gallery_reference_weights: list[float] | None = None,
+        diagnostics: dict | None = None,
     ) -> np.ndarray:
-        """Select a quality-weighted identity embedding with pose compatibility."""
-        qualities = np.asarray([float(ref.get("quality_score", 0.5)) for ref in source_references], dtype=np.float32)
-        qualities = np.clip(qualities, 0.05, 1.0)
-        if mode == "gallery" or len(source_references) == 1:
-            return gallery_embedding
-
-        if mode == "best-match":
-            target_yaw = calculate_yaw_ratio(target_face.kps)
-            scored = []
-            for ref, quality in zip(source_references, qualities, strict=True):
-                pose_compatibility = max(0.0, 1.0 - abs(target_yaw - float(ref.get("yaw", 0.0))) / 0.8)
-                scored.append((0.7 * float(quality) + 0.3 * pose_compatibility, ref))
-            best_reference = max(scored, key=lambda item: item[0])[1]
-            best_embedding = best_reference["embedding"]
-            gallery_weight = 0.80
-            blended_embedding = gallery_weight * gallery_embedding + (1.0 - gallery_weight) * best_embedding
-            return blended_embedding / max(np.linalg.norm(blended_embedding), 1e-6)
-
-        return gallery_embedding
+        """Keep ndarray output while optionally reporting the actual source recipe."""
+        embedding, recipe = select_source_embedding(
+            calculate_yaw_ratio(target_face.kps),
+            source_references,
+            gallery_embedding,
+            mode,
+            gallery_reference_weights,
+        )
+        if diagnostics is not None:
+            diagnostics.update(recipe)
+        return embedding
 
     def swap_single_face_facefusion(
         self,
@@ -258,9 +258,15 @@ class PersonaWeavePipeline:
         swapper,
         enable_dense_mask: bool,
         manual_mask: np.ndarray | None,
-        identity_blend_strength: float = 0.72,
+        identity_blend_strength: float = 0.9,
         enable_color_transfer: bool = True,
         color_transfer_mode: str = "boundary",
+        color_transfer_ring_strength: float = 0.45,
+        color_transfer_ring_width_px: float = 15.0,
+        enable_face_restoration: bool = False,
+        restoration_fidelity_weight: float = 0.75,
+        restoration_strength: float = 0.5,
+        diagnostics: dict | None = None,
     ) -> np.ndarray:
         """Swap one face using FaceFusion-style alignment, pixel boost, mask intersection, and alpha paste-back."""
         model_width, model_height = swapper.spec.input_size
@@ -278,28 +284,11 @@ class PersonaWeavePipeline:
         boost_size = (model_width * boost_total, model_height * boost_total)
 
         if swapper.spec.crop_template in {"inswapper_128", "arcface_128"}:
-            destination = np.array(
-                [
-                    [0.36167656, 0.40387734],
-                    [0.63696719, 0.40235469],
-                    [0.50019687, 0.56044219],
-                    [0.38710391, 0.72160547],
-                    [0.61507734, 0.72034453],
-                ],
-                dtype=np.float32,
-            )
+            template = ARCFACE_128_TEMPLATE
         else:
-            destination = np.array(
-                [
-                    [0.35473214, 0.45658929],
-                    [0.64526786, 0.45658929],
-                    [0.5, 0.61154464],
-                    [0.37913393, 0.776875],
-                    [0.62086607, 0.776875],
-                ],
-                dtype=np.float32,
-            )
-        destination *= np.asarray(boost_size, dtype=np.float32)
+            template = ARCFACE_112_V1_TEMPLATE
+        # Multiplication creates a new array; shared normalized templates must not be scaled in place.
+        destination = template * np.asarray(boost_size, dtype=np.float32)
         affine_matrix = cv2.estimateAffinePartial2D(
             target_face.kps.astype(np.float32), destination, method=cv2.RANSAC, ransacReprojThreshold=100
         )[0]
@@ -328,6 +317,7 @@ class PersonaWeavePipeline:
         swapped_crop = explode_pixel_boost(outputs, boost_total, swapper.spec.input_size)
 
         masks = [create_facefusion_box_mask(boost_size, blur=0.3)]
+        components = [mask_component("box", "applied", masks[0])]
         if model_masks:
             # HyperSwap is a native 256px model, so its learned face mask and the aligned
             # crop share one tile. Intersecting it prevents the generic box mask from
@@ -336,30 +326,88 @@ class PersonaWeavePipeline:
             if model_mask.ndim == 3:
                 model_mask = np.squeeze(model_mask)
             masks.append(cv2.resize(model_mask, boost_size, interpolation=cv2.INTER_LINEAR).clip(0.0, 1.0))
+            components.append(mask_component("model", "applied", masks[-1]))
+        else:
+            components.append(mask_component("model", "disabled"))
         if enable_dense_mask and self.parser is not None:
             try:
                 landmarks = self.parser.extract_106_landmarks(canvas, target_face)
                 aligned = cv2.transform(landmarks.reshape(-1, 1, 2), affine_matrix).reshape(-1, 2)
                 aligned_512 = aligned * np.asarray([512 / boost_size[0], 512 / boost_size[1]], dtype=np.float32)
                 anatomical = self.parser.generate_anatomical_mask_512(aligned_512)
-                masks.append(cv2.resize(anatomical, boost_size, interpolation=cv2.INTER_LINEAR))
-            except Exception as exc:
-                print(f"[Warning] Dense face mask failed; using box mask: {exc}")
+                masks.append(
+                    validated_mask(cv2.resize(anatomical, boost_size, interpolation=cv2.INTER_LINEAR), crop.shape[:2])
+                )
+                components.append(mask_component("dense", "applied", masks[-1]))
+            except Exception:
+                components.append(mask_component("dense", "failed", failure_code="dense_mask_failed"))
+                # Failed landmarks must not remove anatomical protection. Build the
+                # default ellipse in canonical 512px space, then resize like a measured mask.
+                try:
+                    anatomical = self.parser.generate_anatomical_mask_512(None)
+                    masks.append(
+                        validated_mask(
+                            cv2.resize(anatomical, boost_size, interpolation=cv2.INTER_LINEAR), crop.shape[:2]
+                        )
+                    )
+                    components.append(mask_component("dense_fallback", "applied", masks[-1]))
+                except Exception:
+                    components.append(mask_component("dense_fallback", "failed", failure_code="dense_fallback_failed"))
+        else:
+            components.append(
+                mask_component(
+                    "dense",
+                    "missing" if enable_dense_mask else "disabled",
+                    failure_code="dense_model_unavailable" if enable_dense_mask else None,
+                )
+            )
         if self.occluder is not None:
             try:
-                masks.append(self.occluder.create_occlusion_mask(crop))
-            except Exception as exc:
-                print(f"[Warning] Occlusion mask failed; using remaining masks: {exc}")
+                masks.append(validated_mask(self.occluder.create_occlusion_mask(crop), crop.shape[:2]))
+                components.append(mask_component("occlusion", "applied", masks[-1]))
+            except Exception:
+                components.append(mask_component("occlusion", "failed", failure_code="occlusion_mask_failed"))
+        else:
+            components.append(mask_component("occlusion", "missing", failure_code="occlusion_model_unavailable"))
         if self.region_parser is not None:
             try:
                 # XSeg only catches foreign objects (hands, props); it does not know "these
                 # pixels are eyeglasses" as a semantic class, so glasses routinely warp/melt
                 # during a swap with no protection at all. BiSeNet semantic parsing closes that
                 # gap by explicitly protecting the glasses region.
-                masks.append(self.region_parser.create_region_protection_mask(crop, protected_regions=("glasses",)))
-            except Exception as exc:
-                print(f"[Warning] Region protection mask failed; using remaining masks: {exc}")
+                masks.append(
+                    validated_mask(
+                        self.region_parser.create_region_protection_mask(crop, protected_regions=("glasses",)),
+                        crop.shape[:2],
+                    )
+                )
+                components.append(mask_component("glasses", "applied", masks[-1]))
+            except Exception:
+                components.append(mask_component("glasses", "failed", failure_code="glasses_mask_failed"))
+        else:
+            components.append(mask_component("glasses", "missing", failure_code="glasses_model_unavailable"))
         crop_mask = np.minimum.reduce(masks).clip(0.0, 1.0)
+
+        # Masked post-swap restoration: both swap models cap their working crop at
+        # 256x256 (see boost_total above), which is measurably softer than the
+        # surrounding pixels once warped back into a high-megapixel photo. CodeFormer
+        # restores that detail, but its output is only ever blended in through
+        # crop_mask -- the same mask gating the swap itself -- so it can never touch
+        # background, occluded, or region-protected pixels, and restoration_strength
+        # keeps it a dial rather than a full replacement of the swap output.
+        if enable_face_restoration and self.restorer is not None:
+            try:
+                restored = self.restorer.restore(swapped_crop, fidelity_weight=restoration_fidelity_weight)
+                strength = float(np.clip(restoration_strength, 0.0, 1.0))
+                restoration_alpha = (crop_mask * strength)[:, :, np.newaxis]
+                swapped_crop = np.clip(
+                    restoration_alpha * restored.astype(np.float32)
+                    + (1.0 - restoration_alpha) * swapped_crop.astype(np.float32),
+                    0,
+                    255,
+                ).astype(np.uint8)
+            except Exception as exc:
+                print(f"[Warning] Face restoration failed; using unrestored swap: {exc}")
 
         # Boundary-ring color correction: only the narrow transition ring at the mask edge is
         # nudged toward the original crop's LAB statistics; the swapped face's own interior tone
@@ -369,18 +417,23 @@ class PersonaWeavePipeline:
         # intact is a hard requirement here, not just a nice-to-have.
         if enable_color_transfer and color_transfer_mode != "off":
             try:
-                # Keep color transfer confined to a narrow, low-opacity edge ring.
-                # A wider/high-opacity ring made the transition darker and less
-                # saturated than both the generated face and target skin in real
-                # 8-25 regressions. The interior remains byte-for-byte untouched
-                # by color transfer.
-                harmonized_crop = reinhard_color_transfer(swapped_crop, crop, blend_ratio=0.45, face_mask=crop_mask)
-                erosion_size = max(3, round(boost_size[0] * 15 / 512))
+                # Keep color transfer confined to a narrow, low-opacity edge ring by
+                # default. A wider/high-opacity ring made the transition darker and
+                # less saturated than both the generated face and target skin in real
+                # 8-25 regressions, so color_transfer_ring_strength/_width_px default
+                # to that same safe 0.45 / 15px baseline; callers must opt into a
+                # wider or stronger ring explicitly, and widening it revives that
+                # known darkening/desaturation risk on the caller's own images.
+                ring_strength = float(np.clip(color_transfer_ring_strength, 0.0, 1.0))
+                harmonized_crop = reinhard_color_transfer(
+                    swapped_crop, crop, blend_ratio=ring_strength, face_mask=crop_mask
+                )
+                erosion_size = max(3, round(boost_size[0] * color_transfer_ring_width_px / 512))
                 inner_mask = cv2.erode(crop_mask, np.ones((erosion_size, erosion_size), dtype=np.uint8))
                 ring_mask = np.clip(crop_mask - inner_mask, 0.0, 1.0)
                 ring_sigma = max(1.0, boost_size[0] * 2.5 / 512.0)
                 ring_mask = cv2.GaussianBlur(ring_mask, (0, 0), ring_sigma)
-                ring_mask = np.minimum(ring_mask, 0.45)[:, :, np.newaxis]
+                ring_mask = np.minimum(ring_mask, ring_strength)[:, :, np.newaxis]
                 swapped_crop = np.clip(
                     ring_mask * harmonized_crop.astype(np.float32)
                     + (1.0 - ring_mask) * swapped_crop.astype(np.float32),
@@ -418,7 +471,18 @@ class PersonaWeavePipeline:
             protection = protection.astype(np.float32)
             if protection.max() > 1.0:
                 protection /= 255.0
-            warped_mask *= 1.0 - protection.clip(0.0, 1.0)
+            manual_keep = 1.0 - protection.clip(0.0, 1.0)
+            warped_mask *= manual_keep
+            components.append(mask_component("manual", "applied", manual_keep))
+        else:
+            components.append(mask_component("manual", "disabled"))
+        if diagnostics is not None:
+            diagnostics.update(
+                components=components,
+                intersection_mean=float(crop_mask.mean()),
+                bbox_alpha_mean=bbox_mask_mean(warped_mask, target_face.bbox),
+                requested_strength=float(identity_blend_strength),
+            )
         alpha = warped_mask[:, :, np.newaxis]
         result = canvas.astype(np.float32) * (1.0 - alpha) + warped_face.astype(np.float32) * alpha
         return np.clip(result, 0, 255).astype(np.uint8)
@@ -430,14 +494,20 @@ class PersonaWeavePipeline:
         gallery_embedding: np.ndarray,
         target_embedding: np.ndarray | None = None,
         similarity_threshold: float = 0.35,
-        identity_blend_strength: float = 0.72,
+        identity_blend_strength: float = 0.9,
         source_mode: str = "best-match",
         enable_color_transfer: bool = True,
         color_transfer_mode: str = "boundary",
+        color_transfer_ring_strength: float = 0.45,
+        color_transfer_ring_width_px: float = 15.0,
         enable_dense_mask: bool = True,
         swapper_model: str | None = None,
         allow_research_models: bool = False,
         manual_mask: np.ndarray | None = None,
+        enable_face_restoration: bool = False,
+        restoration_fidelity_weight: float = 0.75,
+        restoration_strength: float = 0.5,
+        gallery_reference_weights: list[float] | None = None,
     ) -> SwapResult:
         """
         Processes a target image with selective face swapping.
@@ -474,6 +544,11 @@ class PersonaWeavePipeline:
 
         # 2. Match faces
         faces_to_swap: list[tuple[DetectedFace, float]] = []
+        person_outcomes = []
+        spatial_indices = {
+            id(face): index
+            for index, face in enumerate(sorted(detected_faces, key=lambda candidate: candidate.bbox[0]), start=1)
+        }
 
         if target_embedding is not None:
             for face in detected_faces:
@@ -482,6 +557,23 @@ class PersonaWeavePipeline:
                 face.similarity = sim
                 if sim >= similarity_threshold:
                     faces_to_swap.append((face, sim))
+            if not faces_to_swap:
+                best_face = max(detected_faces, key=lambda candidate: candidate.similarity)
+                person_outcomes.append(
+                    {
+                        "person_index": spatial_indices[id(best_face)],
+                        "status": "SKIPPED",
+                        "reason": "identity_match_below_threshold",
+                        "diagnostics": {
+                            "matching": {
+                                "best_similarity": float(best_face.similarity),
+                                "assigned_similarity": None,
+                                "threshold": float(similarity_threshold),
+                                "face_index": None,
+                            }
+                        },
+                    }
+                )
         else:
             for face in detected_faces:
                 self.recognizer.extract_embedding(canvas, face)
@@ -490,17 +582,25 @@ class PersonaWeavePipeline:
         # 3. Route and swap each matched face independently.
         matched_similarities = []
         model_routing = []
-        spatial_indices = {
-            id(face): index
-            for index, face in enumerate(sorted(detected_faces, key=lambda candidate: candidate.bbox[0]), start=1)
-        }
         swapped_person_indices = []
         for face, similarity in faces_to_swap:
+            diagnostics = {
+                "matching": {
+                    "best_similarity": float(similarity) if target_embedding is not None else None,
+                    "assigned_similarity": float(similarity) if target_embedding is not None else None,
+                    "threshold": float(similarity_threshold) if target_embedding is not None else None,
+                    "face_index": spatial_indices[id(face)],
+                },
+                "source_selection": {},
+                "mask": {},
+            }
             src_emb = self.select_best_reference_embedding(
                 target_face=face,
                 source_references=source_references,
                 gallery_embedding=gallery_embedding,
                 mode=source_mode,
+                gallery_reference_weights=gallery_reference_weights,
+                diagnostics=diagnostics["source_selection"],
             )
             decision = self.route_swapper(face, swapper_model, allow_research_models)
             routed_swapper = self.get_swapper(decision.selected)
@@ -522,11 +622,29 @@ class PersonaWeavePipeline:
                 identity_blend_strength=identity_blend_strength,
                 enable_color_transfer=enable_color_transfer,
                 color_transfer_mode=color_transfer_mode,
+                color_transfer_ring_strength=color_transfer_ring_strength,
+                color_transfer_ring_width_px=color_transfer_ring_width_px,
+                enable_face_restoration=enable_face_restoration,
+                restoration_fidelity_weight=restoration_fidelity_weight,
+                restoration_strength=restoration_strength,
+                diagnostics=diagnostics["mask"],
             )
             if has_visible_face_change(canvas, candidate, face.bbox):
                 canvas = candidate
                 matched_similarities.append(similarity)
                 swapped_person_indices.append(spatial_indices[id(face)])
+                status, reason = "SWAPPED", "visible_change_confirmed"
+            else:
+                status, reason = "SKIPPED", "no_visible_change"
+            person_outcomes.append(
+                {
+                    "person_index": spatial_indices[id(face)],
+                    "status": status,
+                    "reason": reason,
+                    "model": decision.selected,
+                    "diagnostics": diagnostics,
+                }
+            )
 
         elapsed = time.time() - t0
         return SwapResult(
@@ -537,19 +655,26 @@ class PersonaWeavePipeline:
             elapsed_time_sec=elapsed,
             model_routing=model_routing,
             swapped_person_indices=swapped_person_indices,
+            requested_person_indices=sorted(outcome["person_index"] for outcome in person_outcomes),
+            person_outcomes=sorted(person_outcomes, key=lambda outcome: outcome["person_index"]),
         )
 
     def process_image_multi_mapping(
         self,
         image: np.ndarray,
         mappings: list[dict],
-        identity_blend_strength: float = 0.72,
+        identity_blend_strength: float = 0.9,
         enable_color_transfer: bool = True,
         color_transfer_mode: str = "boundary",
+        color_transfer_ring_strength: float = 0.45,
+        color_transfer_ring_width_px: float = 15.0,
         enable_dense_mask: bool = True,
         swapper_model: str | None = None,
         allow_research_models: bool = False,
         manual_mask: np.ndarray | None = None,
+        enable_face_restoration: bool = False,
+        restoration_fidelity_weight: float = 0.75,
+        restoration_strength: float = 0.5,
     ) -> SwapResult:
         """
         Processes a group image where multiple detected faces are mapped to different source identities.
@@ -575,11 +700,21 @@ class PersonaWeavePipeline:
                 requested_person_indices=requested_person_indices,
                 person_outcomes=[
                     {
-                        "person_index": person_index,
+                        "person_index": int(mapping["target_index"]),
                         "status": "SKIPPED",
-                        "reason": "no_faces_detected",
+                        "reason": "no_faces_detected"
+                        if mapping.get("target_embedding") is not None
+                        else "target_reference_unavailable",
+                        "diagnostics": {
+                            "matching": {
+                                "best_similarity": None,
+                                "assigned_similarity": None,
+                                "threshold": float(mapping.get("similarity_threshold", 0.35)),
+                                "face_index": None,
+                            }
+                        },
                     }
-                    for person_index in requested_person_indices
+                    for mapping in mappings
                 ],
             )
 
@@ -592,6 +727,7 @@ class PersonaWeavePipeline:
         # instead of a greedy per-mapping pick (see resolve_person_mapping_assignment).
         valid_mappings = [(i, m) for i, m in enumerate(mappings) if m.get("target_embedding") is not None]
         assignment: dict[int, tuple[int, float]] = {}
+        matching_rows = {}
         if valid_mappings and detected_faces:
             similarity_matrix = np.array(
                 [
@@ -604,6 +740,10 @@ class PersonaWeavePipeline:
                 dtype=np.float32,
             )
             thresholds = [mapping.get("similarity_threshold", 0.35) for _, mapping in valid_mappings]
+            matching_rows = {
+                mapping_index: similarity_matrix[local_row]
+                for local_row, (mapping_index, _mapping) in enumerate(valid_mappings)
+            }
             local_assignment = resolve_person_mapping_assignment(similarity_matrix, thresholds)
             assignment = {valid_mappings[local_row][0]: pair for local_row, pair in local_assignment.items()}
 
@@ -615,12 +755,33 @@ class PersonaWeavePipeline:
         for mapping_index, mapping in enumerate(mappings):
             person_index = int(mapping["target_index"])
             match = assignment.get(mapping_index)
+            row = matching_rows.get(mapping_index)
+            threshold = float(mapping.get("similarity_threshold", 0.35))
+            best_similarity = float(np.max(row)) if row is not None and len(row) else None
+            diagnostics = {
+                "matching": {
+                    "best_similarity": best_similarity,
+                    "assigned_similarity": float(match[1]) if match is not None else None,
+                    "threshold": threshold,
+                    "face_index": match[0] + 1 if match is not None else None,
+                }
+            }
             if match is None:
+                reason = (
+                    "target_reference_unavailable"
+                    if mapping.get("target_embedding") is None
+                    else (
+                        "assignment_conflict"
+                        if best_similarity is not None and best_similarity >= threshold
+                        else "identity_match_below_threshold"
+                    )
+                )
                 person_outcomes.append(
                     {
                         "person_index": person_index,
                         "status": "SKIPPED",
-                        "reason": "identity_match_below_threshold",
+                        "reason": reason,
+                        "diagnostics": diagnostics,
                     }
                 )
                 continue
@@ -628,14 +789,17 @@ class PersonaWeavePipeline:
             face = detected_faces[face_index]
             src_refs = mapping.get("source_references", [])
             gal_emb = mapping.get("gallery_embedding")
+            gallery_weights = mapping.get("gallery_reference_weights")
             if gal_emb is None and src_refs:
                 gal_emb = self.recognizer.build_gallery_embedding([r["embedding"] for r in src_refs])
+                gallery_weights = [1.0] * len(src_refs)
             if gal_emb is None:
                 person_outcomes.append(
                     {
                         "person_index": person_index,
                         "status": "SKIPPED",
                         "reason": "source_identity_unavailable",
+                        "diagnostics": diagnostics,
                     }
                 )
                 continue
@@ -647,18 +811,22 @@ class PersonaWeavePipeline:
                         "person_index": person_index,
                         "status": "SKIPPED",
                         "reason": "extreme_pose_without_matching_reference",
+                        "diagnostics": diagnostics,
                         "target_yaw": round(calculate_yaw_ratio(face.kps), 4),
                         "closest_source_yaw_gap": None if closest_pose_gap is None else round(closest_pose_gap, 4),
                     }
                 )
                 continue
 
+            diagnostics.update(source_selection={}, mask={})
             src_mode = mapping.get("source_mode", "best-match")
             src_emb = self.select_best_reference_embedding(
                 target_face=face,
                 source_references=src_refs,
                 gallery_embedding=gal_emb,
                 mode=src_mode,
+                gallery_reference_weights=gallery_weights,
+                diagnostics=diagnostics["source_selection"],
             )
             decision = self.route_swapper(face, swapper_model, allow_research_models)
             routed_swapper = self.get_swapper(decision.selected)
@@ -680,6 +848,12 @@ class PersonaWeavePipeline:
                 identity_blend_strength=identity_blend_strength,
                 enable_color_transfer=enable_color_transfer,
                 color_transfer_mode=color_transfer_mode,
+                color_transfer_ring_strength=color_transfer_ring_strength,
+                color_transfer_ring_width_px=color_transfer_ring_width_px,
+                enable_face_restoration=enable_face_restoration,
+                restoration_fidelity_weight=restoration_fidelity_weight,
+                restoration_strength=restoration_strength,
+                diagnostics=diagnostics["mask"],
             )
             if has_visible_face_change(canvas, candidate, face.bbox):
                 canvas = candidate
@@ -692,6 +866,7 @@ class PersonaWeavePipeline:
                         "status": "SWAPPED",
                         "reason": "visible_change_confirmed",
                         "model": decision.selected,
+                        "diagnostics": diagnostics,
                     }
                 )
             else:
@@ -701,6 +876,7 @@ class PersonaWeavePipeline:
                         "status": "SKIPPED",
                         "reason": "no_visible_change",
                         "model": decision.selected,
+                        "diagnostics": diagnostics,
                     }
                 )
 

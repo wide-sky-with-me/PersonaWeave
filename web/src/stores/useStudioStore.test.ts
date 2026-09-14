@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { useStudioStore } from './useStudioStore';
-import type { TargetImageItem } from '../types';
+import type { TargetImageItem } from '@/types';
 
 const target = (id: string): TargetImageItem => ({
   id,
@@ -21,9 +21,7 @@ describe('stable target result ownership', () => {
     useStudioStore.getState().removeTargetImage(0);
     useStudioStore.getState().updateTargetImageById(submittedId, { processedUrl: '/stale.jpg' });
 
-    expect(useStudioStore.getState().targetImages).toEqual([
-      expect.objectContaining({ id: 'b' }),
-    ]);
+    expect(useStudioStore.getState().targetImages).toEqual([expect.objectContaining({ id: 'b' })]);
     expect(useStudioStore.getState().targetImages[0]).not.toHaveProperty('processedUrl');
   });
 
@@ -40,35 +38,48 @@ describe('stable target result ownership', () => {
     ]);
   });
 
-
   it('clears stale refinement state when a new swap is submitted and completed', () => {
     useStudioStore.setState({
-      targetImages: [{
-        ...target('a'),
-        processedUrl: '/old-swap.jpg',
-        refinedUrl: '/accepted-refinement.jpg',
-        refinementWorkspace: { drafts: {}, diagnoses: {}, diagnosisErrors: {}, globalInstructions: '', task: null, candidateUrl: null, error: null },
-      }],
+      targetImages: [
+        {
+          ...target('a'),
+          processedUrl: '/old-swap.jpg',
+          refinedUrl: '/accepted-refinement.jpg',
+          refinementSessionId: 'old-session',
+        },
+      ],
     });
 
     useStudioStore.getState().updateTargetImageById('a', {
       status: 'PROCESSING',
       refinedUrl: undefined,
-      refinementWorkspace: undefined,
+      refinementSessionId: undefined,
     });
     useStudioStore.getState().updateTargetImageById('a', { processedUrl: '/new-swap.jpg', status: 'SUCCESS' });
 
     expect(useStudioStore.getState().targetImages[0]).toMatchObject({ processedUrl: '/new-swap.jpg' });
     expect(useStudioStore.getState().targetImages[0].refinedUrl).toBeUndefined();
-    expect(useStudioStore.getState().targetImages[0].refinementWorkspace).toBeUndefined();
+    expect(useStudioStore.getState().targetImages[0].refinementSessionId).toBeUndefined();
   });
 
   it('invalidates mappings only when a face topology patch is applied', () => {
-    useStudioStore.setState({ personMappings: [{ person_index: 1, target_reference_url: '/a.jpg', target_reference_person_index: 1, source_asset_ids: [], source_manual_images: [] }] });
+    useStudioStore.setState({
+      personMappings: [
+        {
+          person_index: 1,
+          target_reference_url: '/a.jpg',
+          target_reference_person_index: 1,
+          source_asset_ids: [],
+          source_manual_images: [],
+        },
+      ],
+    });
     useStudioStore.getState().updateTargetImageById('a', { status: 'PROCESSING' });
     expect(useStudioStore.getState().personMappings).toHaveLength(1);
 
-    useStudioStore.getState().updateTargetImageById('a', { faces: [{ index: 1, global_person_id: 9, bbox: [0, 0, 1, 1] }] });
+    useStudioStore
+      .getState()
+      .updateTargetImageById('a', { faces: [{ index: 1, global_person_id: 9, bbox: [0, 0, 1, 1] }] });
     expect(useStudioStore.getState().personMappings).toEqual([]);
   });
 });

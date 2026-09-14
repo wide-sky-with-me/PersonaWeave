@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from api.portrait_library import (
+from api.portraits.library import (
     age_group_for,
     build_portrait_library_catalog,
     connect,

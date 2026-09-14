@@ -1,10 +1,160 @@
 # Changelog
 
-本文件记录 PersonaWeave 的版本演进与功能变更历史。
+本文件记录 PersonaWeave 的版本演进与功能变更历史。历史条目中的 DMX 专属配置、适配器、模型别名与分辨率/定价描述均为已退役历史；旧逐脸 scope 表单、单任务精修状态机和相关文件路径也仅为历史记录，不代表现行生产入口。当前模型契约见 `docs/model-catalog.md`，精修会话契约见 `docs/ai-refinement.md`。
 
 ---
 
-## [Unreleased] - 2026-08-31
+## 2026-09-14
+
+- 修复导入素材库人物后工程保存返回 422：工程归档支持受控缩略图/原图地址，按 SQLite 素材 ID 校验并独立保存预览字节；参考原图用途保持不变。覆盖中文目录、保存/恢复、删除原素材后回看和目录越界拒绝。
+
+- 修复本地 LiteLLM Router 初始化错误被误报为上游 HTTP 400：区分本地配置与请求失败，保留异常脱敏与零自动重试；便携版配置提示明确 OpenAI 兼容模型填写 `openai/实际模型名`。
+
+- 修复 Windows 中文目录下素材与参考图读取失败、工程受控图片保存返回 422，以及批任务/CLI 结果写入失败：统一经 Python 文件访问和 OpenCV 内存编解码，保留受控路径限制与失败语义。增加中文路径、图片无损往返、工程素材导入及生产入口防回归检查；已交付便携版须补丁后重启。
+
+## 2026-09-11
+
+- 新增 Windows NVIDIA GPU 完整便携包与 CPU→GPU 差分升级包，避免重复下载模型/界面；保留配置与用户数据，校验版本、文件摘要及运行锁，支持中断后重试。Windows 驱动探测与随包 CUDA DLL 加载独立处理，六个生产模型以真实 CUDA profiling 验证，见 `docs/windows-portable-validation.md`。
+- 新增 Windows x64 CPU 便携构建与双击启动入口：内置独立 Python、固定 Windows 依赖、六个校验后的生产模型和前端；不携带开发者配置或历史。支持单实例保护、端口自动避让和首次 AI 配置，说明见 `docs/windows-portable.md`。
+- 修复接受精修后准备区预览/对比仍显示本地初稿，以及 ZIP 仍导出旧结果的问题：按明确会话关联同步已接受版本，刷新恢复可补同步；当前工程批量导出优先使用服务端接受版，保留原始图片字节和真实格式，已接受文件失败列入清单而不回退成本地初稿。
+- 补修旧工程遗漏的已接受会话关联：只在原图/本地初稿、稳定人物与参考摘要完全匹配且候选会话唯一时关联，不按名字猜测、不改变接受状态；已有对应和歧义记录不重绑。
+
+- 全面复核工程恢复：统一工程列表、任务/会话历史和刷新时的缺失输入修复；运行中批任务持久化待完成的精修参考，重连仅接回同一任务；补齐无会话图片切换的自动保存。覆盖单源未指定脸序、重复/缺失对应、已删除任务、已替换画布与编码不同但像素一致等回归，保留缺失旧数据的明确限制。
+
+- 修复旧批任务恢复后虽然有本地结果却无法创建精修：从保存的逐图人物匹配和明确参考素材补齐精修输入，校验原图/结果摘要；再次恢复也可修复已迁移工程，不覆盖现有编辑。同批但未匹配到当前图的跳过角色不再阻止已确认人物创建精修，缺失对应仍不猜测。
+
+- 新增完整编辑工程自动保存与显式恢复：独立保存原图/结果/素材、稳定人物映射、参数、逐图保护画笔和撤销/重做，以及精修基图/查看版/确认/意见草稿。历史页新增工程列表、删除和两类任务的恢复入口；图片校验、版本冲突及原子恢复保护当前编辑，旧记录按真实保留内容迁移并列出缺失项，不自动换脸或生图。
+
+- 按测试反馈将网关默认等待从 180 秒延长至 300 秒，精修分析和复评外层同步调整为 330 秒；保留图像编辑的独立超时和零自动重试，避免视觉请求尚未等满就被外层取消。
+
+- 完成用户授权的五人合影两轮真实付费精修及逐脸审阅：人工意见和 V0→V1→V2 链校验通过；两版均出现相貌漂移和遮挡细节错误，未定稿。第二轮复评 HTTP 408 后候选完整保留，详见 [实测记录](docs/refinement-live-test-20260911.md)。
+
+- 精修人物参考栏将详细空间定位默认折叠，保留人物编号和缩略图，避免多人时定位文字挤满左栏。
+
+- 精修画布默认完整展示选中版本，原图/初稿分屏改为显式选择，避免右侧目标人物被默认原图半屏遮住而误以为结果没有变化。
+
+- 真实复评在 1600px 整图预览下未能核对小脸：视觉预览上限提高至 3200px，参考板仍使用有界排版；原尺寸试请求收到上游 HTTP 500，未恢复无上限传图；界面显示模型原生输出/画布尺寸及放大提示。模型内部采样和细节质量仍需实测，不宣称像素尺寸等于真实画质。
+
+- 提示词版本 conversation-refinement-v5：真实分析曾把“查阅参考板”和“本轮不生成”写进编辑计划；现在要求把参考观察转写为可独立执行的视觉修改，将讨论状态说明留在回复中，保持生图单张当前图输入。
+
+- 提示词版本 conversation-refinement-v4：将缺参考的不确定性说明、人物对应和编辑计划一致性规则补充进首请求 JSON schema 的字段描述，保留严格校验与零自动修复。
+
+- 真实测试暴露精修失败原因过于笼统：增加上游 HTTP 状态、超时及格式校验类型的安全分类，不保存上游错误正文、模型返回值或凭据，也不增加自动重试。
+
+- 真实视觉调用发现交互会话的纯编号定位无法核对人物：改为冻结原图检测的空间顺序和可用脸框中心百分比，稳定人物 ID 不与脸序混用；旧会话通过讨论澄清，不改写已冻结证据。
+
+- 精修增加明确的分析确认步骤，意见输入与生成只在确认后启用；换基图清理旧确认和意见，新分析也需重新确认。
+- 问题按人物/五官、遮挡/融合、光影/质感、构图分组折叠，生成复评独立展示，减少重复文本和计划堆叠。
+- 生成请求增加 diagnosis_turn_id，服务端验证归属、基图与讨论状态并绑定精确分析，幂等重试不会改用新分析。
+- 提示词更新为 conversation-refinement-v3，要求简短结论与具体证据，强调多人、自然侧脸透视和跨面部小物体的遮挡关系；不承诺文字能恢复严重身份偏差。
+
+## [Unreleased] - 2026-09-07
+
+### 工作台视觉与交互复核
+
+- 修复窄屏工具文字竖排、结果下载溢出和悬浮操作遮挡图片；工具按视图/定位分组，当前图精修与下载各保留一个固定入口。手机导航保留页面名称，准备状态标签降低视觉干扰，预设卡片和通用小按钮统一尺寸。
+- “替换目标”改为“定位画面人物”，明确实际换脸对象来自角色映射；快捷键使用 Radix 对话框，隐藏工作区或打开对话框时不响应画布快捷键，窗口失焦恢复原对比状态。处理期间禁止修改右栏参数和移除目标图，单图等待不伪造百分比。
+- 历史列表区分加载、失败和空记录，中文状态与日期统一，选择框支持半选；精修空页面增加返回准备/选择已有图片入口，尊重系统减少动态效果偏好。
+- 新增不调用真实任务/模型的 `scripts/smoke_studio_ui.py`，截图覆盖准备、结果、历史和精修及 320/390/1024/1440 像素宽度；验证可见操作不越界并保留纯状态底栏。
+
+### 换脸操作入口归并
+
+- 右侧“换脸控制”集中角色映射、单图/批量启动、AI 首轮授权、重连与 ZIP 导出；窄屏通过同一侧栏抽屉访问。顶部准备项改为状态标签，底部只显示任务状态、进度与实际耗时。
+- 批任务提交与轮询移至 App 唯一挂载的 `useBatchPipeline`，删除自定义事件桥接；关闭侧栏或切换工作区仍接收结果，AI 授权不会随抽屉关闭丢失。单张目标显式授权 AI 时仍可执行完整任务。
+- 补充入口唯一性、纯状态栏、抽屉关闭后任务继续以及单图 AI 授权回归。
+
+### 历史记录删除补齐
+
+- 精修会话与旧版档案增加 revision 校验的删除接口，清理各自版本、定稿和证据；运行中记录拒绝删除，文件移动或数据库提交失败保留记录并恢复已暂存图片。
+- 历史页增加精修/旧版的单条和批量删除；精修工作台可直接删除当前会话。成功后清理列表、详情缓存及对应轻量关联，失败记录保留并刷新，SSE 通知已打开的会话关闭。
+- 本地批任务已有删除继续保留，并补齐详情缓存和失效选择清理；新增删除隔离、数据库失败恢复、重启、版本冲突及界面回归。
+
+### AI 精修流程与界面整理
+
+- 交互入口改为“检查问题 → 意见与生成 → 对比与定稿”，首次检查只分析；当前基图分析与人工意见集中展示，旧轮次折叠，已关联图片不重复列出，接受与导出集中到画布。
+- 生成前完整传递同一基图最近已完成的诊断，结合人工意见整理计划；当前修改意图优先于冲突的旧建议。切换基图不借用其他版本的问题，仍保持单图单次生成、人工接受与原有批任务 auto 授权边界。
+- 更新请求组合、分支与界面交互回归及浏览器诊断脚本；提示词版本为 conversation-refinement-v2。
+
+### 审查修复：契约、冗余与测试
+
+- 精修创建在快照写入前累计原图、基线和参考图的解码像素，超限拒绝并清理本次未注册目录；执行轮次复用相同预算，包括无参考图场景。回归覆盖边界、重复参考、跨人物累计、幂等重试与已有会话保护。
+- VLM 仅建议跨图聚类合并，合并前按请求阈值复核实际参考与候选的 ArcFace 余弦；缺失或无效特征不合并。106 点提取异常时仍应用默认椭圆保护，并保留失败与降级诊断。
+- 删除无调用的按下标目标更新接口、收窄仅内部使用的导出；合并重复路由/环境变量测试，数学回归改为确定性数值断言，包边界检查对准当前精修模块。保留 legacy 档案、诊断 CLI 与加载语义不同的参考提取入口。
+- 修正文档中 AI 配置无效会导致整体启动失败、所有模型操作统一返回 503、旧质量评价模块归属等过时描述；新增无效生成策略仍可启动本地服务的回归。
+
+### 对话式整图精修工作台
+
+- 精修升级为 SQLite 持久化的 session/turn/version：冻结原图、本地初稿和按稳定人物 ID 绑定的实际参考；查看版本、下轮基图和已接受版相互独立，支持显式从旧版本分支。
+- 多模态诊断与复评采用三类证据；允许无问题、身份不可判断和定位待澄清，不再强制找刺或使用分数门槛。生成只接收当前完整图与文字，允许需求内整图重绘，不携带原图/参考板/mask，也不做局部回填。
+- 后端区分 discuss/generate/auto，每轮最多生成一个候选；复评失败保留候选并记录提示，只有人工接受才发布。会话幂等请求、revision/digest 校验、SSE 快照恢复与重启策略均不自动补发付费调用。
+- 新接口归 api/refinement 与 refinement_sessions 路由；退役旧 core service/plan、单任务生成入口和旧精修表单。legacy 档案只保留查看、质量评价与人工接受，旧创建/诊断/计划/取消/重试返回 410。
+- 新提示词首请求包含完整 JSON schema，精修显式 max_text_repairs=0；通用网关默认两次文本修复仍保留给仲裁调用。记录 Anthropic/OpenAI 官方提示方法与取证限制，新增离线契约/像素/状态测试，不宣称真实付费画质已验证。
+
+### LiteLLM 去供应商化重构
+
+- 原生 `model_list` 统一视觉与图像 deployment，稳定别名支持多 deployment；`image_models` 仅保留引用同目录的展示与 generation metadata。默认目录收敛到两个通用别名，不再内置供应商模型或伪造免费定价。
+- 视觉/图像的模型、URL、Key 分别由 `AI_VISION_*` / `AI_IMAGE_*` 配置；视觉走 `Router.acompletion`，图像走 `Router.aimage_edit`，退役手写 DMX 协议与私有回退。默认尺寸为 `size: auto`，不再承诺 4K；离散尺寸和动态范围必须显式声明。
+- 默认 Router 重试与图像 deployment 重试均为 0；可显式配置同能力 fallback，图像须相同 generation，增加重试可能重复付费。目录 API 保持形状且只返回非敏感信息，前端无需改动。
+- 旧 DMX 变量、provider/params 配置和退役别名不兼容，不做静默映射；用户按 `docs/model-catalog.md` 自行填写通用配置。已有候选的人工接受仍按 revision/digest 发布原 staging 字节，不重新生图、不迁改运行数据。
+- 同步架构、精修、工程规则和迁移文档，保留其他文档一致性断言并增加原生目录与禁旧路径不变量。
+
+### 2026-09-08 文档精简
+
+- README 收敛为功能、启动与文档入口；DESIGN 改为架构概述，移除旧路线图、退役算法展开和重复接口/模型说明。
+- 精简工程规范的重复说明；两份独立选材/强度文档合入 `docs/swap-benchmarks.md` 后删除旧文件，保留实测原始摘要、复现路径和适用限制。
+- 更新文档导航与历史证据引用，增加本地章节链接检查；现行状态机只在精修权威文档维护，概述改为引用。
+
+### 2026-09-08 死代码与失效测试清理
+
+- 经 API/CLI/UI、脚本、测试和现行文档交叉核查，删除三个换脸适配器未被生产使用的 `get()` 回贴、`swap_face()` 和私有对齐分支，以及只被旧路径和测试使用的 `utils/affine.py`。生产继续通过 `infer_aligned()` 推理，保护遮罩与回贴统一由流水线执行。
+- 同步删除两个旧仿射工具测试和一个旧 HyperSwap `get()` 回贴测试；保留当前流水线遮罩、像素保护、模型路由及兼容数据恢复的回归测试。流水线直接使用已有标准化模板，消除生产与测试之间的重复常量。
+- 删除无调用方的 `create_identity_gallery()`、`filter_target_faces()` 与空的 `make_context_sheet()`，以及前端 `cn`、未用图片地址函数；批任务请求复用已有 `BatchImageItem` 类型。
+- 删除无引用的 `clsx`、`tailwind-merge` 和 Radix progress/tabs/tooltip 直接依赖，使用 pnpm 离线更新锁文件；保留诊断脚本、模型资产和已有持久化数据。
+- 修复两个仍有诊断用途的精修脚本使用旧手工请求对象、缺少编辑范围导致生成前失败的问题：复用 API 请求契约，端到端脚本加载 `.env`；新增离线回归覆盖单图生成和复评失败时证据保留。
+
+### 按领域整理工程结构
+
+- `api/app.py` 收敛为应用装配入口；生命周期、依赖访问和功能路由分开。任务与持久化归 `api/tasks/`，素材库归 `api/portraits/`，图片 I/O 从批任务抽离为 `api/media.py`。
+- AI 配置、网关、契约和 provider 统一归 `core/ai/`；配置解析不加载 LiteLLM，通用结果类型不依赖具体 provider。精修计划与服务归 `core/refinement/`，输入快照 I/O 与任务状态转换分离。
+- 前端精修和历史组件、规则及测试归 `web/src/features/`；精修草稿/诊断/轮询集中到 `useRefinementController`，弹窗保留展示和本地缩放。跨目录使用 `@/` 引用。
+- 新增固定版本 Prettier、前端 `format` / `format:check` 命令，`lint` 结合格式检查与 TypeScript；统一展开压缩代码。扩展包边界回归，同步权威文档和目录说明。
+- 修复 uv editable 安装默认指向不存在的 `src/`：显式声明顶层源码包，CLI 实现归 `api/cli.py`，根目录 `cli.py` 保留为源码可执行入口；验证 wheel 构建和两个 CLI 的 `--help`。
+- 启动入口 `api.app:app`、CLI 命令、HTTP 契约、模型配置和运行数据目录保持不变；仓内旧 import 路径已迁移，不保留转发模块。
+
+### AI API 接入与精修生命周期审查修复
+
+- 修复复评响应校验失败或复评期间重启导致已生成候选被判失败的问题；有效候选保留并携带提示性 `review_error`，关停不再等同人工取消。
+- 精修输入、人物集合和模型选择按轮次持久化；继续精修失败及跨重启重试不再退回最初上传图，缺失/损坏输入明确失败。无输入记录的旧多轮任务不猜测恢复基线。
+- 接受操作发布已校验的同一字节缓冲区，临时文件改放私有 staging，常规发布异常回滚待接受状态；恢复接受后清除候选 URL 和 staging。
+- 修复缺少密钥时 AI 健康状态误报就绪，以及 `DMXAPI_API_BASE` 被 YAML 固定地址绕过；Gemini 在所配置来源使用原生协议路径。DMX 模型 POST 拒绝重定向，防止图片及自定义密钥头跨域转发。
+- 回归覆盖见 `tests/test_refinement_tasks.py`、`tests/test_ai_gateway_config.py`、`tests/test_ai_readiness.py`、`tests/test_dmx_gemini.py`；权威契约同步到 `docs/ai-refinement.md` 与 `docs/model-catalog.md`。
+
+### 一次成片质量闭环与定向精修
+
+- 新增逐人显式修复范围和身份自评提示；预览、生成和建议性复评共用 `core/refinement/plan.py`。默认不开放头发、耳颈、视线、表情和头部姿态，身份不足提示返回本地，不新增强制门禁。
+- 新增候选digest绑定的人工成品评价、不可变三图证据及服务端生成尝试/来源关联；评价不触发接受，未评价/未知来源/生成失败单独统计，不能冒充一次成片率。
+- 新增非生产最佳单张、图库、80/20三策略受控对照与素材体检；不改变生产默认值、身份条件或遮罩保护。完整契约见 `docs/delivery-quality.md` 和 [统一评测说明](docs/swap-benchmarks.md#source-strategy-comparison)。
+
+### 可信评测与逐脸诊断
+
+- 修复消融映射缺目标特征导致原图被当成对照结果；评测改用几何一对一关联、完整预期样本分母与明确目标身份，拒绝无标签/缺失样本伪高分。见 `docs/swap-benchmarks.md`。
+- 明确 best-match 为 80% gallery + 20% best；新增安全逐人 matching/source_selection/mask 元数据，区分匹配冲突与低阈值，记录保护组件缺失/降级。API/CLI显式传真实聚合权重，未知来源不猜。
+- BiSeNet眼镜保护羽化按裁剪宽度缩放（256px sigma5），不取消遮挡或眼镜保护；新增尺度与降级回归。
+- 全部终态开放只读历史详情，保留失败图片和已有成功产物；重启后按已持久化结果恢复计数。诊断拼图改为实际gallery来源板与真实best索引，旧“Selected source”单张展示不再作为输入事实。
+
+### 换脸可见强度与失败诊断
+
+- 基于四张真实图片的 72% / 90% / 95% 受保护对照，将 InSwapper 的 API/流水线/Studio 默认强度调至 90%，工作台上限从 90% 对齐至 API 的 95%；不放宽人物匹配、可见变化阈值、侧脸或遮挡保护。证据和适用边界见 [强度实测记录](docs/swap-benchmarks.md#recorded-strength-comparison)。
+- 新增非生产只读复现工具 `scripts/diagnose_batch_strength.py`，保存逐脸模型输出、遮罩、融合和素材相似度证据，不覆盖任务历史或发布诊断候选。
+- 修复批任务零换脸时异常分支丢失真实检测数、人物结果和模型路由的问题；零换脸仍为 FAILED 且不发布图片，旧历史缺失字段不自动重建。
+
+### 🎨 换脸质量：遮罩限定的修复重接入 + 可调色彩迁移
+
+- 新增 `core/restorer.py` (`CodeFormerRestorer`)：换脸模型的有效工作分辨率固定封顶在 256×256（见 `swap_single_face_facefusion` 里的 pixel-boost 说明），在高像素照片上贴回后明显比周围原图更糊。CodeFormer 提供 `fidelity_weight` 身份保真度旋钮，因此被选中重新接入；GFPGAN 没有等价的身份控制，**仍保持退役状态**，未被接回。
+- 这是对 0.1.0 时期"全脸修复"能力的**限定范围重新引入**，不是简单复原：修复网络输出只通过 `crop_mask`（换脸本身已在用的解剖学/遮挡/区域保护遮罩）混合回画面，绝不会越过该遮罩去动背景、被遮挡区域或受保护像素；默认 `enable_face_restoration=false`，需显式 opt-in；`restoration_fidelity_weight`（默认 0.75，偏向保留已换上的身份而非生成式幻想细节）与 `restoration_strength`（默认 0.5，原始换脸输出与修复输出的混合比例）均可调。
+- `api/schemas.py` 的 `SwapParameters` 新增 `enable_face_restoration`/`restoration_fidelity_weight`/`restoration_strength` 三个参数，贯穿 `api/tasks/batch.py` 全部 4 个换脸调用点。
+- 边界环颜色迁移的强度与宽度（此前硬编码 `blend_ratio=0.45`、环宽 15px 基准）改为可配置参数 `color_transfer_ring_strength`/`color_transfer_ring_width_px`，默认值保持不变，等于 8-25 那次"更宽/更浓的环导致过暗过掉饱和度"回归后收敛出的安全值——调宽/调浓仍是调用方显式承担的已知代价，不做场景自适应默认放宽。
+- `tests/test_download_models.py` 的退役资产守护测试拆分：`test_gfpgan_face_restorer_is_not_a_runtime_asset` 继续断言 GFPGAN 不可达；新增 `test_codeformer_restorer_is_optional_not_startup_required` 断言 CodeFormer 是可达但非启动强制的可选生产资产，不再笼统地把两者都当"退役"处理。`models/README.md` 同步记录 CodeFormer 的本地评测 SHA-256（尚未接入默认下载器，接入时请对实际下载来源重新校验摘要，不要复用此处记录的本地值）。
 
 ### 🧹 里程碑工程化整顿
 
@@ -36,6 +186,8 @@
 - 新成功结果把解码后的原始画布和换脸图片一同写入任务目录，并补齐终态 `completed_at`，避免原始上传 URL 失效后无法进行前后对比。
 - Web Studio 任务历史合并服务端状态与本机轻量标签；完成/部分完成任务支持多结果切换、卷帘对比、50%–300% 缩放、打开和下载。历史查看严格只读，不污染当前工作台；已完成任务不再自动恢复成活动工作区。
 - 架构与复验证据见 `docs/task-history.md`。该功能沉淀了“服务端事实源、摘要/详情分离、提交时保存复核产物、历史与编辑器隔离”的通用设计约束。
+- 新增终态批任务删除：历史面板确认后调用 `DELETE /api/v1/batch-tasks/{task_id}`，同步清理 SQLite 快照、内存状态、本机轻量关联和任务专属图片；运行中任务返回 409，避免工作线程重建已删状态。
+- 修复精修接受后仍请求已清理 staging candidate 的 404：接受成功即清除 `candidate_url`，前端接受态改为展示正式 `accepted_url`，旧持久化工作区也不再复用候选地址。
 
 ### 📐 AI 精修整图直出架构（文档批准）
 
@@ -62,7 +214,7 @@
 
 ### 🆕 瑕疵点 VLM 诊断规范化（更具体、可验证）
 
-- `core/vlm_contracts.py` 的 `ReviewIssue.category` 从自由字符串改为固定七分类枚举（`anatomy_geometry`/`bilateral_symmetry_gaze`/`skin_texture`/`boundary_blending`/`lighting_color`/`pose_perspective_scale`/`synthesis_artifact`），`region`/`description` 增加最短长度约束，拒绝"脸部"/"有点怪"这类空泛回答。
+- `core/ai/contracts.py` 的 `ReviewIssue.category` 从自由字符串改为固定七分类枚举（`anatomy_geometry`/`bilateral_symmetry_gaze`/`skin_texture`/`boundary_blending`/`lighting_color`/`pose_perspective_scale`/`synthesis_artifact`），`region`/`description` 增加最短长度约束，拒绝"脸部"/"有点怪"这类空泛回答。
 - `RefinementService.review()` 的系统 Prompt 新增"不合格 vs 合格"瑕疵描述 few-shot 范例，强制 `region`/`description`/`suggestion` 用中文输出，并要求 `description` 同时给出外观特征、相对范围估计与对比基准三要素。`recommended_prompt` 要求复用 `issues` 中出现过的精确部位命名，避免整体描述又退回笼统措辞。
 - `RefinementService.review_local_candidate()` 的 `issues`（字符串数组）同步收紧为中文 + 具体解剖学定位，不再接受孤立判断词。
 - 前端无需改动：`RefinementModal.tsx` 已经按 `{region}：{description}；{suggestion}` 拼接展示，具体性提升会直接体现在现有 UI 上。
@@ -75,13 +227,13 @@
 
 ### 🗃️ 旧架构快照：AI Gateway、局部精修任务与人像素材库
 
-- **AI Gateway** (`core/ai_gateway.py` + `config/ai_gateway.yaml`)
+- **AI Gateway** (`core/ai/gateway.py` + `config/ai_gateway.yaml`)
   - 配置驱动的 LiteLLM Router 封装，统一管理 VLM 与图像编辑模型别名（`personaweave-vision-review/precision/fallback`、`personaweave-refine-seedream/plus/max/fallback`），支持 fallback 链与 `os.environ/NAME` 语法解析密钥。
-  - 所有别名通过 **DMXAPI**（`https://www.dmxapi.cn/v1`，OpenAI 兼容协议的第三方模型聚合网关）调用；`core/providers/dmx_seedream.py`、`core/providers/dmx_responses.py` 是针对 DMX 私有响应协议的自研 httpx 适配器。
-  - `core/vlm_arbiter.py` 迁移为经由 `AIGateway` 调用，不再直接使用 LiteLLM。
-  - `core/vlm_contracts.py` 新增结构化输出契约：`FaceReviewReport`、`BatchFaceReview`、`CandidateQualityReview`、`GlobalProtectionReview`、`IdentityArbitration`。
+  - 所有别名通过 **DMXAPI**（`https://www.dmxapi.cn/v1`，OpenAI 兼容协议的第三方模型聚合网关）调用；`core/ai/providers/dmx_seedream.py`、`core/ai/providers/dmx_responses.py` 是针对 DMX 私有响应协议的自研 httpx 适配器。
+  - `core/ai/arbiter.py` 迁移为经由 `AIGateway` 调用，不再直接使用 LiteLLM。
+  - `core/ai/contracts.py` 新增结构化输出契约：`FaceReviewReport`、`BatchFaceReview`、`CandidateQualityReview`、`GlobalProtectionReview`、`IdentityArbitration`。
 
-- **局部 / 整图 AI 精修** (`core/localized_refinement.py` + `core/refinement_service.py` + `api/refinement_task_manager.py`)
+- **局部 / 整图 AI 精修** (`core/localized_refinement.py` + `core/refinement/service.py` + `api/tasks/refinement.py`)
   - 新增 `/api/v1/refinement/review`、`/api/v1/refinement/tasks`（创建/查询/取消/接受/单人重试）、`/api/v1/refinement/tasks/{task_id}/candidate` 接口。
   - 异步任务对整图做一次性 AI 生成编辑，再逐人裁剪局部区域做质量复评；状态机 `QUEUED → LOCALIZING → REFINING → REVIEWING → REVIEW_REQUIRED → ACCEPTING → ACCEPTED`（另有 `CANCEL_REQUESTED`/`CANCELLED`/`FAILED`）。
   - 质量闸门（一致性/自然度/回归/目标问题改善/新增高危问题）+ 整图保护复评（保护物/其他人物/文字/构图四项 AND）全部通过才允许接受。
@@ -89,7 +241,7 @@
   - 两阶段落盘：候选先落 `outputs/refinement_staging/`，接受后才写入 `outputs/api_results/refinement/accepted/`，未接受的候选不会进入正式产物目录。
   - 前端新增 `RefinementModal.tsx` 承载上述交互。
 
-- **人像素材库 Portrait Library** (`api/portrait_library.py` + `api/portrait_library_import.py`)
+- **人像素材库 Portrait Library** (`api/portraits/library.py` + `api/portraits/importer.py`)
   - SQLite 存储（`data/portrait_library/library.sqlite3`：`identities`/`assets`/`import_audit` 三表），素材文件分区存放，对外只暴露不透明 ID。
   - 新增 `GET /api/v1/portrait-library`、`GET /api/v1/portrait-assets/{asset_id}/thumbnail`、`GET /api/v1/portrait-assets/{asset_id}/content`。
   - 新增幂等导入 CLI `personaweave-import-portraits`，从 `manifest.csv` 批量导入外部素材，按内容哈希去重，损坏文件进 `quarantine/`。
@@ -115,7 +267,7 @@
 
 **AI 精修（已被整图直出架构取代的中间修复）**
 
-- **[关键] `RefinementService.apply_candidate()` 缺失导致像素保护形同虚设**：`LocalizedRefinementEngine` 早已实现了带硬性断言（越界像素即抛异常）的 `align_generated()`/`composite()`/`apply_manual_protection()`，但 `api/refinement_task_manager.py` 从未调用它们——AI 提供方返回的整图候选被直接当作最终产物保存，背景、其他人物、整体色彩与饱和度完全没有代码层面的保护，只能靠 Prompt 请求模型"不要动"和事后的 VLM 抽查。现已新增 `RefinementService.apply_candidate()`，将整图候选通过每人的解剖学 mask 重新配准并合成回原图，只有 mask 支持区域会变化，其余像素逐字节保留。手动保护画笔（`manual_mask`）此前在精修流程中被静默忽略，现同样通过 `apply_manual_protection()` 生效。
+- **[关键] `RefinementService.apply_candidate()` 缺失导致像素保护形同虚设**：`LocalizedRefinementEngine` 早已实现了带硬性断言（越界像素即抛异常）的 `align_generated()`/`composite()`/`apply_manual_protection()`，但 `api/tasks/refinement.py` 从未调用它们——AI 提供方返回的整图候选被直接当作最终产物保存，背景、其他人物、整体色彩与饱和度完全没有代码层面的保护，只能靠 Prompt 请求模型"不要动"和事后的 VLM 抽查。现已新增 `RefinementService.apply_candidate()`，将整图候选通过每人的解剖学 mask 重新配准并合成回原图，只有 mask 支持区域会变化，其余像素逐字节保留。手动保护画笔（`manual_mask`）此前在精修流程中被静默忽略，现同样通过 `apply_manual_protection()` 生效。
 - **VLM 诊断分辨率不足**：`RefinementService.review()` 此前只发送一张压缩到 1600px 的完整图片，合影中的单张脸可能只剩几十像素，难以做毛孔/瞳孔高光级别的取证判断。现为每个请求人物额外发送一张原分辨率局部特写。
 - **精修重试无法升级模型**：新增 `RefinementRetryRequest.model_alias`（可选），失败或效果不理想时可对单个人物显式指定 `personaweave-refine-plus`/`personaweave-refine-max` 重试，Web Studio 精修弹窗提供对应下拉框；此前重试固定使用网关默认别名，无法触达配置中已有的更强模型。
 
@@ -128,7 +280,7 @@
 
 **其他**
 
-- `pyproject.toml`：`httpx` 从 `[dependency-groups].dev` 移入 `[project].dependencies`——`core/ai_gateway.py`、`core/providers/*.py` 在生产代码中依赖它，此前纯生产环境安装（不带 `--dev`）会导致 `ImportError`。
+- `pyproject.toml`：`httpx` 从 `[dependency-groups].dev` 移入 `[project].dependencies`——`core/ai/gateway.py`、`core/ai/providers/*.py` 在生产代码中依赖它，此前纯生产环境安装（不带 `--dev`）会导致 `ImportError`。
 
 ---
 
@@ -161,7 +313,7 @@
   - `POST /api/v1/cluster-faces`：跨图人脸身份聚类与全局 ID 分配。
   - `POST /api/v1/vlm/arbitrate`：多模态 VLM 智能身份仲裁。
 - **Pydantic 数据契约** (`api/schemas.py`)：完整请求/响应类型定义。
-- **异步批处理任务管理器** (`api/task_manager.py`)：线程池执行、实时进度追踪与 Webhook 回调。
+- **异步批处理任务管理器** (`api/tasks/batch.py`)：线程池执行、实时进度追踪与 Webhook 回调。
 - **自动化测试套件** (`tests/`)：API 健康检查、同步换脸、批处理异步与数学单元测试。
 
 #### Phase 3: PersonaWeave Web Studio 前端工作台 ✅
@@ -208,7 +360,7 @@
   - 通过软 Alpha 混合还原原始头发像素。
 
 - **VLM 多模态智能仲裁器 (VLM Arbiter)** 🆕
-  - 新增 `core/vlm_arbiter.py`，通过 LiteLLM 接入 Gemini / GPT-4V。
+  - 新增 `core/ai/arbiter.py`，通过 LiteLLM 接入 Gemini / GPT-4V。
   - 在纯几何特征匹配失效时（大侧脸/背影），利用视觉大模型进行 Chain-of-Thought 推理辅助识别。
 
 ---

@@ -69,7 +69,18 @@ class DenseFaceParser:
         """
         mask = np.zeros((512, 512), dtype=np.float32)
 
-        if pts_512 is not None and len(pts_512) == 106:
+        # Degenerate landmarks (e.g. extract_106_landmarks failing and returning an
+        # all-zero array) collapse to a near-point cluster. Building a hull from them
+        # still yields a tiny nonzero blob after blurring, so `mask.max() == 0.0` below
+        # would never catch the failure -- reject the spread explicitly instead.
+        landmarks_valid = (
+            pts_512 is not None
+            and len(pts_512) == 106
+            and float(np.ptp(pts_512[:, 0])) > 10.0
+            and float(np.ptp(pts_512[:, 1])) > 10.0
+        )
+
+        if landmarks_valid:
             try:
                 # 0-32: Jawline contour from left to right
                 jaw_pts = pts_512[0:33].astype(np.int32)

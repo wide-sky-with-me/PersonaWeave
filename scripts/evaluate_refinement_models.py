@@ -1,19 +1,33 @@
-"""Run the configured high-quality refinement models against one controlled edit."""
+"""Non-production comparison of explicitly selected configured image aliases.
+
+Run: uv run python -m scripts.evaluate_refinement_models CURRENT.png --people people.json
+     --original ORIGINAL.png --output-dir outputs/diagnostics/NEW-RUN
+     --models CONFIGURED_ALIAS --allow-paid
+Uses the same manifest as refinement_e2e: stable person_id/person_locator/reference_paths.
+One shared three-evidence diagnosis feeds one edit and advisory review per chosen alias.
+Every model receives the identical baseline; drift metrics are not identity or quality scores.
+Bundles never publish accepted outputs and require a new private directory.
+"""
 
 import argparse
 import asyncio
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
-from types import SimpleNamespace
 
 import cv2
 import numpy as np
 from dotenv import load_dotenv
 
-from core.ai_gateway import AIGateway
-from core.refinement_service import RefinementService
+from core.ai.gateway import AIGateway
+from core.refinement.conversation import ConversationRefinementService
+from scripts.refinement_e2e import (
+    add_evidence_arguments,
+    create_bundle_dir,
+    generate_and_review,
+    load_inputs,
+    write_json,
+)
 
 
 def color_metrics(baseline: np.ndarray, candidate: np.ndarray) -> dict:
@@ -33,76 +47,78 @@ def color_metrics(baseline: np.ndarray, candidate: np.ndarray) -> dict:
     }
 
 
-async def run(input_path: Path, output_dir: Path, aliases: tuple[str, ...] | None = None) -> None:
-    baseline = cv2.imread(str(input_path), cv2.IMREAD_COLOR)
-    if baseline is None:
-        raise ValueError(f"Could not read evaluation input: {input_path}")
-    output_dir.mkdir(parents=True, exist_ok=True)
+async def run(args, aliases: tuple[str, ...] | None = None):
+    if not args.allow_paid:
+        raise ValueError("Explicit --allow-paid authorization is required")
+    inputs = load_inputs(args)
     gateway = AIGateway()
-    service = RefinementService(gateway)
-    selected_aliases = aliases or tuple(gateway.image_edits)
-    person = SimpleNamespace(
-        person_id=1,
-        face_index=1,
-        person_locator="上排·从左到右第 1 位",
-        review_prompt="仅优化发际线与皮肤交界处的融合，保持自然发丝边缘",
-        user_instructions=(
-            "仅优化发际线与皮肤交界处的融合。严格保持原图全局白平衡、曝光、饱和度、对比度、人物、"
-            "背景、电视、白板文字、Logo、水印和构图不变。"
-        ),
-        issues=[],
-    )
-    results = []
-    for alias in selected_aliases:
-        started = time.perf_counter()
-        try:
-            generated = await service.refine_whole_image(
-                baseline, [person], "严格保持原图整体色彩与所有文字不变", alias
-            )
-            candidate = generated["candidate"]
-            output_path = output_dir / f"{alias}.png"
-            if not cv2.imwrite(str(output_path), candidate):
-                raise ValueError(f"Could not save candidate: {output_path}")
-            results.append(
-                {
-                    "alias": alias,
-                    "status": "ok",
-                    "elapsed_seconds": round(time.perf_counter() - started, 3),
-                    "output": str(output_path),
-                    "audit": generated["audit"],
-                    "metrics": color_metrics(baseline, candidate),
-                }
-            )
-        except Exception as exc:
-            results.append(
-                {
-                    "alias": alias,
-                    "status": "error",
-                    "elapsed_seconds": round(time.perf_counter() - started, 3),
-                    "error": str(exc),
-                }
-            )
-        print(json.dumps(results[-1], ensure_ascii=False), flush=True)
+    selected_aliases = aliases or tuple(args.models)
+    if not selected_aliases or len(set(selected_aliases)) != len(selected_aliases):
+        raise ValueError("Select distinct configured image aliases explicitly")
+    if any(alias not in gateway.image_edits for alias in selected_aliases):
+        raise ValueError("Unknown image alias; consult the configured gateway catalog")
+    create_bundle_dir(args.output_dir)
+    service = ConversationRefinementService(gateway)
+    diagnosis = await service.analyze(**inputs)
     manifest = {
         "created_at": datetime.now(UTC).isoformat(),
-        "input": str(input_path),
-        "prompt_scope": "one controlled hairline edit with strict global preservation",
-        "results": results,
+        "input": str(args.image),
+        "diagnosis": diagnosis.model_dump(mode="json"),
+        "results": [],
     }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(args.output_dir / "manifest.json", manifest)
+    # Each alias receives the same original baseline and diagnosis, never the preceding model output.
+    for index, alias in enumerate(selected_aliases, 1):
+        started = time.perf_counter()
+        if diagnosis.mapping_uncertain or not diagnosis.needs_edit:
+            result = {
+                "alias": alias,
+                "status": "skipped",
+                "reason": "clarification_required" if diagnosis.mapping_uncertain else "no_edit",
+            }
+        else:
+            try:
+                candidate, generated = await generate_and_review(
+                    service, inputs, diagnosis, alias, args.output_dir / f"model-{index:02d}.png"
+                )
+                result = {
+                    "alias": alias,
+                    "status": "ok",
+                    **generated,
+                    "metrics": color_metrics(inputs["current"], candidate),
+                }
+            except Exception as exc:  # Compare remaining explicitly requested aliases; no implicit retry.
+                result = {
+                    "alias": alias,
+                    "status": "error",
+                    "error": f"Diagnostic generation failed ({type(exc).__name__})",
+                }
+        result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
+        manifest["results"].append(result)
+        write_json(args.output_dir / "manifest.json", manifest)
+        print(json.dumps({"alias": alias, "status": result["status"]}, ensure_ascii=False), flush=True)
+    return manifest
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input", type=Path)
-    parser.add_argument("--output-dir", type=Path)
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_evidence_arguments(parser)
     parser.add_argument(
-        "--models", nargs="+", help="Configured image aliases; defaults to the complete gateway catalog"
+        "--models",
+        nargs="+",
+        required=True,
+        help="Explicit configured aliases to compare; never auto-select the whole catalog",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if not args.allow_paid:
+        parser.error("--allow-paid is required: analysis plus one edit/review per selected alias may incur charges")
+    return args
+
+
+def main():
+    args = parse_args()
     load_dotenv()
-    output_dir = args.output_dir or Path("outputs/model_evaluation") / datetime.now().strftime("%Y%m%d_%H%M%S")
-    asyncio.run(run(args.input, output_dir, tuple(args.models) if args.models else None))
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":

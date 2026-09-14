@@ -20,6 +20,8 @@ warnings.filterwarnings(
 
 from insightface.model_zoo import get_model  # noqa: E402
 
+from utils.gpu_helper import get_optimal_providers  # noqa: E402
+
 
 @dataclass
 class DetectedFace:
@@ -70,7 +72,7 @@ class FaceDetector:
             raise FileNotFoundError(f"Detector model not found at: {model_path}")
 
         if providers is None:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = get_optimal_providers()
 
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size

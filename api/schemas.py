@@ -6,7 +6,7 @@ import hashlib
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, JsonValue, field_validator, model_validator
 
 from core.image_security import validate_public_url
 
@@ -82,7 +82,7 @@ class SwapParameters(BaseModel):
         description="Cosine similarity threshold for targeted face identification.",
     )
     identity_blend_strength: float = Field(
-        default=0.72,
+        default=0.9,
         ge=0.4,
         le=0.95,
         description="Visible source-identity blend strength for the InSwapper production path.",
@@ -94,6 +94,22 @@ class SwapParameters(BaseModel):
     color_transfer_mode: Literal["off", "boundary"] = Field(
         default="boundary",
         description="Apply no color transfer or production-safe boundary-ring adaptation.",
+    )
+    color_transfer_ring_strength: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Boundary-ring color adaptation opacity. Defaults to the safe value a prior full-face/"
+            "wide-ring regression narrowed this down to; raising it revives that darkening/"
+            "desaturation risk and is an explicit opt-in, not a scene-based auto-adjustment."
+        ),
+    )
+    color_transfer_ring_width_px: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=64.0,
+        description="Boundary-ring width in 512px-crop-equivalent pixels, scaled to the working crop size.",
     )
     enable_dense_mask: bool = Field(
         default=True,
@@ -115,6 +131,27 @@ class SwapParameters(BaseModel):
         default=False,
         description="Allow automatic routing to ResearchRAIL HyperSwap. Explicit requests still require this opt-in.",
     )
+    enable_face_restoration: bool = Field(
+        default=False,
+        description=(
+            "Opt-in CodeFormer detail restoration on the swapped region only, blended through the same "
+            "mask that gates the swap itself. Off by default: this is a scoped reintroduction of "
+            "restoration capability the project previously retired for risking identity/protected-pixel "
+            "drift when applied full-face."
+        ),
+    )
+    restoration_fidelity_weight: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description="CodeFormer fidelity weight: 1.0 favors the input (swapped) identity, 0.0 favors generative restoration.",
+    )
+    restoration_strength: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Blend ratio between the raw swap output and the restored output within the swap mask.",
+    )
 
 
 class BatchImageItem(BaseModel):
@@ -130,6 +167,11 @@ class BatchImageItem(BaseModel):
 
 class BatchTaskCreateRequest(BaseModel):
     """Payload for submitting a new batch face swapping task."""
+
+    ai_refinement: bool = Field(
+        default=False,
+        description="Explicitly authorize one evidence-led AI refinement turn after each successful local result.",
+    )
 
     source_identity_id: str | None = Field(
         default=None,
@@ -261,6 +303,8 @@ class ImageSwapResult(BaseModel):
     model_routing: list[dict] = Field(default_factory=list)
     warning: str | None = None
     error: str | None = None
+    refinement_session_id: str | None = None
+    refinement_error: str | None = None
 
 
 class TaskDetailData(BaseModel):
@@ -385,6 +429,7 @@ class HealthResponse(BaseModel):
     pipeline_ready: bool = False
     providers: list[str] = Field(default_factory=list)
     gpu_available: bool = False
+    ai_refinement_ready: bool = False
 
 
 class FaceDetectionRequest(BaseModel):
@@ -452,7 +497,7 @@ class FaceClusterResponse(BaseModel):
 
 class VLMArbitrateRequest(BaseModel):
     reference_image_url: str = Field(..., description="Reference image containing the target person")
-    reference_person_index: int | None = Field(default=1, description="Person index in reference image")
+    reference_person_index: int | None = Field(default=1, ge=1, le=20, description="Person index in reference image")
     target_image_url: str = Field(..., description="Target image containing candidates to identify")
 
 
@@ -478,19 +523,6 @@ class RefinementIssue(BaseModel):
     suggestion: str = ""
 
 
-class RefinementReviewPersonRequest(BaseModel):
-    person_id: int = Field(..., ge=1, le=1000)
-    face_index: int = Field(..., ge=1, le=20)
-    person_locator: str = Field(default="", max_length=300)
-    user_focus: str = Field(default="", max_length=2000)
-
-
-class RefinementReviewRequest(BaseModel):
-    swapped_image_url: str
-    original_image_url: str | None = None
-    people: list[RefinementReviewPersonRequest] = Field(..., min_length=1, max_length=20)
-
-
 class RefinementReviewData(BaseModel):
     overall_score: float = Field(ge=0, le=100)
     anatomy_score: float = Field(ge=0, le=100)
@@ -503,11 +535,6 @@ class RefinementReviewData(BaseModel):
     recommended_prompt: str = ""
     should_refine: bool = True
     model_used: str = ""
-
-
-class RefinementReviewResponse(BaseModel):
-    code: int = 200
-    data: dict[int, RefinementReviewData]
 
 
 class RefinementTaskStatus(StrEnum):
@@ -525,21 +552,27 @@ class RefinementTaskStatus(StrEnum):
     FAILED = "FAILED"
 
 
-class RefinementPersonRequest(BaseModel):
-    person_id: int = Field(..., ge=1, le=1000)
-    face_index: int = Field(..., ge=1, le=20)
-    person_locator: str = Field(
-        default="",
-        max_length=500,
-        description="Concise visible description of this person's position, clothing, pose, and nearby context.",
-    )
-    review_prompt: str = Field(default="", max_length=6000)
-    user_instructions: str = Field(default="", max_length=6000)
-    issues: list[RefinementIssue] = Field(
-        default_factory=list,
-        max_length=6,
-        description="Full itemized defect list from /refinement/review, carried into generation verbatim.",
-    )
+class QualityPersonEvaluation(BaseModel):
+    person_id: int = Field(ge=1, le=1000)
+    identity_satisfied: bool | None = None
+    naturalness_satisfied: bool | None = None
+
+
+class QualityEvaluationRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    candidate_digest: str = Field(pattern="^[a-f0-9]{64}$")
+    verdict: Literal["ready", "needs_work", "unusable"]
+    failure_stages: list[Literal["identity", "local", "refinement"]] = Field(default_factory=list, max_length=3)
+    people: list[QualityPersonEvaluation] = Field(min_length=1, max_length=20)
+    unrelated_changes: bool | None = None
+    notes: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def unique_people_and_stages(self):
+        if len({person.person_id for person in self.people}) != len(self.people):
+            raise ValueError("Evaluation person IDs must be unique")
+        self.failure_stages = list(dict.fromkeys(self.failure_stages))
+        return self
 
 
 class RefinementFinalPersonAssessment(BaseModel):
@@ -563,18 +596,6 @@ class RefinementFinalReview(BaseModel):
     review_error: str | None = None
 
 
-class RefinementTaskCreateRequest(BaseModel):
-    swapped_image_url: str
-    original_image_url: str | None = None
-    people: list[RefinementPersonRequest] = Field(..., min_length=1, max_length=20)
-    global_instructions: str = Field(default="", max_length=6000)
-    model_alias: str | None = Field(
-        default=None,
-        max_length=200,
-        description="Configured personaweave-refine-* alias selected for this generation.",
-    )
-
-
 class RefinementPersonProgress(BaseModel):
     person_id: int
     face_index: int
@@ -590,6 +611,8 @@ class RefinementTaskData(BaseModel):
     task_id: str
     status: RefinementTaskStatus
     revision: int = 1
+    generation_count: int | None = Field(default=None, ge=0)
+    quality_provenance: dict | None = None
     progress: float = Field(default=0, ge=0, le=1)
     created_at: str
     completed_at: str | None = None
@@ -621,22 +644,30 @@ class AIImageModelCatalog(BaseModel):
     models: list[AIImageModelItem]
 
 
-class RefinementTaskCreateResponse(RefinementTaskResponse):
-    code: int = 202
-
-
 class RefinementAcceptRequest(BaseModel):
     expected_revision: int = Field(..., ge=1)
     candidate_digest: str
 
 
-class RefinementRetryRequest(BaseModel):
-    user_instructions: str | None = Field(default=None, max_length=6000)
-    model_alias: str | None = Field(
-        default=None,
-        max_length=200,
-        description=(
-            "Optional configured image-edit model alias override for this retry. "
-            "Defaults to the gateway's default_image_alias when omitted."
-        ),
-    )
+class ProjectSaveRequest(BaseModel):
+    """A bounded editor document; media bytes are uploaded separately and referenced by digest."""
+
+    expected_revision: int = Field(ge=0)
+    title: str = Field(min_length=1, max_length=200)
+    document: dict[str, JsonValue]
+    batch_ids: list[str] = Field(default_factory=list, max_length=100)
+    session_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ProjectAssetRequest(BaseModel):
+    """Freeze exactly one source selection, including original managed portrait assets."""
+
+    image: str | None = Field(default=None, min_length=1, max_length=28 * 1024 * 1024)
+    asset_id: str | None = Field(default=None, min_length=1, max_length=100)
+    identity_id: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if sum(value is not None for value in (self.image, self.asset_id, self.identity_id)) != 1:
+            raise ValueError("Provide exactly one image, asset_id or identity_id")
+        return self

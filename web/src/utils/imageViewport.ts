@@ -1,4 +1,4 @@
-import type { DetectedFaceBox } from '../types';
+import type { DetectedFaceBox } from '@/types';
 
 export interface PercentageBox {
   left: number;
@@ -24,8 +24,7 @@ export const FACE_MARKER_PADDING: FaceBoxPadding = {
   bottom: 0.22,
 };
 
-const clamp = (value: number, minimum: number, maximum: number) =>
-  Math.min(maximum, Math.max(minimum, value));
+const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 
 /** Fits the complete image inside the available stage while preserving its aspect ratio. */
 export function fitImageWithinViewport(

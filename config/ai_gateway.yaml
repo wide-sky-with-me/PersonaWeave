@@ -1,228 +1,37 @@
+# Native LiteLLM Router deployments. Change environment values, not business aliases,
+# to switch services; use the provider prefix required by LiteLLM in each model ID.
 model_list:
-  - model_name: personaweave-vision-review
+  - model_name: personaweave-vision-default
     litellm_params:
-      model: openai/qwen3-vl-8b-instruct
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  - model_name: personaweave-vision-precision
+      model: os.environ/AI_VISION_MODEL
+      api_base: os.environ/AI_VISION_API_BASE
+      api_key: os.environ/AI_VISION_API_KEY
+  - model_name: personaweave-refine-default
     litellm_params:
-      model: openai/qwen3-vl-30b-a3b-instruct
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  - model_name: personaweave-vision-fallback
-    litellm_params:
-      model: openai/gemini-2.5-flash-lite
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  # Refinement diagnosis and final review need stronger visual-change detection than
-  # identity arbitration, so they use a separate alias and fallback chain.
-  - model_name: personaweave-vision-refinement
-    litellm_params:
-      model: openai/gpt-5.6-sol
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  - model_name: personaweave-vision-qwen-plus
-    litellm_params:
-      model: openai/qwen3-vl-plus
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  - model_name: personaweave-vision-gemini-31-pro
-    litellm_params:
-      model: openai/gemini-3.1-pro-preview
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
-
-  - model_name: personaweave-vision-gpt-56-terra
-    litellm_params:
-      model: openai/gpt-5.6-terra
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-    model_info:
-      input_cost_per_token: 0
-      output_cost_per_token: 0
-      cache_creation_input_token_cost: 0
-      cache_read_input_token_cost: 0
+      model: os.environ/AI_IMAGE_MODEL
+      api_base: os.environ/AI_IMAGE_API_BASE
+      api_key: os.environ/AI_IMAGE_API_KEY
+      timeout: 600
+      max_retries: 0
 
 vision_roles:
-  default: personaweave-vision-review
-  identity_arbitration: personaweave-vision-precision
-  refinement: personaweave-vision-refinement
+  default: personaweave-vision-default
+  identity_arbitration: personaweave-vision-default
+  refinement: personaweave-vision-default
 
+# Application-only metadata; credentials and provider parameters live exclusively above.
 image_models:
-  - model_name: personaweave-refine-gemini
-    display_name: Gemini 3 Pro Image · 4K 质量
-    description: 高分辨率细节和复杂指令能力较强；合影仍需重点检查整体色彩、文字与非目标人物变化。
-    provider: dmx-gemini
+  - model_name: personaweave-refine-default
+    display_name: 默认图像编辑模型
+    description: 使用所配置服务的图像编辑能力；生成候选须经人工检查后接受。
     generation:
-      image_size: 4K
-    params:
-      model: gemini-3-pro-image
-      api_base: https://www.dmxapi.cn/v1beta
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 600
+      size: auto
 
-  - model_name: personaweave-refine-gemini-flash
-    display_name: Gemini 3.1 Flash Image · 快速 2K
-    description: 速度与质量较均衡；整图编辑后仍需检查小字、Logo、构图和全局色彩漂移。
-    provider: dmx-gemini
-    generation:
-      image_size: 2K
-    params:
-      model: gemini-3.1-flash-image
-      api_base: https://www.dmxapi.cn/v1beta
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 600
+default_image_alias: personaweave-refine-default
 
-  - model_name: personaweave-refine-seedream
-    display_name: 豆包 Seedream 5.0 Pro · 合影默认
-    description: 默认保守精修选项，优先保持人物与构图；候选仍需人工检查身份、文字和局部色差。
-    provider: dmx-seedream
-    generation:
-      max_side: 2848
-      max_pixels: 4194304
-      min_side: 512
-      grid: 8
-      delimiter: x
-    params:
-      model: doubao-seedream-5-0-pro-260628
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-gpt
-    display_name: GPT Image 2 · 质量优先
-    description: 精细编辑与指令遵循能力较强；生成可能较慢，需检查小字、Logo 与非请求区域。
-    provider: dmx-images-edit
-    generation:
-      max_side: 3072
-      min_side: 512
-      grid: 16
-      delimiter: x
-    params:
-      model: gpt-image-2-ssvip
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 600
-
-  - model_name: personaweave-refine-qwen
-    display_name: Qwen Image 2.0 Pro
-    description: 通用图像编辑选项；用于合影时需检查人物一致性、文字和整图重绘范围。
-    provider: dmx-input-responses
-    generation: &responses_generation
-      max_side: 2048
-      max_pixels: 4194304
-      min_side: 512
-      grid: 8
-      delimiter: "*"
-    params:
-      model: qwen-image-2.0-pro
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-qwen3
-    display_name: Qwen Image 3.0 · 强编辑
-    description: 适合较明显的生成式修改；保守合影精修时需特别检查人物、构图与文字是否被重绘。
-    provider: dmx-responses
-    generation: *responses_generation
-    params:
-      model: qwen-image-3.0
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-wan
-    display_name: Wan 2.7 Image Pro · 创意编辑
-    description: 更适合明显的整图编辑；保守修脸场景需谨慎检查全局变化范围。
-    provider: dmx-responses
-    generation: *responses_generation
-    params:
-      model: wan2.7-image-pro
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-plus
-    display_name: Qwen Image Edit Plus
-    description: 面向图像编辑的增强选项；合影结果需人工核对身份、边缘、文字和背景稳定性。
-    provider: dmx-responses
-    generation: *responses_generation
-    params:
-      model: qwen-image-edit-plus-20260226
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-max
-    display_name: Qwen Image Edit Max
-    description: 高质量图像编辑选项；耗时和改动范围可能更大，生成后必须整图对比。
-    provider: dmx-responses
-    generation: *responses_generation
-    params:
-      model: qwen-image-edit-max-2026-01-16
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-  - model_name: personaweave-refine-fallback
-    display_name: Qwen Image Edit · 兼容回退
-    description: 兼容性回退模型，仅在主要模型不可用或需要对照时选择。
-    provider: litellm
-    generation: *responses_generation
-    params:
-      model: openai/qwen-image-edit
-      api_base: https://www.dmxapi.cn/v1
-      api_key: os.environ/DMXAPI_API_KEY
-      timeout: 300
-
-default_image_alias: personaweave-refine-seedream
-
+# Paid generation is not automatically retried or switched to another model by default.
 router_settings:
+  num_retries: 0
+  timeout: 300
   routing_strategy: simple-shuffle
-  num_retries: 2
-  timeout: 180
-  fallbacks:
-    - personaweave-vision-review:
-        - personaweave-vision-fallback
-    - personaweave-vision-precision:
-        - personaweave-vision-review
-    - personaweave-vision-refinement:
-        - personaweave-vision-gpt-56-terra
-        - personaweave-vision-gemini-31-pro
-        - personaweave-vision-qwen-plus
-        - personaweave-vision-precision
+  fallbacks: []

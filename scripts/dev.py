@@ -109,15 +109,19 @@ def preflight() -> tuple[str, str, dict[str, str]] | None:
         fail("required model files are missing:\n  - " + "\n  - ".join(missing_models))
         ok = False
 
-    for port in (API_PORT, WEB_PORT):
-        if not port_available(port):
-            fail(f"port {port} is already in use")
-            ok = False
-
     env = os.environ.copy()
     dotenv_values = load_dotenv_values(ROOT / ".env")
     for key, value in dotenv_values.items():
         env.setdefault(key, value)
+
+    api_port = int(env.get("PERSONAWEAVE_API_PORT", API_PORT))
+    web_port = int(env.get("PERSONAWEAVE_WEB_PORT", WEB_PORT))
+
+    for port in (api_port, web_port):
+        if not port_available(port):
+            fail(f"port {port} is already in use")
+            ok = False
+
     config_path = Path(env.get("PERSONAWEAVE_AI_CONFIG", "config/ai_gateway.yaml"))
     if not config_path.is_absolute():
         config_path = ROOT / config_path
@@ -176,19 +180,23 @@ def main() -> int:
     if checked is None:
         return 1
     uv, pnpm, env = checked
+    api_port = int(env.get("PERSONAWEAVE_API_PORT", API_PORT))
+    web_port = int(env.get("PERSONAWEAVE_WEB_PORT", WEB_PORT))
+    env["PERSONAWEAVE_API_PORT"] = str(api_port)
+    env["PERSONAWEAVE_WEB_PORT"] = str(web_port)
     processes: list[tuple[str, subprocess.Popen[bytes]]] = []
     try:
-        print(f"[dev] API: http://localhost:{API_PORT}")
+        print(f"[dev] API: http://localhost:{api_port}")
         api = subprocess.Popen(
-            [uv, "run", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", str(API_PORT)],
+            [uv, "run", "uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", str(api_port)],
             cwd=ROOT,
             env=env,
             **process_options(),
         )
         processes.append(("API", api))
-        print(f"[dev] Web: http://localhost:{WEB_PORT}")
+        print(f"[dev] Web: http://localhost:{web_port}")
         web = subprocess.Popen(
-            [pnpm, "dev", "--host", "0.0.0.0", "--port", str(WEB_PORT), "--strictPort"],
+            [pnpm, "dev", "--host", "0.0.0.0", "--port", str(web_port), "--strictPort"],
             cwd=WEB_DIR,
             env=env,
             **process_options(),

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from core.detector import DetectedFace
 from core.face_metrics import calculate_reference_quality, describe_reference_quality
@@ -13,32 +14,35 @@ def _face(size: int, score: float = 0.9) -> DetectedFace:
     )
 
 
-def test_auto_routing_uses_inswapper_without_research_opt_in():
+@pytest.mark.parametrize(
+    ("requested", "allow_research", "size", "yaw", "confidence", "expected"),
+    [
+        pytest.param("auto", False, 256, 0, 0.9, "inswapper_128", id="default-license"),
+        pytest.param("auto", True, 256, 0, 0.9, "hyperswap_1c_256", id="research-opt-in"),
+        pytest.param("hyperswap_1c_256", False, 256, 0, 0.9, "inswapper_128", id="explicit-blocked"),
+        pytest.param("hyperswap_1c_256", True, 72, 0.7, 0.3, "hyperswap_1c_256", id="explicit-bypasses-geometry"),
+        pytest.param("auto", True, 72, 0.1, 0.9, "inswapper_128", id="small-face"),
+        pytest.param("auto", True, 220, 0.7, 0.9, "inswapper_128", id="turned-face"),
+        pytest.param("auto", True, 160, 0.45, 0.55, "hyperswap_1c_256", id="inclusive-boundaries"),
+        pytest.param("auto", True, 160, -0.45, 0.55, "hyperswap_1c_256", id="negative-yaw-boundary"),
+        pytest.param("auto", True, 159, 0.45, 0.55, "inswapper_128", id="below-size"),
+        pytest.param("auto", True, 160, 0.451, 0.55, "inswapper_128", id="above-yaw"),
+        pytest.param("auto", True, 160, -0.451, 0.55, "inswapper_128", id="below-negative-yaw"),
+        pytest.param("auto", True, 160, 0.45, 0.549, "inswapper_128", id="below-confidence"),
+    ],
+)
+def test_routing_license_and_quality_boundaries(requested, allow_research, size, yaw, confidence, expected):
+    """License opt-in gates explicit use; auto selection also enforces each geometry boundary."""
     router = SwapperModelRouter({"inswapper_128", "ghost_1_256", "hyperswap_1c_256"})
-
     decision = router.select(
-        "auto",
-        face_size=256,
-        yaw_ratio=0.0,
-        identity_confidence=0.9,
-        allow_research_models=False,
+        requested,
+        face_size=size,
+        yaw_ratio=yaw,
+        identity_confidence=confidence,
+        allow_research_models=allow_research,
     )
-
-    assert decision.selected == "inswapper_128"
-
-
-def test_auto_routing_uses_hyperswap_only_with_research_opt_in():
-    router = SwapperModelRouter({"inswapper_128", "ghost_1_256", "hyperswap_1c_256"})
-
-    decision = router.select(
-        "auto",
-        face_size=256,
-        yaw_ratio=0.0,
-        identity_confidence=0.9,
-        allow_research_models=True,
-    )
-
-    assert decision.selected == "hyperswap_1c_256"
+    assert decision.requested == requested
+    assert decision.selected == expected
 
 
 def test_ghost_remains_available_only_as_explicit_request():

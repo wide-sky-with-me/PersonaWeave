@@ -1,0 +1,39 @@
+# Large/volume-mounted directories that must not be baked into the image.
+models/
+data/
+outputs/
+tests/fixtures/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Frontend (rebuilt inside the image; host node_modules/dist would be stale/incompatible)
+web/node_modules/
+web/dist/
+web/.vite/
+web/.cache/
+
+# Env, VCS, editor
+# (README.md is kept: pyproject.toml's `readme` field must resolve during `uv sync`.)
+.env
+.env.*
+!.env.example
+.git/
+.github/
+.vscode/
+.idea/
+.agents/
+.codex/

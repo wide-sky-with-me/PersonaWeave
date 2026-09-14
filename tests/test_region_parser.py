@@ -68,3 +68,33 @@ def test_unknown_region_name_raises_key_error():
 def test_missing_model_file_raises_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError):
         RegionFaceParser(str(tmp_path / "missing.onnx"))
+
+
+def test_glasses_feather_is_scale_equivalent_at_128_and_256():
+    import cv2
+
+    logits = np.zeros((19, 64, 64), dtype=np.float32)
+    logits[REGION_CLASSES["skin"]] = 1
+    logits[REGION_CLASSES["glasses"], 16:48, 16:48] = 2
+    small = RegionFaceParser.postprocess_protection_mask(logits, ("glasses",), (128, 128))
+    large = RegionFaceParser.postprocess_protection_mask(logits, ("glasses",), (256, 256))
+    resized = cv2.resize(large, (128, 128), interpolation=cv2.INTER_AREA)
+    assert float(np.abs(small - resized).mean()) < 0.003
+    assert float(small.mean()) == pytest.approx(float(large.mean()), abs=0.003)
+    assert small[64, 64] == large[128, 128] == 0
+    assert small[0, 0] == pytest.approx(1)
+    assert large[0, 0] == pytest.approx(1)
+
+
+def test_glasses_256_baseline_is_exactly_preserved():
+    import cv2
+
+    logits = np.zeros((19, 64, 64), dtype=np.float32)
+    logits[REGION_CLASSES["skin"]] = 1
+    logits[REGION_CLASSES["glasses"], 16:48, 16:48] = 2
+    keep = 1 - cv2.resize(
+        (logits.argmax(0) == REGION_CLASSES["glasses"]).astype(np.float32), (256, 256), interpolation=cv2.INTER_NEAREST
+    )
+    original = (cv2.GaussianBlur(keep, (0, 0), 5).clip(0.5, 1) - 0.5) * 2
+    result = RegionFaceParser.postprocess_protection_mask(logits, ("glasses",), (256, 256))
+    np.testing.assert_array_equal(result, original)

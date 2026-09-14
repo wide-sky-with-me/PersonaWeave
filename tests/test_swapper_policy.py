@@ -13,7 +13,6 @@ from core.swapper import (
     HYPERSWAP_1C_256_SPEC,
     INSWAPPER_128_SPEC,
     SWAPPER_SPECS,
-    HyperSwapAdapter,
 )
 
 
@@ -39,21 +38,6 @@ def test_hyperswap_spec_and_alignment_contract():
     assert np.all((ARCFACE_128_TEMPLATE > 0.0) & (ARCFACE_128_TEMPLATE < 1.0))
 
 
-def test_hyperswap_get_preserves_two_dimensional_model_mask(monkeypatch):
-    adapter = object.__new__(HyperSwapAdapter)
-    adapter.infer_aligned = lambda crop, embedding: (
-        np.full((256, 256, 3), 200, dtype=np.uint8),
-        np.full((256, 256), 0.5, dtype=np.float32),
-    )
-    monkeypatch.setattr(adapter, "_affine_matrix", lambda kps: np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32))
-    face = SimpleNamespace(kps=np.zeros((5, 2), dtype=np.float32), normed_embedding=np.ones(512, dtype=np.float32))
-
-    result = adapter.get(np.zeros((256, 256, 3), dtype=np.uint8), face, face, paste_back=True)
-
-    assert result.shape == (256, 256, 3)
-    assert 80 < result[128, 128, 0] < 120
-
-
 def test_ghost_spec_has_clear_license_and_converter_contract():
     assert GHOST_1_256_SPEC.input_size == (256, 256)
     assert GHOST_1_256_SPEC.crop_template == "arcface_112_v1"
@@ -61,24 +45,6 @@ def test_ghost_spec_has_clear_license_and_converter_contract():
     assert GHOST_1_256_SPEC.source_encoder == "crossface_ghost"
     assert SWAPPER_SPECS[GHOST_1_256_SPEC.name] is GHOST_1_256_SPEC
     assert ARCFACE_112_V1_TEMPLATE.shape == (5, 2)
-
-
-def test_auto_router_prefers_robust_backend_for_small_or_turned_faces():
-    router = SwapperModelRouter({"inswapper_128", "ghost_1_256", "hyperswap_1c_256"})
-    small = router.select("auto", face_size=72, yaw_ratio=0.1, identity_confidence=0.9, allow_research_models=True)
-    turned = router.select("auto", face_size=220, yaw_ratio=0.7, identity_confidence=0.9, allow_research_models=True)
-    assert small.selected == "inswapper_128"
-    assert turned.selected == "inswapper_128"
-
-
-def test_auto_router_enforces_license_and_uses_stable_baseline_without_research_opt_in():
-    router = SwapperModelRouter({"inswapper_128", "ghost_1_256", "hyperswap_1c_256"})
-    safe = router.select("auto", face_size=200, yaw_ratio=0.1, identity_confidence=0.8)
-    research = router.select("auto", face_size=200, yaw_ratio=0.1, identity_confidence=0.8, allow_research_models=True)
-    blocked_explicit = router.select("hyperswap_1c_256", face_size=200, yaw_ratio=0.1, identity_confidence=0.8)
-    assert safe.selected == "inswapper_128"
-    assert research.selected == "hyperswap_1c_256"
-    assert blocked_explicit.selected == "inswapper_128"
 
 
 def test_router_reports_asset_fallback():

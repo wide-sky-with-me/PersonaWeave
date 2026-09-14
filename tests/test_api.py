@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import app
-from api.portrait_library_import import import_manifest
+from api.portraits.importer import import_manifest
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -24,10 +24,32 @@ def fixture_data_uri(name: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def client():
-    """Initializes TestClient with lifespan context."""
-    with TestClient(app) as test_client:
-        yield test_client
+def client(tmp_path_factory):
+    """Exercise real local/API behavior without restoring or rewriting user task databases."""
+    import api.lifecycle as lifecycle
+    from api.refinement.legacy import LegacyRefinementArchive
+    from api.refinement.service import RefinementSessionService
+    from api.refinement.store import RefinementSessionStore
+    from api.tasks.batch import TaskManager
+
+    temporary = tmp_path_factory.mktemp("api-state")
+    store = RefinementSessionStore(
+        temporary / "sessions.sqlite3", temporary / "session-images", temporary / "published"
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            lifecycle, "TaskManager", lambda **kwargs: TaskManager(db_path=temporary / "batch.sqlite3", **kwargs)
+        )
+        patch.setattr(lifecycle, "RefinementSessionService", lambda ai: RefinementSessionService(ai=ai, store=store))
+        patch.setattr(
+            lifecycle,
+            "LegacyRefinementArchive",
+            lambda: LegacyRefinementArchive(
+                temporary / "legacy-staging", temporary / "legacy-accepted", db_path=temporary / "legacy.sqlite3"
+            ),
+        )
+        with TestClient(app) as test_client:
+            yield test_client
 
 
 def test_health_endpoint(client):
@@ -202,6 +224,7 @@ def test_batch_task_invalid_not_found(client):
     """Verifies 404 response for non-existent task."""
     response = client.get("/api/v1/batch-tasks/pw_task_non_existent")
     assert response.status_code == 404
+    assert client.delete("/api/v1/batch-tasks/pw_task_non_existent").status_code == 404
 
 
 def test_batch_history_limit_is_bounded(client):

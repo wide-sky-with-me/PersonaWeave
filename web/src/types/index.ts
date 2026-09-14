@@ -84,22 +84,6 @@ export interface DetectedFaceBox {
   isSelected?: boolean;
 }
 
-export interface RefinementDraftState {
-  selected: boolean;
-  instructions: string;
-}
-
-export interface RefinementWorkspaceState {
-  drafts: Record<number, RefinementDraftState>;
-  globalInstructions: string;
-  modelAlias?: string;
-  diagnoses: Record<number, RefinementReview>;
-  diagnosisErrors: Record<number, string>;
-  task: RefinementTaskData | null;
-  candidateUrl: string | null;
-  error: string | null;
-}
-
 export interface ManualMaskState {
   dataUrl: string | null;
   undoStack: (string | null)[];
@@ -118,6 +102,7 @@ export interface TargetImageItem {
   processedUrl?: string;
   processedBase64?: string;
   refinedUrl?: string;
+  acceptedRefinement?: { sessionId: string; versionId: string; revision: number };
   status: 'PENDING' | 'IDLE' | 'PROCESSING' | 'SUCCESS' | 'FAILED';
   costMs?: number;
   facesDetected?: number;
@@ -129,7 +114,10 @@ export interface TargetImageItem {
   personOutcomes?: PersonSwapOutcome[];
   error?: string;
   manualMask?: ManualMaskState;
-  refinementWorkspace?: RefinementWorkspaceState;
+  refinementSessionId?: string;
+  refinementError?: string;
+  refinementInput?: import('@/features/refinement/sessionTypes').SessionInput;
+  pendingRefinement?: { taskId: string; input: import('@/features/refinement/sessionTypes').SessionInput };
 }
 
 export interface SwapParameters {
@@ -150,6 +138,31 @@ export interface ModelRoutingDecision {
   reason: string;
   fallback: boolean;
 }
+/** Optional evidence from newer tasks; absent fields are unknown, never inferred. */
+export interface PersonOutcomeDiagnosticsData {
+  matching?: {
+    best_similarity?: number | null;
+    assigned_similarity?: number | null;
+    threshold?: number | null;
+    face_index?: number | null;
+  } | null;
+  source_selection?: {
+    mode?: string | null;
+    reference_count?: number | null;
+    selected_reference_index?: number | null;
+    gallery_weight?: number | null;
+    best_reference_weight?: number | null;
+    gallery_reference_weights?: number[] | null;
+    gallery_weights_known?: boolean;
+  } | null;
+  mask?: {
+    components?: { name: string; status: string; mean?: number | null; failure_code?: string | null }[] | null;
+    intersection_mean?: number | null;
+    bbox_alpha_mean?: number | null;
+    requested_strength?: number | null;
+  } | null;
+}
+
 export interface PersonSwapOutcome {
   person_index: number;
   status: 'SWAPPED' | 'SKIPPED';
@@ -157,6 +170,7 @@ export interface PersonSwapOutcome {
   model?: string;
   target_yaw?: number;
   closest_source_yaw_gap?: number | null;
+  diagnostics?: PersonOutcomeDiagnosticsData | null;
 }
 export interface BatchImageItem {
   client_target_id: string;
@@ -179,6 +193,8 @@ export interface ImageSwapResult {
   cost_ms: number;
   warning?: string;
   error?: string;
+  refinement_session_id?: string;
+  refinement_error?: string;
 }
 
 export type BatchTaskStatus = 'QUEUED' | 'PROCESSING' | 'COMPLETED' | 'PARTIAL' | 'FAILED';
@@ -222,41 +238,6 @@ export interface ServerHealth {
   gpu_available: boolean;
 }
 
-export interface RefinementIssue {
-  category: string;
-  severity: 'low' | 'medium' | 'high';
-  region: string;
-  description: string;
-  suggestion: string;
-}
-
-export interface RefinementReview {
-  overall_score: number;
-  anatomy_score: number;
-  coherence_score: number;
-  naturalness_score: number;
-  lighting_score: number;
-  person_locator: string;
-  issues: RefinementIssue[];
-  strengths: string[];
-  recommended_prompt: string;
-  should_refine: boolean;
-  model_used: string;
-}
-
-export interface RefinementReviewPersonInput {
-  person_id: number;
-  face_index: number;
-  person_locator?: string;
-  user_focus?: string;
-}
-
-export interface RefinementReviewRequest {
-  swapped_image_url: string;
-  original_image_url?: string;
-  people: RefinementReviewPersonInput[];
-}
-
 export type RefinementTaskStatus =
   | 'QUEUED'
   | 'LOCALIZING'
@@ -268,24 +249,6 @@ export type RefinementTaskStatus =
   | 'CANCEL_REQUESTED'
   | 'CANCELLED'
   | 'FAILED';
-
-
-export interface RefinementPersonRequest {
-  person_id: number;
-  face_index: number;
-  person_locator: string;
-  review_prompt: string;
-  user_instructions: string;
-  issues?: RefinementIssue[];
-}
-
-export interface RefinementTaskCreateRequest {
-  swapped_image_url: string;
-  original_image_url?: string;
-  people: RefinementPersonRequest[];
-  global_instructions: string;
-  model_alias?: string;
-}
 
 export interface RefinementPersonProgress {
   person_id: number;
@@ -331,9 +294,54 @@ export interface RefinementTaskData {
   accepted_url?: string;
   error?: string;
 }
-export interface RefinementRetryRequest {
-  user_instructions?: string;
-  model_alias?: string;
+
+export interface RefinementQualityEvaluationRequest {
+  expected_revision: number;
+  candidate_digest: string;
+  verdict: 'ready' | 'needs_work' | 'unusable';
+  failure_stages: Array<'identity' | 'local' | 'refinement'>;
+  people: Array<{ person_id: number; identity_satisfied: boolean | null; naturalness_satisfied: boolean | null }>;
+  unrelated_changes: boolean | null;
+  notes: string;
+}
+export interface RefinementQualityEvaluation extends RefinementQualityEvaluationRequest {
+  task_id: string;
+  updated_at: string;
+}
+export interface RefinementQualitySummary {
+  total_samples: number;
+  evaluated_samples: number;
+  unevaluated_samples: number;
+  generation_count_unknown_samples: number;
+  lineage_unknown_samples: number;
+  not_generated_samples: number;
+  generation_failed_total: number;
+  eligible_total: number;
+  first_pass_unevaluated: number;
+  first_pass_ready_count: number;
+  first_pass_denominator: number;
+  first_pass_acceptance_rate: number | null;
+  rate_definition: string;
+  identity_satisfied: { true: number; false: number; unknown: number; rate_known_only: number | null };
+  naturalness_satisfied: { true: number; false: number; unknown: number; rate_known_only: number | null };
+}
+export interface RefinementQualityData {
+  provenance?: { lineage: string; batch_task_id?: string; client_target_id?: string } | null;
+  task_id: string;
+  generation_count: number;
+  current_candidate_digest: string | null;
+  evaluations: RefinementQualityEvaluation[];
+  candidates: Array<{
+    candidate_digest: string;
+    generation_count: number;
+    original_url: string | null;
+    initial_local_url: string | null;
+    baseline_url: string | null;
+    candidate_url: string | null;
+    model_alias: string;
+    hashes: Record<string, string | null>;
+    audit: Record<string, unknown>;
+  }>;
 }
 
 /** Response from GET /api/v1/ai/models. */

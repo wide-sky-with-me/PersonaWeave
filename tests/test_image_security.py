@@ -9,8 +9,9 @@ import httpx
 import numpy as np
 import pytest
 
+from api.media import TrustedImagePath, decode_manual_mask, load_image_from_source
 from api.schemas import BatchTaskCreateRequest, ImageSwapResult, TaskDetailData, TaskStatus
-from api.task_manager import TaskManager, TrustedImagePath, decode_manual_mask, load_image_from_source
+from api.tasks.batch import TaskManager
 from core.image_security import decode_data_uri, resolve_managed_url, validate_public_url
 
 
@@ -81,7 +82,7 @@ def test_nonempty_invalid_manual_mask_is_rejected():
 
 
 def test_webhook_payload_omits_processed_file_path(monkeypatch):
-    monkeypatch.setattr("api.task_manager.validate_public_url", lambda url: None)
+    monkeypatch.setattr("api.tasks.batch.validate_public_url", lambda url: {"93.184.216.34"})
     captured = {}
 
     async def handler(request):

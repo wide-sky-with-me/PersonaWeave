@@ -1,0 +1,26 @@
+services:
+  personaweave:
+    build: .
+    image: personaweave:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      # Model weights (~2.5GB) - downloaded automatically on first start if missing.
+      - ./models:/app/models
+      # Portrait library SQLite DB + imported source assets.
+      - ./data:/app/data
+      # Batch/refinement task DBs, staged/accepted result images.
+      - ./outputs:/app/outputs
+    restart: unless-stopped
+    # Uncomment to use an NVIDIA GPU. Requires the NVIDIA Container Toolkit installed on the
+    # host (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/). Without a GPU,
+    # the app runs on CPUExecutionProvider automatically - slower, but functionally the same.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]

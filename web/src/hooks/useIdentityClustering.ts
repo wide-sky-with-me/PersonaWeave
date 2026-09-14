@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { api } from '../services/api';
-import type { TargetImageItem } from '../types';
+import { api } from '@/services/api';
+import type { TargetImageItem } from '@/types';
 
 type TargetImagePatch = Partial<TargetImageItem>;
 type BatchUpdate = { id: string; patch: TargetImagePatch };
@@ -66,18 +66,24 @@ export function useIdentityClustering({
             controller.signal,
           );
           if (generationRef.current !== generation || controller.signal.aborted || !response?.images) return;
-          batchUpdateTargetImages(response.images.flatMap((image: any) => {
-            const id = targetIds[image.image_index];
-            return id === undefined ? [] : [{
-              id,
-              patch: {
-                faces: image.faces,
-                imageWidth: image.image_width,
-                imageHeight: image.image_height,
-                facesDetected: image.faces.length,
-              },
-            }];
-          }));
+          batchUpdateTargetImages(
+            response.images.flatMap((image: any) => {
+              const id = targetIds[image.image_index];
+              return id === undefined
+                ? []
+                : [
+                    {
+                      id,
+                      patch: {
+                        faces: image.faces,
+                        imageWidth: image.image_width,
+                        imageHeight: image.image_height,
+                        facesDetected: image.faces.length,
+                      },
+                    },
+                  ];
+            }),
+          );
         }
         completedFingerprintRef.current = batchFingerprint;
       } catch (error) {

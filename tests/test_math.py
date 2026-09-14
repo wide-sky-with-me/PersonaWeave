@@ -1,59 +1,29 @@
 """
 Unit tests for mathematical operations in PersonaWeave:
-- Landmark affine transformation
 - Color harmonization (Reinhard LAB transfer)
 - Multi-view embedding aggregation
 """
 
 import numpy as np
+import pytest
 
 from core.color_matcher import reinhard_color_transfer
 from core.recognizer import FaceRecognizer
-from utils.affine import (
-    ARCFACE_DST_112,
-    INSWAPPER_DST_128,
-    create_smooth_face_mask,
-    estimate_affine_matrix,
-    paste_back_face,
-    warp_face,
-)
-
-
-def test_estimate_affine_matrix():
-    """Test 2x3 affine matrix estimation on canonical template."""
-    src = ARCFACE_DST_112.copy()
-    dst = INSWAPPER_DST_128.copy()
-    matrix = estimate_affine_matrix(src, dst)
-    assert matrix.shape == (2, 3)
-    assert matrix.dtype == np.float32
-
-
-def test_warp_and_paste_back():
-    """Test full warping and inverse paste back round-trip."""
-    orig_img = np.full((300, 300, 3), 128, dtype=np.uint8)
-    src_kps = np.array([[100, 100], [200, 100], [150, 150], [120, 200], [180, 200]], dtype=np.float32)
-
-    matrix = estimate_affine_matrix(src_kps, INSWAPPER_DST_128)
-    crop = warp_face(orig_img, matrix, (128, 128))
-    assert crop.shape == (128, 128, 3)
-
-    mask = create_smooth_face_mask((128, 128), feather_radius=5)
-    assert mask.shape == (128, 128)
-    assert mask.min() >= 0.0 and mask.max() <= 1.0
-
-    pasted = paste_back_face(crop, orig_img, matrix, mask)
-    assert pasted.shape == orig_img.shape
-    assert pasted.dtype == np.uint8
 
 
 def test_reinhard_color_transfer():
-    """Test Reinhard LAB color transfer between two synthetic face images."""
-    src_face = np.full((128, 128, 3), (100, 150, 200), dtype=np.uint8)  # Orange/warm
-    tgt_face = np.full((128, 128, 3), (200, 150, 100), dtype=np.uint8)  # Blue/cold
+    """Constant warm colors have an analytical target; allow only color-space rounding."""
+    source = np.full((16, 16, 3), (100, 150, 200), dtype=np.uint8)
+    target = np.full((16, 16, 3), (80, 120, 170), dtype=np.uint8)
+    mask = np.ones((16, 16), dtype=np.float32)
 
-    harmonized = reinhard_color_transfer(src_face, tgt_face, blend_ratio=1.0)
-    assert harmonized.shape == (128, 128, 3)
+    harmonized = reinhard_color_transfer(source, target, blend_ratio=1.0, face_mask=mask)
+    assert harmonized.shape == source.shape
     assert harmonized.dtype == np.uint8
+    np.testing.assert_allclose(harmonized, target, atol=3, rtol=0)
+    np.testing.assert_array_equal(reinhard_color_transfer(source, target, blend_ratio=0, face_mask=mask), source)
+    halfway = reinhard_color_transfer(source, target, blend_ratio=0.5, face_mask=mask)
+    np.testing.assert_allclose(halfway, (source.astype(float) + harmonized) / 2, atol=0.5, rtol=0)
 
 
 def test_reinhard_color_transfer_returns_source_for_empty_or_tiny_mask():
@@ -67,15 +37,18 @@ def test_reinhard_color_transfer_returns_source_for_empty_or_tiny_mask():
     assert np.array_equal(reinhard_color_transfer(source, target, face_mask=tiny_mask), source)
 
 
-def test_gallery_embedding_aggregation():
-    """Test multi-view embedding weighted aggregation and normalization."""
-    v1 = np.random.randn(512).astype(np.float32)
-    v1 /= np.linalg.norm(v1)
+@pytest.mark.parametrize(
+    ("weights", "expected_components"),
+    [([3, 4], [0.6, 0.8]), ([4, 3], [0.8, 0.6]), ([1, 0], [1, 0]), ([0, 1], [0, 1]), (None, [2**-0.5, 2**-0.5])],
+)
+def test_gallery_embedding_aggregation(weights, expected_components):
+    """Orthogonal inputs expose ignored/reversed weights and missing L2 normalization."""
+    vectors = np.eye(2, 512, dtype=np.float32)
+    original = vectors.copy()
+    expected = np.zeros(512, dtype=np.float32)
+    expected[:2] = expected_components
 
-    v2 = np.random.randn(512).astype(np.float32)
-    v2 /= np.linalg.norm(v2)
-
-    gallery = FaceRecognizer.build_gallery_embedding([v1, v2], weights=[0.6, 0.4])
-    assert gallery.shape == (512,)
-    # Norm must be exactly 1.0
-    assert np.isclose(np.linalg.norm(gallery), 1.0, atol=1e-5)
+    gallery = FaceRecognizer.build_gallery_embedding(list(vectors), weights=weights)
+    np.testing.assert_allclose(gallery, expected, atol=1e-6, rtol=0)
+    assert np.isclose(np.linalg.norm(gallery), 1.0, atol=1e-6)
+    np.testing.assert_array_equal(vectors, original)

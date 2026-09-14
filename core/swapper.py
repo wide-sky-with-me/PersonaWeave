@@ -8,8 +8,7 @@ import numpy as np
 import onnxruntime as ort
 from insightface.model_zoo import get_model
 
-from core.detector import DetectedFace
-from utils.affine import INSWAPPER_DST_128, estimate_affine_matrix, warp_face
+from utils.gpu_helper import get_optimal_providers
 
 
 @dataclass(frozen=True)
@@ -121,7 +120,7 @@ def explode_pixel_boost(frames: list[np.ndarray], total: int, model_size: tuple[
 
 
 class FaceSwapper:
-    """InSwapper-128 adapter preserving InsightFace's native paste-back behavior."""
+    """InSwapper-128 inference adapter; the pipeline owns alignment and compositing."""
 
     spec = INSWAPPER_128_SPEC
 
@@ -129,12 +128,8 @@ class FaceSwapper:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"InSwapper model not found at: {model_path}")
         if providers is None:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = get_optimal_providers()
         self.model = get_model(model_path, providers=providers)
-
-    def get(self, image, target_face, source_face, paste_back=False):
-        """Expose the common adapter contract used by the processing pipeline."""
-        return self.model.get(image, target_face, source_face, paste_back=paste_back)
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> np.ndarray:
         """Run InSwapper on an already aligned 128px crop without a second alignment."""
@@ -155,13 +150,6 @@ class FaceSwapper:
         fake = prediction.transpose((0, 2, 3, 1))[0]
         return np.clip(255 * fake, 0, 255).astype(np.uint8)[:, :, ::-1]
 
-    def swap_face(
-        self, image: np.ndarray, target_face: DetectedFace, source_embedding: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        affine_matrix = estimate_affine_matrix(target_face.kps, INSWAPPER_DST_128)
-        orig_crop = warp_face(image, affine_matrix, (128, 128))
-        return self.infer_aligned(orig_crop, source_embedding), orig_crop, affine_matrix
-
 
 class HyperSwapAdapter:
     """HyperSwap 1C 256 adapter based on FaceFusion's published preprocessing contract."""
@@ -172,18 +160,8 @@ class HyperSwapAdapter:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"HyperSwap model not found at: {model_path}")
         if providers is None:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = get_optimal_providers()
         self.session = ort.InferenceSession(model_path, providers=providers)
-
-    @staticmethod
-    def _affine_matrix(kps: np.ndarray) -> np.ndarray:
-        destination = ARCFACE_128_TEMPLATE * np.array([256, 256], dtype=np.float32)
-        matrix = cv2.estimateAffinePartial2D(
-            kps.astype(np.float32), destination, method=cv2.RANSAC, ransacReprojThreshold=100
-        )[0]
-        if matrix is None:
-            raise ValueError("Could not estimate HyperSwap face alignment")
-        return matrix.astype(np.float32)
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Run HyperSwap on an already aligned 256px crop."""
@@ -196,29 +174,6 @@ class HyperSwapAdapter:
         swapped = np.clip(swapped * 0.5 + 0.5, 0.0, 1.0)[:, :, ::-1]
         return np.rint(swapped * 255.0).astype(np.uint8), np.clip(model_mask[0, 0], 0.0, 1.0)
 
-    def get(self, image, target_face, source_face, paste_back=False):
-        matrix = self._affine_matrix(target_face.kps)
-        crop = cv2.warpAffine(
-            image, matrix, self.spec.input_size, flags=cv2.INTER_AREA, borderMode=cv2.BORDER_REPLICATE
-        )
-        swapped, model_mask = self.infer_aligned(crop, source_face.normed_embedding)
-        if not paste_back:
-            return swapped, matrix
-
-        mask = np.clip(model_mask, 0.0, 1.0)
-        # A soft box suppresses model-mask noise at crop boundaries.
-        box = np.zeros(self.spec.input_size, dtype=np.float32)
-        margin = 8
-        box[margin:-margin, margin:-margin] = 1.0
-        box = cv2.GaussianBlur(box, (0, 0), 5.0)
-        mask = np.minimum(mask, box)
-        inverse = cv2.invertAffineTransform(matrix)
-        h, w = image.shape[:2]
-        warped = cv2.warpAffine(swapped, inverse, (w, h), flags=cv2.INTER_CUBIC)
-        warped_mask = cv2.warpAffine(mask, inverse, (w, h), flags=cv2.INTER_LINEAR)[:, :, np.newaxis]
-        result = image.astype(np.float32) * (1.0 - warped_mask) + warped.astype(np.float32) * warped_mask
-        return np.clip(result, 0, 255).astype(np.uint8)
-
 
 class GhostSwapAdapter:
     """Ghost 1 256 adapter using the Apache-2.0 model and converter."""
@@ -228,21 +183,11 @@ class GhostSwapAdapter:
 
     def __init__(self, model_path: str, converter_path: str, providers: list | None = None):
         if providers is None:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = get_optimal_providers()
         if not os.path.exists(model_path) or not os.path.exists(converter_path):
             raise FileNotFoundError("Ghost swapper and crossface converter are both required")
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.converter = ort.InferenceSession(converter_path, providers=providers)
-
-    @staticmethod
-    def _affine_matrix(kps: np.ndarray) -> np.ndarray:
-        destination = ARCFACE_112_V1_TEMPLATE * np.array([256, 256], dtype=np.float32)
-        matrix = cv2.estimateAffinePartial2D(
-            kps.astype(np.float32), destination, method=cv2.RANSAC, ransacReprojThreshold=100
-        )[0]
-        if matrix is None:
-            raise ValueError("Could not estimate Ghost face alignment")
-        return matrix.astype(np.float32)
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> np.ndarray:
         """Run Ghost on an already aligned 256px crop."""
@@ -254,25 +199,6 @@ class GhostSwapAdapter:
         swapped = output.transpose(1, 2, 0)
         swapped = np.clip(swapped * 0.5 + 0.5, 0.0, 1.0)[:, :, ::-1]
         return np.rint(swapped * 255.0).astype(np.uint8)
-
-    def get(self, image, target_face, source_face, paste_back=False):
-        matrix = self._affine_matrix(target_face.kps)
-        crop = cv2.warpAffine(
-            image, matrix, self.spec.input_size, flags=cv2.INTER_AREA, borderMode=cv2.BORDER_REPLICATE
-        )
-        swapped = self.infer_aligned(crop, source_face.embedding)
-        if not paste_back:
-            return swapped, matrix
-
-        mask = np.zeros(self.spec.input_size, dtype=np.float32)
-        cv2.ellipse(mask, (128, 136), (100, 116), 0, 0, 360, 1.0, -1)
-        mask = cv2.GaussianBlur(mask, (0, 0), 8.0)
-        inverse = cv2.invertAffineTransform(matrix)
-        h, w = image.shape[:2]
-        warped = cv2.warpAffine(swapped, inverse, (w, h), flags=cv2.INTER_CUBIC)
-        warped_mask = cv2.warpAffine(mask, inverse, (w, h), flags=cv2.INTER_LINEAR)[:, :, np.newaxis]
-        result = image.astype(np.float32) * (1.0 - warped_mask) + warped.astype(np.float32) * warped_mask
-        return np.clip(result, 0, 255).astype(np.uint8)
 
 
 def create_face_swapper(name: str, models_dir: str, providers: list | None = None):

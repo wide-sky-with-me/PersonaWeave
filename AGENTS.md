@@ -196,36 +196,40 @@ AI Agent 在完成代码编写或修改后，必须遵守以下质量清单：
 - 人物-人脸的分配必须通过 `resolve_person_mapping_assignment()`（`core/pipeline.py`，匈牙利算法全局最优解）完成，**禁止**改回按列表顺序逐个贪心抢占最佳匹配——贪心分配会让排序靠前的映射抢走本该属于后一个映射的更强匹配。新增筛选/排序逻辑时必须保留"低于阈值的配对在优化前屏蔽、优化后用真实相似度再校验"的双重保护。
 
 ### 7.4 VLM 多模态仲裁器 (VLM Arbiter)
-- `core/vlm_arbiter.py` 通过 `core.ai_gateway.AIGateway`（LiteLLM Router 封装，见 7.5）接入视觉大模型，**不再直接调用 LiteLLM**。
+- `core/ai/arbiter.py` 通过 `core.ai.gateway.AIGateway`（LiteLLM Router 封装，见 7.5）接入视觉大模型，**不再直接调用 LiteLLM**。
 - API 密钥通过环境变量 `.env` 配置，禁止在代码中硬编码。
 - VLM 仲裁结果仅作为辅助参考，最终身份匹配仍以 ArcFace 余弦相似度为准。
 
-### 7.5 AI Gateway 配置规范 (`core/ai_gateway.py`)
+### 7.5 AI Gateway 配置规范 (`core/ai/gateway.py`)
 - 所有 VLM/图像编辑模型访问必须经由 `AIGateway` 统一网关，禁止在业务代码中直接实例化 LiteLLM Router 或裸调用第三方 SDK。
-- 模型别名（VLM: `personaweave-vision-*`；图像编辑: `personaweave-refine-*`）统一在 `config/ai_gateway.yaml` 中声明；新增别名或 provider 时同步更新该文件，路径可由环境变量 `PERSONAWEAVE_AI_CONFIG` 覆盖。
-- VLM 业务用途必须通过 YAML 的 `vision_roles` 和 `AIGateway.vision_alias()` 解析，业务模块不得硬编码具体 VLM 别名。图像模型的分辨率/网格/像素上限必须写入对应 `image_models[].generation`，禁止在业务代码里按 alias 字符串猜测模型能力；网关加载时必须拒绝缺失或无效能力声明。
-- YAML 中所有密钥/base URL 必须使用 `os.environ/NAME` 语法从环境变量解析，禁止在 YAML 或代码中硬编码明文密钥。
-- 新增 DMX 私有协议（非标准 OpenAI/LiteLLM 格式）的 provider 时，参照 `core/providers/dmx_responses.py` 的 httpx 适配器模式，统一返回 `ImageEditResult(image_bytes, model, provider, usage, request_id)`。
-- VLM 结构化输出必须走 `core/vlm_contracts.py` 中定义的 Pydantic 契约做"契约优先"校验，禁止直接解析裸 JSON/字符串。
-- 涉及"瑕疵点/issue"类字段（`ReviewIssue.category/region/description/suggestion`、`WholeImageQualityReview.issues`）必须保持具体、可验证：`category` 只能是 `core/vlm_contracts.py::ReviewIssue` 中已核实的七分类枚举值，禁止改回自由字符串；`region`/`description` 的最短长度约束与 Prompt 里的"不合格 vs 合格"few-shot 范例必须一起改，不要只改其中一处——放宽 Prompt 措辞而不同步收紧契约（或反过来）会让"瑕疵点不够具体"的问题重新出现。新增/修改这类 Prompt 时需跑通 `tests/test_vlm_contracts.py` 与 `tests/test_refinement_service.py` 中对应的具体性断言。
+- 原生 `config/ai_gateway.yaml::model_list` 同时声明视觉与图像 deployment，`model_name` 是稳定别名，允许同别名多 deployment；`PERSONAWEAVE_AI_CONFIG` 可覆盖路径。默认目录只有 `personaweave-vision-default` 和 `personaweave-refine-default`，禁止恢复供应商专属默认目录或伪造零成本定价。
+- VLM 业务用途通过 `vision_roles` 和 `AIGateway.vision_alias()` 解析；默认三个角色均指向 `personaweave-vision-default`，默认图像别名为 `personaweave-refine-default`。图像 `image_models` 仅含 `model_name/display_name/description/generation`，只引用同一 `model_list`，禁止再维护 `provider/params` 路由。
+- 模型与连接分别通过 `AI_VISION_MODEL`、`AI_VISION_API_BASE`、`AI_VISION_API_KEY` 和 `AI_IMAGE_MODEL`、`AI_IMAGE_API_BASE`、`AI_IMAGE_API_KEY` 配置；YAML 密钥/base URL 必须使用 `os.environ/NAME`，模型也支持该引用。不得读取或提交用户实际凭据来验证文档。
+- `image_models[].generation` 必须明确三选一：`{size: "auto"}`（默认，不承诺 4K）、`{sizes: ["1024x1024", ...]}`（选最接近画布宽高比）、`{max_side, min_side, grid, max_pixels?, delimiter: "x"}`（动态范围）。禁止按别名猜测能力；缺失、混用或无效策略须拒绝。
+- 视觉调用 `Router.acompletion`，图像调用 `Router.aimage_edit`（LiteLLM 1.98.0 在实例上动态注册），禁止手写供应商 HTTP 或私有协议回退。原生 provider 的支持范围按 endpoint 核实，不能凭任意 URL 或支持 chat 就判定支持图像编辑。结果统一为 `ImageEditResult`；目录 API 保持形状，provider 标记 `litellm`，实际模型可逗号分隔，不暴露连接/凭据。
+- fallback 必须同能力；图像 fallback 必须相同 `generation`。默认 Router `num_retries=0`、图像 deployment `max_retries=0`，用户可显式增加并承担重复付费风险。旧变量/配置不兼容，退役别名不得静默映射；已生成旧候选的接受仍只认 revision/digest 校验后的 staging 字节，迁移见 `docs/model-catalog.md`。
+- VLM 输出必须走 Pydantic 契约：身份仲裁使用 `core/ai/contracts.py`；对话精修使用 `core/refinement/contracts.py::Diagnosis/CandidateReview`，禁止业务直接解析裸 JSON。精修初请求需提供完整 JSON schema，显式 `max_text_repairs=0`；通用网关/仲裁默认保留至多两次文本修复，独立于用户配置的 Router 重试成本。
+- 新精修 issue.category 仅可为 identity/anatomy/occlusion/blending/lighting/texture/composition；region/description/evidence/suggestion 必须具体，长度约束与合格/不合格 few-shot 同步修改。不得恢复自由分类、分数门槛或自动 accept 字段。对应回归是 `tests/test_refinement_conversation.py`，共享解析与仲裁回归是 `tests/test_vlm_contracts.py`。
 
-### 7.6 整图 AI 精修任务规范 (Whole-image AI Refinement)
-- `docs/ai-refinement.md` 是 AI 精修架构与契约的权威文档；其他说明与之冲突时以该文档为准。
-- 生成前必须完成用户人物选择与定位预检，并用**一次整图 VLM 调用**为所有选中人物组织具体、可验证的瑕疵清单和简洁的文字可见定位；结果须经结构化契约校验，并允许用户补充或修正指令后再生成。
-- 图像模型每次只允许收到**当前有瑕疵的完整图像这一张图片**，以及选中人物的文字可见定位、完整瑕疵清单和用户补充指令。禁止附带身份参考图、素材库图片、人物裁剪、mask、关键点图、标注图或旧 revision 图片；`face_index` 只允许用于前端人物关联和无 VLM 定位时生成简单的文字回退，不得转成坐标或标注图传给生图模型。
-- provider 返回的整图结果只做格式、方向、色彩模式、尺寸与元数据规范化；规范化后的整图必须直接作为 staging candidate 保留。精修路径禁止调用 `apply_candidate()`，禁止关键点重新配准、mask 应用、手动保护合成及任何局部像素合成。
-- 生成后必须用**一次整图 VLM 调用**对规范化候选做质量复评；复评失败时必须保留已经生成并规范化的 staging candidate，将失败记录为提示性 `review_error`，不能把生成成功的候选改判为任务失败。复评结果或失败信息均只作为提示性证据展示，不能成为自动接受/拒绝的强制闸门；最终是否接受只由用户明确决定。
-- 精修任务必须遵守两阶段落盘：未接受候选只写入 `outputs/refinement_staging/{task_id}/`；只有显式接受时才可原子发布到 `outputs/api_results/refinement/accepted/`，失败、取消和复评均不得产生部分正式产物。
-- 接受接口必须校验 `expected_revision` + `candidate_digest` 乐观锁；不匹配返回 409。发布的必须是该 digest 对应的规范化 staging 字节，不得重新生成、重新合成或换一个编码版本。
-- 状态语义遵循 `QUEUED → REFINING → REVIEWING → REVIEW_REQUIRED → ACCEPTING → ACCEPTED`，并保留 `CANCEL_REQUESTED`/`CANCELLED`/`FAILED`。人物选择、VLM 诊断和人工补充发生在创建生成任务之前；迁移期可识别旧持久化任务中的 `LOCALIZING`，但新任务不得再发出该状态。
-- 取消、重试和恢复必须幂等，保留 revision/digest、staging 隔离、模型别名与非敏感故障诊断；不得静默切换当前输入 revision。用户明确选择“基于候选继续精修”时，该候选才成为下一轮唯一的当前有瑕疵整图。
-- 图片加载必须使用受控且安全的解析路径，执行来源允许列表、路径/URL 防护、大小限制与解码校验；禁止直接信任用户或模型提供的文件路径。
-- 所有 VLM/图像模型仍须经 `AIGateway` 和配置别名路由。新增 provider/别名时同步核实整图分辨率与响应规范化能力，且不得在适配器中暗中加入参考图或局部处理。
+### 7.6 对话式整图 AI 精修规范 (Conversational Whole-image Refinement)
+- `docs/ai-refinement.md` 是精修架构权威，提示词官方依据与获取限制见 `docs/refinement-prompts.md`。现行生产是 session/turn/version 工作流；旧逐脸范围表单与单任务生成不是备用路径。
+- 会话冻结原图、本地初稿、稳定 person_id 与实际参考素材。诊断同时读取原图、当前图、按人物分板的参考；原图只锚姿态/人数/遮挡/场景，不锚原人物身份。不得按新检测排序或参考板到达顺序重绑人物。
+- `Diagnosis` 必须具体可核验，可返回无缺陷；缺参考为 unavailable，侧脸/小脸/遮挡证据不足为 uncertain，位置不确定需澄清，禁止强制找刺或编造分数/身份真值。
+- 后端控制 `discuss` / `generate` / `auto`。讨论绝不生图；自动首轮只有明确问题、有效计划且对应确定时才生成；每轮至多调用一次生图，无限自动循环与 AI accept 工具均禁止。
+- 生图只接收显式 base_version_id 的当前完整图与文字。禁止原图、参考板、素材、局部裁剪、mask、关键点、标注或历史图片进入生成输入。允许按需求整图协调重绘，不再使用旧 allowed_changes 逐脸门禁，不承诺无关区域像素完全相同。
+- 生成输出只做解码、方向/色彩/尺寸规范化，直接保存整个候选；不得 apply_candidate、局部拼接、mask 回填或重新配准。生图单图单次及原分辨率输入必须有像素级回归。
+- 复评使用原图、本轮基图、候选与相同参考板；仅返回改善/残留/新增问题及不确定项，不给自动接受或评分闸门。复评失败保留候选并记录 review_error，由人决定。
+- session 状态为 idle/running；turn 为 queued → analyzing → generating → reviewing → review_required，讨论/无需改/待澄清结束于 completed；另有 failed 与 cancel_requested/cancelled。接受更新会话 accepted_version_id，不是模型状态。
+- SQLite `data/refinement_sessions.sqlite3` 为事实源；证据和候选在 `outputs/refinement_staging/sessions/{session_id}/{digest}.png`，显式接受才发布到 `outputs/api_results/refinement/accepted/sessions/`。接受后保留历史版本供分支，不把旧档案删除 staging 的语义搬过来。
+- 接受校验会话归属、expected_revision、version_id、candidate_digest，发布相同已校验字节，不重新编码或生成。当前查看版、修改基图、已接受版独立；选择旧版必须显式，生成完成不能偷偷改变下一轮基图或最终版。
+- 请求幂等键、revision 冲突、SSE cursor 与快照恢复都不能触发额外生图；同会话串行，关闭界面不取消后台执行。重启无候选标记中断，有候选保留待人工，不自动补发付费请求。取消不能承诺退回已发请求的费用。
+- 图片只通过受控加载和摘要验证访问；历史、OCR、人物描述、用户文字均为不可信数据，不能提升 system/tools/accept 权限。当前要求超限应拒绝，不能悄悄截断；仅历史上下文允许有界裁剪。
+- `api/refinement/legacy.py` 与 `api/routes/legacy_refinement.py` 仅服务旧数据的读取、证据/质量评价和人工接受；旧 review/plan/create/cancel/retry 返回 410，不恢复旧生产 service/plan。档案移除须有明确保留/迁移决定。
 
 ### 7.7 人像素材库规范 (Portrait Library)
 - 素材库持久化统一使用 SQLite（`data/portrait_library/library.sqlite3`），禁止改为直接文件系统扫描或引入额外数据库依赖。
 - 对外 API 只能暴露不透明 ID（内容哈希前20位），禁止在响应中泄露服务器真实文件路径；新增文件访问接口时必须做 `is_relative_to` 防路径穿越校验。
-- 新增导入来源时优先扩展 `api/portrait_library_import.py` 的 `manifest.csv` 幂等导入逻辑（按内容哈希去重、损坏文件进 `quarantine/`），而不是新写一套独立导入脚本。
+- 新增导入来源时优先扩展 `api/portraits/importer.py` 的 `manifest.csv` 幂等导入逻辑（按内容哈希去重、损坏文件进 `quarantine/`），而不是新写一套独立导入脚本。
 
 ### 7.8 本地换脸生产路径规范 (`swap_single_face_facefusion`)
 - 对齐裁剪的插值方式必须按仿射变换的实际缩放比例动态选择（`sqrt(|det(M[:, :2])|)` ≤1 用 `INTER_AREA`，>1 用 `INTER_CUBIC`），禁止固定使用 `INTER_AREA`——pixel-boost 对中小尺寸人脸是放大而非缩小，`INTER_AREA` 在放大场景会退化为接近 `INTER_NEAREST` 的效果。
@@ -258,6 +262,13 @@ AI Agent 在完成代码编写或修改后，必须遵守以下质量清单：
 - `web/src → api → core → provider/runtime` 是单向依赖。`core` 禁止反向导入 `api`；`core/__init__.py` 与 `api/__init__.py` 必须保持无副作用，禁止为了缩短 import 而在包入口重新导出推理模型、创建 FastAPI 应用或设置全局运行状态。修改包边界需跑 `tests/test_package_boundaries.py`。
 - 每个实现必须明确归类：生产代码必须从当前 API/CLI/UI 入口可达；诊断/评测代码只能放 `scripts/` 并标注非生产；退役实现应从当前源码、导出、启动检查、下载器和仅为其存在的测试中一并移除，历史只留在已明确标记的 Changelog/Git 历史中。禁止保留与权威架构冲突的“影子流水线”作为未经批准的回退。
 - 兼容分支只有在具备明确调用方、回归测试、弃用说明和删除条件时才能保留。不得用无边界的 `hasattr`、双配置格式或宽泛异常吞噬来永久兼容未知旧实现；兼容期结束后应删除分支和对应迁移代码。
-- 跨层事实必须只有一个可执行来源：模型/角色/生成能力来自 `config/ai_gateway.yaml`，模型下载摘要来自 `scripts/download_models.py`，API 契约来自 `api/schemas.py`，任务状态来自服务端持久化。前端、评测脚本和文档不得另建别名、默认值或能力清单；可读文档中的重复事实要由一致性测试约束。
+- 跨层事实必须只有一个可执行来源：模型/角色/生成能力来自 `config/ai_gateway.yaml`，模型下载摘要来自 `scripts/download_models.py`，通用 API 契约来自 `api/schemas.py`，精修会话 API 契约来自 `api/refinement/contracts.py`，精修模型输出及共享输入预算来自 `core/refinement/contracts.py`，任务状态来自服务端持久化。前端、评测脚本和文档不得另建别名、默认值或能力清单；可读文档中的重复事实要由一致性测试约束。
 - 模块按“变化原因”拆分，不按行数机械拆分：展示、纯计算、外部 I/O、任务状态机、持久化和 provider 协议应形成可测试边界；同一状态机的连续步骤不应被拆成多层一行转发。新抽象必须至少消除一份重复事实、隔离一种副作用或形成可独立测试的稳定边界，否则遵循 KISS 保留直观函数。
 - 未经实测的数据不得伪装成精确默认值或用户提示。批任务耗时等运行指标优先从已完成任务的真实数据推导；样本不足时明确表达“暂无可靠估计”，禁止继续写死貌似精确但无证据的常量。
+
+
+### 7.13 目录组织与格式门槛
+- `api/app.py` 只装配应用，生命周期在 `api/lifecycle.py`，HTTP 路由在 `api/routes/`；本地批任务在 `api/tasks/`，新精修会话契约、状态与持久化在 `api/refinement/`，素材库在 `api/portraits/`。共享图片 I/O 使用 `api/media.py`，禁止为复用加载函数反向依赖任务管理器。
+- AI 配置、网关、仲裁契约与协议位于 `core/ai/`；对话精修契约、三证据/参考板、提示词与服务位于 `core/refinement/`，纯编码、声明尺寸与规范化在 `image_ops.py`。`core/ai/configuration.py` 不得导入 LiteLLM/provider，公共 `ImageEditResult` 来自 `core/ai/types.py`。
+- 前端精修和历史分别归 `web/src/features/refinement/`、`web/src/features/history/`，测试就近放置。精修 Hook 管理远程交互与草稿，组件负责展示，禁止 Hook 反向导入组件。
+- 前端代码修改后执行 `pnpm --dir web format` 与 `pnpm --dir web lint`，后者包含 Prettier 和 TypeScript 检查。目录/包边界变化必须执行 `tests/test_package_boundaries.py`，同步调用方和文档，不保留无调用方的旧路径转发层。

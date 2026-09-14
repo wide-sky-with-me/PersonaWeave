@@ -6,11 +6,29 @@ import { ComparisonViewer } from './ComparisonViewer';
 const mockPointerCapture = (viewport: HTMLElement) => {
   let captured: number | null = null;
   Object.defineProperties(viewport, {
-    setPointerCapture: { value: vi.fn((id: number) => { captured = id; }) },
+    setPointerCapture: {
+      value: vi.fn((id: number) => {
+        captured = id;
+      }),
+    },
     hasPointerCapture: { value: vi.fn((id: number) => captured === id) },
-    releasePointerCapture: { value: vi.fn((id: number) => { if (captured === id) captured = null; }) },
+    releasePointerCapture: {
+      value: vi.fn((id: number) => {
+        if (captured === id) captured = null;
+      }),
+    },
     getBoundingClientRect: {
-      value: vi.fn(() => ({ left: 100, right: 500, top: 0, bottom: 225, width: 400, height: 225, x: 100, y: 0, toJSON: () => ({}) })),
+      value: vi.fn(() => ({
+        left: 100,
+        right: 500,
+        top: 0,
+        bottom: 225,
+        width: 400,
+        height: 225,
+        x: 100,
+        y: 0,
+        toJSON: () => ({}),
+      })),
     },
   });
 };

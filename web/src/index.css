@@ -21,8 +21,7 @@
   }
 
   body {
-    @apply bg-background text-zinc-200 font-sans text-sm tracking-tight;
-    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    @apply bg-background text-zinc-200 font-sans text-sm;
   }
 
   /* Focus ring — accessible, non-disruptive */
@@ -33,10 +32,15 @@
   }
 
   /* Controlled scrollbar — 5px, restrained */
-  ::-webkit-scrollbar        { width: 5px; height: 5px; }
-  ::-webkit-scrollbar-track  { background: transparent; }
-  ::-webkit-scrollbar-thumb  {
-    background: rgba(255, 255, 255, 0.10);
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
     border-radius: 99px;
   }
   ::-webkit-scrollbar-thumb:hover {
@@ -48,14 +52,21 @@
     @apply appearance-none bg-transparent cursor-pointer;
   }
   input[type='range']::-webkit-slider-runnable-track {
-    @apply h-1.5 rounded-full bg-surface-3;
+    @apply h-1.5 rounded-full;
+    background: inherit;
   }
   input[type='range']::-webkit-slider-thumb {
     -webkit-appearance: none;
-    @apply w-3.5 h-3.5 rounded-full -mt-1 bg-primary border border-primary-border shadow-primary;
+    @apply w-3.5 h-3.5 rounded-full -mt-1 bg-white border-2 border-primary shadow-[0_0_8px_rgba(91,95,239,0.5)];
+    transition:
+      transform 100ms ease,
+      box-shadow 100ms ease;
+  }
+  input[type='range']::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
   }
   input[type='range']:focus::-webkit-slider-thumb {
-    box-shadow: 0 0 0 3px rgba(91,95,239,0.25);
+    box-shadow: 0 0 0 4px rgba(91, 95, 239, 0.35);
   }
 
   /* Select base */
@@ -89,22 +100,32 @@
 @layer components {
   /* Panels */
   .panel {
-    @apply bg-surface border border-border;
+    @apply bg-surface border border-border shadow-panel;
   }
   .panel-elevated {
-    @apply bg-surface-2 border border-border shadow-card;
+    @apply bg-surface-2 border border-border shadow-elevated;
   }
   .glass {
-    background: rgba(17, 17, 21, 0.80);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
+    background: rgba(16, 16, 21, 0.88);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
     border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
+      0 4px 20px rgba(0, 0, 0, 0.4);
   }
   .glass-sm {
-    background: rgba(17, 17, 21, 0.70);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: rgba(17, 17, 22, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.07);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+  }
+
+  /* Blueprint dot grid for canvas background */
+  .bg-dot-grid {
+    background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+    background-size: 24px 24px;
   }
 
   /* Section header within a panel */
@@ -116,22 +137,44 @@
   .icon-badge {
     @apply w-6 h-6 rounded-lg flex items-center justify-center shrink-0;
   }
-  .icon-badge-primary { @apply icon-badge bg-primary-muted text-primary; }
-  .icon-badge-accent  { @apply icon-badge bg-accent-muted text-accent;   }
-  .icon-badge-warn    { @apply icon-badge bg-warn-muted text-warn;       }
-  .icon-badge-ok      { @apply icon-badge bg-ok-muted text-ok;           }
+  .icon-badge-primary {
+    @apply icon-badge bg-primary-muted text-primary;
+  }
+  .icon-badge-accent {
+    @apply icon-badge bg-accent-muted text-accent;
+  }
+  .icon-badge-warn {
+    @apply icon-badge bg-warn-muted text-warn;
+  }
+  .icon-badge-ok {
+    @apply icon-badge bg-ok-muted text-ok;
+  }
 
   /* Status chips — compact, semantic */
   .chip {
     @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-medium border leading-none;
   }
-  .chip-ok      { @apply chip bg-ok-muted text-ok border-ok-border;       }
-  .chip-warn    { @apply chip bg-warn-muted text-warn border-warn-border;  }
-  .chip-err     { @apply chip bg-err-muted text-err border-err-border;     }
-  .chip-info    { @apply chip bg-info-muted text-info border-info-border;  }
-  .chip-primary { @apply chip bg-primary-muted text-primary border-primary-border; }
-  .chip-accent  { @apply chip bg-accent-muted text-accent border-accent-border;   }
-  .chip-neutral { @apply chip bg-surface-3 text-zinc-400 border-border;            }
+  .chip-ok {
+    @apply chip bg-ok-muted text-ok border-ok-border;
+  }
+  .chip-warn {
+    @apply chip bg-warn-muted text-warn border-warn-border;
+  }
+  .chip-err {
+    @apply chip bg-err-muted text-err border-err-border;
+  }
+  .chip-info {
+    @apply chip bg-info-muted text-info border-info-border;
+  }
+  .chip-primary {
+    @apply chip bg-primary-muted text-primary border-primary-border;
+  }
+  .chip-accent {
+    @apply chip bg-accent-muted text-accent border-accent-border;
+  }
+  .chip-neutral {
+    @apply chip bg-surface-3 text-zinc-400 border-border;
+  }
 
   /* Buttons */
   .btn {
@@ -140,15 +183,37 @@
            focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/70
            active:scale-[0.97] disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none;
   }
-  .btn-sm  { @apply btn px-2.5 py-1.5 text-xs rounded-lg; }
-  .btn-md  { @apply btn px-3.5 py-2   text-xs rounded-xl; }
-  .btn-lg  { @apply btn px-4   py-2.5 text-sm rounded-xl; }
+  .btn-icon {
+    @apply btn h-9 w-9 shrink-0 rounded-lg;
+  }
+  .btn-xs {
+    @apply btn min-h-8 px-2 py-1 text-xs rounded-lg;
+  }
+  .btn-sm {
+    @apply btn px-2.5 py-1.5 text-xs rounded-lg;
+  }
+  .btn-md {
+    @apply btn px-3.5 py-2   text-xs rounded-xl;
+  }
+  .btn-lg {
+    @apply btn px-4   py-2.5 text-sm rounded-xl;
+  }
 
-  .btn-primary  { @apply btn bg-primary hover:bg-primary-hover text-white shadow-primary; }
-  .btn-accent   { @apply btn bg-accent  hover:bg-accent-hover  text-white shadow-cyan;   }
-  .btn-ghost    { @apply btn text-zinc-400 hover:text-zinc-100 hover:bg-surface-hover border border-transparent hover:border-border; }
-  .btn-outline  { @apply btn text-zinc-300 bg-surface-3 hover:bg-surface-hover border border-border hover:border-border-md; }
-  .btn-danger   { @apply btn text-zinc-400 hover:text-red-400 hover:bg-err-muted; }
+  .btn-primary {
+    @apply btn bg-primary hover:bg-primary-hover text-white shadow-primary;
+  }
+  .btn-accent {
+    @apply btn bg-accent  hover:bg-accent-hover  text-white shadow-cyan;
+  }
+  .btn-ghost {
+    @apply btn text-zinc-400 hover:text-zinc-100 hover:bg-surface-hover border border-transparent hover:border-border;
+  }
+  .btn-outline {
+    @apply btn text-zinc-300 bg-surface-3 hover:bg-surface-hover border border-border hover:border-border-md;
+  }
+  .btn-danger {
+    @apply btn text-zinc-400 hover:text-red-400 hover:bg-err-muted;
+  }
 
   /* Segmented control track */
   .seg-track {
@@ -166,48 +231,78 @@
   }
 
   /* Panel divider */
-  .divider { @apply border-t border-border; }
+  .divider {
+    @apply border-t border-border;
+  }
 
   /* Monospaced value badge */
   .val-badge {
     @apply font-mono text-2xs font-semibold px-1.5 py-0.5 rounded bg-surface-3 border border-border text-zinc-300;
   }
-  .val-badge-primary { @apply val-badge !bg-primary-muted !text-primary !border-primary-border; }
-  .val-badge-accent  { @apply val-badge !bg-accent-muted  !text-accent  !border-accent-border;  }
-  .val-badge-warn    { @apply val-badge !bg-warn-muted    !text-warn    !border-warn-border;    }
+  .val-badge-primary {
+    @apply val-badge !bg-primary-muted !text-primary !border-primary-border;
+  }
+  .val-badge-accent {
+    @apply val-badge !bg-accent-muted  !text-accent  !border-accent-border;
+  }
+  .val-badge-warn {
+    @apply val-badge !bg-warn-muted    !text-warn    !border-warn-border;
+  }
 }
 
 /* ─── Utility Extensions ─────────────────────────────────────── */
 @layer utilities {
   /* Subtle inset shadow for pressed/active states */
   .shadow-inset {
-    box-shadow: inset 0 1px 3px rgba(0,0,0,0.40);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
   }
 
   /* Thin hairline bottom border for separators */
-  .border-b-px { border-bottom-width: 1px; }
+  .border-b-px {
+    border-bottom-width: 1px;
+  }
 
   /* Text truncation helpers */
-  .text-truncate { @apply truncate overflow-hidden whitespace-nowrap; }
+  .text-truncate {
+    @apply truncate overflow-hidden whitespace-nowrap;
+  }
 
   /* Smooth width transitions for progress bars */
-  .transition-width { transition: width 0.3s ease; }
+  .transition-width {
+    transition: width 0.3s ease;
+  }
 
   /* Animate in utilities */
   .animate-in {
     animation-fill-mode: both;
   }
-  .fade-in    { animation-name: fadeIn; animation-duration: 150ms; animation-timing-function: ease-out; }
-  .slide-up   { animation-name: slideUp; animation-duration: 200ms; animation-timing-function: ease-out; }
-  .zoom-in-95 { animation-name: zoomIn95; animation-duration: 150ms; animation-timing-function: ease-out; }
-
-  @keyframes zoomIn95 {
-    from { opacity: 0; transform: scale(0.95); }
-    to   { opacity: 1; transform: scale(1);    }
+  .fade-in {
+    animation-name: fadeIn;
+    animation-duration: 150ms;
+    animation-timing-function: ease-out;
+  }
+  .slide-up {
+    animation-name: slideUp;
+    animation-duration: 200ms;
+    animation-timing-function: ease-out;
+  }
+  .zoom-in-95 {
+    animation-name: zoomIn95;
+    animation-duration: 150ms;
+    animation-timing-function: ease-out;
   }
 
+  @keyframes zoomIn95 {
+    from {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
 }
-
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -219,4 +314,17 @@
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
   }
+}
+
+/* Dense workbench controls still need real touch targets; scoped to avoid changing legacy layouts. */
+.refinement-workbench button,
+.refinement-workbench a.btn,
+.refinement-workbench select {
+  min-height: 40px;
+}
+.refinement-workbench .btn-icon {
+  min-width: 40px;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
 }

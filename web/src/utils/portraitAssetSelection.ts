@@ -1,4 +1,4 @@
-import type { PortraitAssetItem } from '../types';
+import type { PortraitAssetItem } from '@/types';
 
 const POSE_LABEL = /(?:^|_)(left|right)_(\d+)deg(?:_|$)/;
 
@@ -18,10 +18,7 @@ export const describePortraitYaw = (yaw: number): string => {
  * Selects a deterministic gallery covering frontal, profile, and lowered-chin views.
  * Pose coverage matters more than expression variety for profile face swapping.
  */
-export const selectDiversePortraitAssets = (
-  assets: PortraitAssetItem[],
-  limit = 8,
-): PortraitAssetItem[] => {
+export const selectDiversePortraitAssets = (assets: PortraitAssetItem[], limit = 8): PortraitAssetItem[] => {
   if (limit <= 0) return [];
 
   const angles = assets
@@ -39,22 +36,64 @@ export const selectDiversePortraitAssets = (
       .filter((item) => !selectedIds.has(item.asset.asset_id))
       .sort((left, right) => score(left) - score(right) || left.asset.label.localeCompare(right.asset.label))[0];
 
-  add(pick(angles.filter((item) => item.yaw === 0 && !item.chinDown), (item) => item.asset.label === '01_front' ? 0 : 1));
-  add(pick(angles.filter((item) => item.yaw < 0 && !item.chinDown), (item) => item.yaw));
-  add(pick(angles.filter((item) => item.yaw > 0 && !item.chinDown), (item) => -item.yaw));
-  add(pick(angles.filter((item) => item.yaw < 0 && item.chinDown), (item) => item.yaw));
-  add(pick(angles.filter((item) => item.yaw > 0 && item.chinDown), (item) => -item.yaw));
-  add(pick(angles.filter((item) => item.yaw < 0 && !item.chinDown), (item) => Math.abs(item.yaw + 30)));
-  add(pick(angles.filter((item) => item.yaw > 0 && !item.chinDown), (item) => Math.abs(item.yaw - 30)));
-  add(pick(angles.filter((item) => item.yaw === 0 && item.chinDown), () => 0));
+  add(
+    pick(
+      angles.filter((item) => item.yaw === 0 && !item.chinDown),
+      (item) => (item.asset.label === '01_front' ? 0 : 1),
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw < 0 && !item.chinDown),
+      (item) => item.yaw,
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw > 0 && !item.chinDown),
+      (item) => -item.yaw,
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw < 0 && item.chinDown),
+      (item) => item.yaw,
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw > 0 && item.chinDown),
+      (item) => -item.yaw,
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw < 0 && !item.chinDown),
+      (item) => Math.abs(item.yaw + 30),
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw > 0 && !item.chinDown),
+      (item) => Math.abs(item.yaw - 30),
+    ),
+  );
+  add(
+    pick(
+      angles.filter((item) => item.yaw === 0 && item.chinDown),
+      () => 0,
+    ),
+  );
 
   const remaining = assets
     .filter((asset) => !selectedIds.has(asset.asset_id) && asset.category !== 'contact_sheet')
     .sort((left, right) => {
       const roleOrder = Number(left.category !== 'angle') - Number(right.category !== 'angle');
       if (roleOrder) return roleOrder;
-      return Math.abs(portraitYawFromLabel(right.label)) - Math.abs(portraitYawFromLabel(left.label))
-        || left.label.localeCompare(right.label);
+      return (
+        Math.abs(portraitYawFromLabel(right.label)) - Math.abs(portraitYawFromLabel(left.label)) ||
+        left.label.localeCompare(right.label)
+      );
     });
   remaining.forEach((asset) => {
     if (selected.length < limit) {

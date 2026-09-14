@@ -10,6 +10,7 @@ import numpy as np
 from insightface.model_zoo import get_model
 
 from core.detector import DetectedFace
+from utils.gpu_helper import get_optimal_providers
 
 
 class FaceRecognizer:
@@ -27,7 +28,7 @@ class FaceRecognizer:
             raise FileNotFoundError(f"Recognizer model not found at: {model_path}")
 
         if providers is None:
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = get_optimal_providers()
 
         self.model = get_model(model_path, providers=providers)
         self.model.prepare(ctx_id=0)
@@ -104,34 +105,3 @@ class FaceRecognizer:
         Since both are normalized, CosineSim = dot_product(a, b).
         """
         return float(np.dot(embedding_a.flatten(), embedding_b.flatten()))
-
-    def filter_target_faces(
-        self,
-        image: np.ndarray,
-        detected_faces: list[DetectedFace],
-        target_embedding: np.ndarray,
-        similarity_threshold: float = 0.55,
-    ) -> list[DetectedFace]:
-        """
-        Extracts embeddings for all detected faces and filters those matching the target person.
-
-        Args:
-            image: Full BGR image.
-            detected_faces: List of DetectedFace objects.
-            target_embedding: 512-d target person anchor embedding.
-            similarity_threshold: Minimum cosine similarity threshold (default 0.55).
-
-        Returns:
-            matched_faces: List of DetectedFace instances that match the target identity.
-        """
-        matched_faces: list[DetectedFace] = []
-        for face in detected_faces:
-            if face.embedding is None:
-                self.extract_embedding(image, face)
-
-            sim = self.compute_similarity(face.embedding, target_embedding)
-            face.similarity = sim
-            if sim >= similarity_threshold:
-                matched_faces.append(face)
-
-        return matched_faces

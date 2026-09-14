@@ -6,7 +6,7 @@ import ipaddress
 import socket
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 import cv2
 import httpx
@@ -34,8 +34,13 @@ def _matches_host_suffix(hostname: str, suffixes: tuple[str, ...]) -> bool:
     return any(hostname == suffix.lstrip(".") or hostname.endswith(suffix) for suffix in suffixes)
 
 
-def validate_public_url(url: str, *, proxy_host_suffixes: tuple[str, ...] = ()) -> None:
-    """Reject unsafe URLs, with a narrow exception for trusted hosts behind the managed egress proxy."""
+def validate_public_url(url: str, *, proxy_host_suffixes: tuple[str, ...] = ()) -> set[str]:
+    """Reject unsafe URLs, with a narrow exception for trusted hosts behind the managed egress proxy.
+
+    Returns the resolved, validated address set so callers can pin the actual connection to it
+    (see `pin_request_to_addresses`) instead of re-resolving DNS a second time, which would reopen
+    a DNS-rebinding window between this check and the real network request.
+    """
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("URL must be an unauthenticated HTTP(S) URL")
@@ -52,6 +57,28 @@ def validate_public_url(url: str, *, proxy_host_suffixes: tuple[str, ...] = ()) 
     )
     if not addresses or (any(not _is_public_ip(address) for address in addresses) and not uses_managed_proxy):
         raise ValueError("URL host resolves to a non-public address")
+    return addresses
+
+
+def pin_request_to_addresses(url: str, addresses: set[str]) -> tuple[str, dict[str, str], dict[str, str]]:
+    """Rewrite `url` to connect directly to one of the pre-validated `addresses`.
+
+    Returns (pinned_url, extra_headers, extensions) to pass to the HTTP client. This closes the
+    DNS-rebinding TOCTOU window: the connection uses the exact address `validate_public_url`
+    checked, instead of letting the HTTP client re-resolve the hostname (and potentially land on a
+    different, unvalidated address) at connect time. The `Host` header and TLS SNI are kept as the
+    original hostname so virtual-hosting and certificate validation still work correctly.
+    """
+    parsed = urlsplit(url)
+    hostname = parsed.hostname
+    address = next(iter(addresses))
+    netloc = f"[{address}]" if ":" in address else address
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    if parsed.username or parsed.password:
+        raise ValueError("URL must be an unauthenticated HTTP(S) URL")
+    pinned_url = urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, parsed.fragment))
+    return pinned_url, {"Host": hostname}, {"sni_hostname": hostname}
 
 
 def resolve_managed_url(source: str) -> Path | None:
@@ -116,10 +143,12 @@ def decode_data_uri(source: str) -> np.ndarray:
 def download_image(url: str) -> np.ndarray:
     """Download a public image with redirect, streaming-size, and decode checks."""
     current = url
-    with httpx.Client(timeout=15.0, follow_redirects=False) as client:
+    with httpx.Client(timeout=15.0, follow_redirects=False, trust_env=False) as client:
         for redirect_count in range(MAX_REDIRECTS + 1):
-            validate_public_url(current)
-            with client.stream("GET", current, headers={"User-Agent": "PersonaWeave-API/0.1.0"}) as response:
+            addresses = validate_public_url(current)
+            pinned_url, pin_headers, extensions = pin_request_to_addresses(current, addresses)
+            headers = {"User-Agent": "PersonaWeave-API/0.1.0", **pin_headers}
+            with client.stream("GET", pinned_url, headers=headers, extensions=extensions) as response:
                 if response.is_redirect:
                     if redirect_count == MAX_REDIRECTS or not response.headers.get("location"):
                         raise ValueError("Image URL has too many redirects")
@@ -145,11 +174,14 @@ async def download_image_bytes(
     current = url
     for redirect_count in range(MAX_REDIRECTS + 1):
         try:
-            validate_public_url(current, proxy_host_suffixes=proxy_host_suffixes)
+            addresses = validate_public_url(current, proxy_host_suffixes=proxy_host_suffixes)
         except ValueError as exc:
             hostname = urlsplit(current).hostname or "unknown"
             raise ValueError(f"Image download rejected host '{hostname}': {exc}") from exc
-        async with client.stream("GET", current, follow_redirects=False) as response:
+        pinned_url, pin_headers, extensions = pin_request_to_addresses(current, addresses)
+        async with client.stream(
+            "GET", pinned_url, headers=pin_headers, extensions=extensions, follow_redirects=False
+        ) as response:
             if response.is_redirect:
                 if redirect_count == MAX_REDIRECTS or not response.headers.get("location"):
                     raise ValueError("Image URL has too many redirects")

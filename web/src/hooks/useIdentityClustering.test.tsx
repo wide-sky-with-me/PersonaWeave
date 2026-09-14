@@ -1,11 +1,11 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { api } from '../services/api';
-import type { TargetImageItem } from '../types';
+import { api } from '@/services/api';
+import type { TargetImageItem } from '@/types';
 import { useIdentityClustering } from './useIdentityClustering';
 
-vi.mock('../services/api', () => ({
+vi.mock('@/services/api', () => ({
   api: { detectFaces: vi.fn(), clusterFaces: vi.fn() },
 }));
 
@@ -16,8 +16,16 @@ describe('useIdentityClustering result ownership', () => {
     let resolveFirst!: (value: any) => void;
     let resolveSecond!: (value: any) => void;
     vi.mocked(api.clusterFaces)
-      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }))
-      .mockReturnValueOnce(new Promise((resolve) => { resolveSecond = resolve; }));
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
     const batchUpdateTargetImages = vi.fn();
     const updateTargetImageById = vi.fn();
     const { rerender } = renderHook(
@@ -35,11 +43,8 @@ describe('useIdentityClustering result ownership', () => {
     await act(async () => {
       resolveSecond({ images: [{ image_index: 0, faces: [{ index: 2 }], image_width: 20, image_height: 20 }] });
     });
-    await waitFor(() => expect(batchUpdateTargetImages).toHaveBeenCalledWith([
-      expect.objectContaining({ id: 'b' }),
-    ]));
+    await waitFor(() => expect(batchUpdateTargetImages).toHaveBeenCalledWith([expect.objectContaining({ id: 'b' })]));
   });
-
 
   it('does not synthesize target identity IDs for single-image face detection', async () => {
     vi.mocked(api.detectFaces).mockResolvedValue({
@@ -49,11 +54,13 @@ describe('useIdentityClustering result ownership', () => {
     } as any);
     const updateTargetImageById = vi.fn();
 
-    renderHook(() => useIdentityClustering({
-      targetImages: [target('single')],
-      updateTargetImageById,
-      batchUpdateTargetImages: vi.fn(),
-    }));
+    renderHook(() =>
+      useIdentityClustering({
+        targetImages: [target('single')],
+        updateTargetImageById,
+        batchUpdateTargetImages: vi.fn(),
+      }),
+    );
 
     await waitFor(() => expect(updateTargetImageById).toHaveBeenCalled());
     const patch = updateTargetImageById.mock.calls[0][1];

@@ -40,7 +40,6 @@ describe('useJobActivityStore', () => {
     expect(useJobActivityStore.getState().jobs.map((job) => job.taskId)).toEqual(['active']);
   });
 
-
   it('does not invent a recoverable job after storage is cleared', () => {
     expect(useJobActivityStore.getState().jobs).toEqual([]);
   });

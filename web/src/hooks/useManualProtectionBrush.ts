@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { PointerEvent as ReactPointerEvent, RefObject } from 'react';
-import type { ViewMode } from '../types';
-import { createManualMaskPixels } from '../utils/manualMask';
+import type { ViewMode } from '@/types';
+import { createManualMaskPixels } from '@/utils/manualMask';
 
 interface ManualProtectionBrushOptions {
   activeTargetIndex: number;

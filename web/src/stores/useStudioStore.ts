@@ -7,7 +7,7 @@ import type {
   SwapParameters,
   TargetImageItem,
   ViewMode,
-} from '../types';
+} from '@/types';
 
 interface StudioState {
   // Source Gallery State
@@ -28,7 +28,6 @@ interface StudioState {
   activeTargetIndex: number;
   addTargetImages: (items: TargetImageItem[]) => void;
   setActiveTargetIndex: (index: number) => void;
-  updateTargetImage: (index: number, patch: Partial<TargetImageItem>) => void;
   updateTargetImageById: (id: string, patch: Partial<TargetImageItem>) => void;
   batchUpdateTargetImages: (updates: { id: string; patch: Partial<TargetImageItem> }[]) => void;
   removeTargetImage: (index: number) => void;
@@ -111,8 +110,7 @@ export const useStudioStore = create<StudioState>((set) => ({
     }),
   setActiveSourcePersonId: (id) => set({ activeSourcePersonId: id }),
   sourceGallery: [],
-  addSourceReference: (ref) =>
-    set((state) => ({ sourceGallery: [...state.sourceGallery, ref], personMappings: [] })),
+  addSourceReference: (ref) => set((state) => ({ sourceGallery: [...state.sourceGallery, ref], personMappings: [] })),
   updateSourceReference: (id, patch) =>
     set((state) => ({
       sourceGallery: state.sourceGallery.map((ref) => (ref.id === id ? { ...ref, ...patch } : ref)),
@@ -123,7 +121,8 @@ export const useStudioStore = create<StudioState>((set) => ({
       sourceGallery: state.sourceGallery.filter((r) => r.id !== id),
       personMappings: [],
     })),
-  clearSourceGallery: () => set({ sourceGallery: [], sourcePeople: [], activeSourcePersonId: null, personMappings: [] }),
+  clearSourceGallery: () =>
+    set({ sourceGallery: [], sourcePeople: [], activeSourcePersonId: null, personMappings: [] }),
 
   // Target Batch
   targetImages: [],
@@ -134,21 +133,11 @@ export const useStudioStore = create<StudioState>((set) => ({
       personMappings: [],
     })),
   setActiveTargetIndex: (index) => set({ activeTargetIndex: index }),
-  updateTargetImage: (index, patch) =>
-    set((state) => {
-      const updated = [...state.targetImages];
-      if (updated[index]) {
-        updated[index] = { ...updated[index], ...patch };
-      }
-      return { targetImages: updated, personMappings: [] };
-    }),
   updateTargetImageById: (id, patch) =>
     set((state) => {
       const topologyChanged = Object.prototype.hasOwnProperty.call(patch, 'faces');
       return {
-        targetImages: state.targetImages.map((target) =>
-          target.id === id ? { ...target, ...patch } : target,
-        ),
+        targetImages: state.targetImages.map((target) => (target.id === id ? { ...target, ...patch } : target)),
         ...(topologyChanged ? { personMappings: [] } : {}),
       };
     }),
@@ -170,7 +159,8 @@ export const useStudioStore = create<StudioState>((set) => ({
       const newActive = Math.min(state.activeTargetIndex, Math.max(0, updated.length - 1));
       return { targetImages: updated, activeTargetIndex: newActive, selectedTargetPersonId: null, personMappings: [] };
     }),
-  clearTargetImages: () => set({ targetImages: [], activeTargetIndex: 0, selectedTargetPersonId: null, personMappings: [] }),
+  clearTargetImages: () =>
+    set({ targetImages: [], activeTargetIndex: 0, selectedTargetPersonId: null, personMappings: [] }),
 
   // Target Person Selection (left to right 1-based)
   selectedTargetPersonId: null,
@@ -179,7 +169,7 @@ export const useStudioStore = create<StudioState>((set) => ({
   // Algorithm Hyperparameters
   parameters: {
     similarity_threshold: 0.35,
-    identity_blend_strength: 0.72,
+    identity_blend_strength: 0.9,
     enable_color_transfer: true,
     color_transfer_mode: 'boundary',
     enable_dense_mask: true,
@@ -187,8 +177,7 @@ export const useStudioStore = create<StudioState>((set) => ({
     swapper_model: 'auto',
     allow_research_models: false,
   },
-  updateParameters: (patch) =>
-    set((state) => ({ parameters: { ...state.parameters, ...patch } })),
+  updateParameters: (patch) => set((state) => ({ parameters: { ...state.parameters, ...patch } })),
 
   // Viewport Settings
   viewMode: 'SPLIT',

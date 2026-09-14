@@ -4,10 +4,7 @@ export interface ManualMaskResult {
 }
 
 /** Converts the transparent amber brush layer into an opaque grayscale protection mask. */
-export function createManualMaskPixels(
-  source: Uint8ClampedArray,
-  alphaThreshold = 10,
-): ManualMaskResult {
+export function createManualMaskPixels(source: Uint8ClampedArray, alphaThreshold = 10): ManualMaskResult {
   const pixels = new Uint8ClampedArray(source.length);
   let hasPainted = false;
 

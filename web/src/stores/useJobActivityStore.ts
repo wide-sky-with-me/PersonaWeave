@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { BatchTaskStatus } from '../types';
+import type { BatchTaskStatus } from '@/types';
 
 export type RecentJobStatus = BatchTaskStatus | 'UNKNOWN';
 
@@ -60,5 +60,4 @@ export const newestRecentJob = (jobs: RecentJob[]): RecentJob | null =>
   [...jobs].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
 
 /** Only interrupted active work should reconnect to the mutable Studio workspace. */
-export const newestActiveRecentJob = (jobs: RecentJob[]): RecentJob | null =>
-  newestRecentJob(jobs.filter(isActiveJob));
+export const newestActiveRecentJob = (jobs: RecentJob[]): RecentJob | null => newestRecentJob(jobs.filter(isActiveJob));

@@ -1,8 +1,6 @@
-import type { DetectedFaceBox } from '../types';
+import type { DetectedFaceBox } from '@/types';
 
-export type FaceRelabelResult =
-  | { ok: true; faces: DetectedFaceBox[] }
-  | { ok: false; message: string };
+export type FaceRelabelResult = { ok: true; faces: DetectedFaceBox[] } | { ok: false; message: string };
 
 type FaceRow = {
   centerY: number;
@@ -41,9 +39,7 @@ export function buildFacePositionLabels(faces: DetectedFaceBox[]): Map<number, s
     } else {
       const currentRow = rows[rows.length - 1];
       currentRow.faces.push(candidate);
-      currentRow.centerY =
-        currentRow.faces.reduce((sum, item) => sum + item.centerY, 0) /
-        currentRow.faces.length;
+      currentRow.centerY = currentRow.faces.reduce((sum, item) => sum + item.centerY, 0) / currentRow.faces.length;
     }
     previousCenterY = candidate.centerY;
   }
@@ -52,13 +48,7 @@ export function buildFacePositionLabels(faces: DetectedFaceBox[]): Map<number, s
   const labels = new Map<number, string>();
   rows.forEach((row, rowIndex) => {
     const rowLabel =
-      rows.length === 1
-        ? ''
-        : rows.length === 2
-          ? rowIndex === 0
-            ? '上排·'
-            : '下排·'
-          : `第 ${rowIndex + 1} 排·`;
+      rows.length === 1 ? '' : rows.length === 2 ? (rowIndex === 0 ? '上排·' : '下排·') : `第 ${rowIndex + 1} 排·`;
     row.faces
       .sort((a, b) => a.centerX - b.centerX)
       .forEach(({ face }, columnIndex) => {

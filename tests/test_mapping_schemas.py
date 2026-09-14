@@ -62,7 +62,7 @@ def test_direct_deprecated_batch_urls_access_warns_callers():
 
 
 def test_identity_blend_strength_defaults_to_current_production_value_and_is_bounded():
-    assert SwapParameters().identity_blend_strength == 0.72
+    assert SwapParameters().identity_blend_strength == 0.9
     assert SwapParameters(identity_blend_strength=0.9).identity_blend_strength == 0.9
     with pytest.raises(ValidationError):
         SwapParameters(identity_blend_strength=0.96)

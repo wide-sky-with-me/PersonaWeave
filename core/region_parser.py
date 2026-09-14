@@ -85,7 +85,10 @@ class RegionFaceParser:
         keep = 1.0 - protected
         # Same convention as FaceOccluder: blur then keep only the "confidently safe" half of the
         # transition, giving a soft edge on the keep side and a firm cutoff into protection.
-        return (cv2.GaussianBlur(keep.clip(0, 1), (0, 0), 5).clip(0.5, 1) - 0.5) * 2
+        # Keep the same normalized feather on native 128px and boosted 256px crops.
+        # The original 256px/sigma=5 baseline remains unchanged.
+        sigma = output_size[0] * 5.0 / 256.0
+        return (cv2.GaussianBlur(keep.clip(0, 1), (0, 0), sigma).clip(0.5, 1) - 0.5) * 2
 
     def create_region_protection_mask(
         self, face_bgr: np.ndarray, protected_regions: tuple[str, ...] = ("glasses",)

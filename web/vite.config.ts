@@ -22,8 +22,10 @@ export default defineConfig({
           if (!id.includes('node_modules')) return undefined;
           if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) return 'vendor-react';
           if (id.includes('@tanstack/react-query') || id.includes('/axios/')) return 'vendor-data';
-          if (id.includes('framer-motion') || id.includes('@radix-ui') || id.includes('lucide-react')) return 'vendor-ui';
-          if (id.includes('/jszip/') || id.includes('/file-saver/') || id.includes('/canvas-confetti/')) return 'vendor-export';
+          if (id.includes('framer-motion') || id.includes('@radix-ui') || id.includes('lucide-react'))
+            return 'vendor-ui';
+          if (id.includes('/jszip/') || id.includes('/file-saver/') || id.includes('/canvas-confetti/'))
+            return 'vendor-export';
           return undefined;
         },
       },
@@ -33,7 +35,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: `http://127.0.0.1:${process.env.PERSONAWEAVE_API_PORT || 8000}`,
         changeOrigin: true,
       },
     },
