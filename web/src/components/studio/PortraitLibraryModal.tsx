@@ -28,9 +28,13 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
     api
       .getPortraitLibrary()
       .then(setCatalog)
-      .catch((reason) => setError(reason?.message || '无法读取本地素材库'))
+      .catch((reason) => {
+        const message = reason?.message || '无法读取本地素材库';
+        setError(message);
+        toast({ title: '素材库读取失败', description: message, kind: 'error' });
+      })
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, toast]);
 
   const identities = useMemo(
     () =>

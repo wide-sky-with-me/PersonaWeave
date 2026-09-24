@@ -7,7 +7,27 @@ from dotenv import dotenv_values
 
 from api.portable import configure, instance_lock
 from api.routes.system import get_sample_manifest
-from scripts.build_windows_portable import check_public_asset, portable_requirements, trim_development_files
+from scripts.build_windows_portable import MSVC_FILES, check_public_asset, portable_requirements, trim_development_files
+
+
+def test_vc_runtime_includes_onnx_extension_and_repair_matches_builder():
+    from pathlib import Path
+
+    assert "msvcp140_1.dll" in MSVC_FILES
+    repair = Path("scripts/repair_windows_runtime.ps1").read_text()
+    for name in MSVC_FILES:
+        assert name in repair
+
+
+def test_build_checks_missing_vc_component_before_installing_dependencies(tmp_path):
+    from scripts.build_windows_portable import build
+
+    for name in MSVC_FILES:
+        if name != "msvcp140_1.dll":
+            (tmp_path / name).write_bytes(b"fixture")
+    with pytest.raises(ValueError, match=r"Missing Microsoft VC runtime files: msvcp140_1\.dll"):
+        build(tmp_path / "not-created", tmp_path)
+    assert not (tmp_path / "not-created").exists()
 
 
 @pytest.mark.parametrize(

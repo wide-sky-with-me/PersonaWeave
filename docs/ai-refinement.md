@@ -4,6 +4,14 @@ This is the canonical current contract for PersonaWeave AI refinement. The produ
 
 ## Architecture and ownership
 
+Batch-triggered auto refinement persists the session association before joining its already scheduled turn.
+The next batch image waits for that turn to finish (including `review_required`), not for human acceptance.
+This bounds overlapping batch image contexts; joining never submits another turn. See [memory scheduling](memory-scheduling.md).
+
+Restoring a session keeps historical failures in the conversation without replaying old dialogs. Newly observed turn failures require acknowledgement.
+
+Studio displays rejected commands, failed turns and failed candidate reviews in acknowledgement dialogs, preserving server error details for rejected inputs. A failed review still retains the candidate for human inspection; dismissing a dialog never retries or generates anything. See `web/src/features/refinement/components/SessionWorkbench.tsx` and its colocated regression tests.
+
 - `api/routes/refinement_sessions.py`: session commands, bounded summaries, details, verified artifact bytes and resumable SSE notifications.
 - `api/refinement/contracts.py`: HTTP commands, session/turn/version projections and status literals.
 - `api/refinement/service.py`: server-owned turn orchestration and bounded model calls.

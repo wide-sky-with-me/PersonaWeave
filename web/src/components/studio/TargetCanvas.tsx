@@ -107,6 +107,9 @@ export const TargetCanvas: React.FC = () => {
     updateTargetImageById,
     batchUpdateTargetImages,
   });
+  useEffect(() => {
+    if (clusteringError) toast({ title: '目标人脸分析失败', description: clusteringError, kind: 'error' });
+  }, [clusteringError, toast]);
 
   useEffect(() => {
     const stage = imageStageRef.current;
@@ -160,9 +163,11 @@ export const TargetCanvas: React.FC = () => {
   const processAndAddFiles = async (files: FileList | File[]) => {
     if (!files?.length) return;
     const { accepted, errors } = await validateImageFiles(files);
-    const reads = accepted.map(
-      ({ file, width, height }, idx) =>
-        new Promise<TargetImageItem>((resolve, reject) => {
+    const newItems: TargetImageItem[] = [];
+    const readErrors: string[] = [];
+    for (const [idx, { file, width, height }] of accepted.entries()) {
+      try {
+        const item = await new Promise<TargetImageItem>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
             const base64Str = reader.result as string;
@@ -178,13 +183,12 @@ export const TargetCanvas: React.FC = () => {
           };
           reader.onerror = () => reject(new Error(`无法读取 ${file.name}`));
           reader.readAsDataURL(file);
-        }),
-    );
-    const settled = await Promise.allSettled(reads);
-    const newItems = settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []));
-    const readErrors = settled.flatMap((result) =>
-      result.status === 'rejected' ? [String(result.reason?.message ?? result.reason)] : [],
-    );
+        });
+        newItems.push(item);
+      } catch (error) {
+        readErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
     if (newItems.length) addTargetImages(newItems);
     if (errors.length || readErrors.length)
       toast({ title: '部分图片无法使用', description: [...errors, ...readErrors].join('；'), kind: 'error' });
@@ -368,6 +372,7 @@ export const TargetCanvas: React.FC = () => {
     } catch (err: any) {
       console.error('VLM arbitrate error:', err);
       setVlmReasoning(`❌ VLM 纠错调用失败: ${err?.message || '网络或服务端异常'}`);
+      toast({ title: '人物匹配复核失败', description: err?.message || '网络或服务端异常', kind: 'error' });
       setTimeout(() => setVlmReasoning(null), 6000);
     } finally {
       setIsArbitrating(false);

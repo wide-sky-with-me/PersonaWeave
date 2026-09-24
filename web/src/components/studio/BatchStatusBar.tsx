@@ -20,7 +20,7 @@ export function BatchStatusBar({ batch }: { batch: BatchPipeline }) {
   const status = queryError
     ? queryError
     : isProcessing
-      ? '批量运行中…'
+      ? batch.waitingReason || (batch.taskStatus === 'QUEUED' ? '已排队，等待前一个批任务完成…' : '逐张换脸中…')
       : singleRunning
         ? '单图试换中…'
         : batch.taskStatus === 'FAILED'

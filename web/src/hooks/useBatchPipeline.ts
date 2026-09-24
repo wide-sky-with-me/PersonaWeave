@@ -13,6 +13,7 @@ import type { SessionInput } from '@/features/refinement/sessionTypes';
 import { collectSwapWarnings } from '@/utils/swapWarnings';
 import { buildWorkspaceZip, hasWorkspaceResult } from '@/utils/workspaceExport';
 import type { TaskDetailData } from '@/types';
+import { apiErrorMessage } from '@/utils/apiError';
 /** Own batch submission and recovery once at app level, independent of visible sidebars. */
 export function useBatchPipeline() {
   const [taskSummary, setTaskSummary] = useState<{
@@ -48,6 +49,7 @@ export function useBatchPipeline() {
   const refinementSnapshots = useRef<Record<string, SessionInput>>({});
   const startedAtRef = useRef<number | null>(null);
   const completedTaskRef = useRef<string | null>(null);
+  const reportedQueryError = useRef<string | null>(null);
   const submittedTargetIdsRef = useRef<string[]>([]);
   // Recover only an explicitly linked client job. Falling back to the newest
   // server task makes an untouched fresh workspace look like it just completed old images.
@@ -99,9 +101,9 @@ export function useBatchPipeline() {
         }),
       );
     },
-    onError: (err: any) => {
+    onError: (err: unknown) => {
       setIsProcessing(false);
-      const message = err.response?.data?.message || err.message || '未知错误';
+      const message = apiErrorMessage(err);
       setQueryError(`提交批量任务失败：${message}`);
       toast({ title: '批量任务提交失败', description: message, kind: 'error' });
     },
@@ -119,6 +121,12 @@ export function useBatchPipeline() {
   });
   useEffect(() => {
     if (!taskQuery.error || !activeTaskId) return;
+    const message = apiErrorMessage(taskQuery.error, '无法查询任务状态');
+    const errorKey = `${activeTaskId}:${message}`;
+    if (reportedQueryError.current !== errorKey) {
+      reportedQueryError.current = errorKey;
+      toast({ title: '批量任务状态读取失败', description: message, kind: 'error' });
+    }
     if (axios.isAxiosError(taskQuery.error) && taskQuery.error.response?.status === 404) {
       setQueryError('原批量任务已不存在，已清除恢复入口。');
       updateJob(activeTaskId, { status: 'UNKNOWN', error: '任务不存在' });
@@ -127,15 +135,15 @@ export function useBatchPipeline() {
       setTaskDetail(null);
       return;
     }
-    const message = taskQuery.error instanceof Error ? taskQuery.error.message : '无法查询任务状态';
     setQueryError(`无法恢复任务状态：${message}`);
     updateJob(activeTaskId, { status: 'UNKNOWN', error: message });
     setIsProcessing(false);
-  }, [activeTaskId, setActiveTaskId, setIsProcessing, taskQuery.error, updateJob]);
+  }, [activeTaskId, setActiveTaskId, setIsProcessing, taskQuery.error, updateJob, toast]);
 
   useEffect(() => {
     const detail = taskQuery.data;
     if (!detail || detail.task_id !== activeTaskId) return;
+    reportedQueryError.current = null;
     setTaskDetail(detail);
     setQueryError(null);
     updateJob(detail.task_id, {
@@ -196,7 +204,7 @@ export function useBatchPipeline() {
     setIsProcessing(false);
     void queryClient.cancelQueries({ queryKey: ['batch-task', activeTaskId] });
     void queryClient.invalidateQueries({ queryKey: ['batch-task', activeTaskId] });
-    if ((detail.status === 'COMPLETED' || detail.status === 'PARTIAL') && completedTaskRef.current !== detail.task_id) {
+    if (completedTaskRef.current !== detail.task_id) {
       completedTaskRef.current = detail.task_id;
       const elapsedSec = (Date.now() - (startedAtRef.current ?? Date.now())) / 1000;
       setTaskSummary({
@@ -205,11 +213,28 @@ export function useBatchPipeline() {
         avgSpeed: Math.round((elapsedSec / Math.max(detail.total_images, 1)) * 100) / 100,
       });
       const warnings = collectSwapWarnings(detail.results);
-      if (warnings.length) {
+      const failures = detail.results.flatMap((result) => {
+        const name =
+          useStudioStore.getState().targetImages.find((item) => item.id === result.client_target_id)?.name ||
+          result.client_target_id;
+        return [
+          ...(result.status === 'FAILED' ? [`${name}：${result.error || '换脸处理失败'}`] : []),
+          ...(result.refinement_error ? [`${name} · AI 精修：${result.refinement_error}`] : []),
+        ];
+      });
+      if (detail.error) failures.unshift(detail.error);
+      if (failures.length || detail.status === 'FAILED') {
+        toast({
+          title: detail.status === 'FAILED' ? '批量换脸失败' : '批量任务部分处理失败',
+          description: [...failures, ...warnings].join('\n\n') || '任务未完成，请检查输入后重试。',
+          kind: 'error',
+        });
+      } else if (warnings.length) {
         toast({
           title: '部分人物未完成换脸',
           description: warnings.join('；'),
           kind: 'warning',
+          modal: true,
         });
       } else if (detail.status === 'COMPLETED') {
         confetti({ particleCount: 60, spread: 60, origin: { y: 0.92 }, colors: ['#5b5fef', '#06b6d4', '#22c55e'] });
@@ -286,6 +311,7 @@ export function useBatchPipeline() {
   const retryConnection = () => {
     if (!activeTaskId) return;
     setQueryError(null);
+    reportedQueryError.current = null;
     updateJob(activeTaskId, { status: 'PROCESSING', error: undefined });
     setIsProcessing(true);
     void taskQuery.refetch();
@@ -293,6 +319,7 @@ export function useBatchPipeline() {
 
   return {
     taskSummary,
+    waitingReason: taskDetail?.waiting_reason,
     queryError,
     isExporting,
     aiRefinement,

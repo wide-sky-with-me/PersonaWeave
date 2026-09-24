@@ -39,11 +39,15 @@ async function probeImageDimensions(file: File): Promise<{ width: number; height
 export async function validateImageFiles(
   files: Iterable<File>,
 ): Promise<{ accepted: ValidatedImageFile[]; errors: string[] }> {
-  const settled = await Promise.allSettled(Array.from(files, validateImageFile));
-  return {
-    accepted: settled.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
-    errors: settled.flatMap((result) =>
-      result.status === 'rejected' ? [String(result.reason?.message ?? result.reason)] : [],
-    ),
-  };
+  const accepted: ValidatedImageFile[] = [];
+  const errors: string[] = [];
+  // Dimension probing may decode the full bitmap; release each one before opening the next file.
+  for (const file of files) {
+    try {
+      accepted.push(await validateImageFile(file));
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { accepted, errors };
 }

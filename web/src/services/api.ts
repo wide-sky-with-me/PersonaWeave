@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { apiErrorMessage } from '@/utils/apiError';
 import type {
   AIModelCatalog,
   BatchImageItem,
@@ -14,6 +15,11 @@ import type {
 export const apiClient = axios.create({
   baseURL: '',
   timeout: 240000,
+});
+
+apiClient.interceptors.response.use(undefined, (error: unknown) => {
+  if (axios.isAxiosError(error)) error.message = apiErrorMessage(error);
+  return Promise.reject(error);
 });
 
 export const api = {

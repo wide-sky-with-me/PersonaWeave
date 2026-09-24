@@ -5,6 +5,8 @@ Performs semantic visual reasoning over face, hair, clothing, and body features 
 resolve ambiguous cross-photo person tracking.
 """
 
+from collections.abc import Awaitable, Callable
+
 import cv2
 import numpy as np
 from pydantic import BaseModel, Field
@@ -220,6 +222,7 @@ class VLMIdentityArbiter:
         min_confidence: float = 0.7,
         *,
         similarity_threshold: float,
+        image_loader: Callable[[int], Awaitable[np.ndarray]] | None = None,
     ) -> list[dict]:
         """
         Uses VLM suggestions to arbitrate orphan clusters against incomplete clusters.
@@ -232,7 +235,9 @@ class VLMIdentityArbiter:
 
         if not np.isfinite(similarity_threshold) or not 0.0 <= similarity_threshold <= 1.0:
             raise ValueError("ArcFace similarity_threshold must be finite and between 0 and 1")
-        num_images = len(raw_images_bgr)
+        # API clustering supplies immutable disk snapshots, loading only a needed pair.
+        # In-memory callers (diagnostics/tests) still supply their explicit image list.
+        num_images = len(all_detected_faces) if image_loader else len(raw_images_bgr)
         if num_images < 2:
             return clusters
 
@@ -269,12 +274,15 @@ class VLMIdentityArbiter:
                         for i, f in enumerate(all_detected_faces[img_idx])
                     ]
 
+                    reference_image = await image_loader(ref_img_idx) if image_loader else raw_images_bgr[ref_img_idx]
+                    target_image = await image_loader(img_idx) if image_loader else raw_images_bgr[img_idx]
                     res = await self.arbitrate(
-                        reference_image_bgr=raw_images_bgr[ref_img_idx],
+                        reference_image_bgr=reference_image,
                         reference_bbox=[float(x) for x in ref_face.bbox],
-                        target_image_bgr=raw_images_bgr[img_idx],
+                        target_image_bgr=target_image,
                         candidates=tgt_candidates,
                     )
+                    del reference_image, target_image
 
                     if res.is_success and res.matched_person_index == face_idx + 1 and res.confidence >= min_confidence:
                         # VLM confidence is semantic evidence, never an ArcFace score.

@@ -64,6 +64,9 @@ def test_batch_creation_and_turn_use_stable_idempotency_keys():
         async def submit_turn(self, session_id, request):
             self.calls.append(request)
 
+        async def wait_until_idle(self, session_id):
+            assert session_id == "a" * 32
+
     sessions = Sessions()
     hook = create_batch_refinement_hook(sessions)
     output = result()
@@ -79,3 +82,35 @@ def test_batch_creation_and_turn_use_stable_idempotency_keys():
 def test_batch_model_work_is_opt_in():
     request = BatchTaskCreateRequest(batch_images=[{"client_target_id": "a", "image_url": "https://example.com/a.png"}])
     assert request.ai_refinement is False
+
+
+def test_batch_waits_for_existing_ai_turn_after_persisting_session_association():
+    async def exercise():
+        release = asyncio.Event()
+        associated = []
+
+        class Sessions:
+            async def create_session(self, request):
+                return {"id": "a" * 32, "revision": 1, "baseline_version_id": "b" * 32}
+
+            async def submit_turn(self, session_id, request):
+                assert associated == [session_id]
+
+            async def wait_until_idle(self, session_id):
+                await release.wait()
+
+        output = result()
+        task = asyncio.create_task(
+            create_batch_refinement_hook(Sessions())(
+                "task", None, output, [], [], on_session_created=lambda: associated.append(output.refinement_session_id)
+            )
+        )
+        for _ in range(100):
+            if associated:
+                break
+            await asyncio.sleep(0.005)
+        assert associated and not task.done()
+        release.set()
+        await task
+
+    asyncio.run(exercise())

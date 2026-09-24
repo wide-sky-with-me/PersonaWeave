@@ -31,6 +31,7 @@ from core.image_security import (
     pin_request_to_addresses,
     validate_public_url,
 )
+from core.memory_budget import MemoryPressureError, require_swap_memory
 from core.pipeline import PersonaWeavePipeline
 from utils.image_io import write_image
 
@@ -71,7 +72,9 @@ class TaskManager:
         self.inference_limiter = inference_limiter or InferenceLimiter(1)
         self.tasks: dict[str, TaskDetailData] = {}
         self._requests: dict[str, BatchTaskCreateRequest] = {}
+        self._persisted_requests: set[str] = set()
         self._background_tasks: set[asyncio.Task] = set()
+        self._batch_queue = asyncio.Semaphore(1)
         os.makedirs(self.output_base_dir, exist_ok=True)
         self._store = SQLiteTaskStore(db_path or default_task_db_path(output_base_dir))
         self._load_persisted_tasks()
@@ -79,13 +82,17 @@ class TaskManager:
         self.refinement_hook = None
 
     def _persist(self, task_id: str):
-        request = self._requests.get(task_id)
+        # The immutable request may contain many full-resolution data URIs. Save it once,
+        # rather than creating batch-sized JSON copies for every progress update.
+        request = self._requests.get(task_id) if task_id not in self._persisted_requests else None
         self._store.save(
             "batch",
             task_id,
             self.tasks[task_id].model_dump(mode="json"),
             request.model_dump(mode="json") if request is not None else None,
         )
+        if request is not None:
+            self._persisted_requests.add(task_id)
 
     def _load_persisted_tasks(self):
         for state, request_data in self._store.load("batch"):
@@ -97,8 +104,10 @@ class TaskManager:
             self.tasks[task.task_id] = task
             if request is not None:
                 self._requests[task.task_id] = request
+                self._persisted_requests.add(task.task_id)
             if task.status in {TaskStatus.QUEUED, TaskStatus.PROCESSING}:
                 task.status = TaskStatus.FAILED
+                task.waiting_reason = None
                 task.error = "Batch task was interrupted by an application restart; submit it again to retry"
                 # Only persisted results are facts: unprocessed images are neither
                 # successful nor failed attempts, and completed artifacts stay reviewable.
@@ -199,6 +208,7 @@ class TaskManager:
 
         self.tasks.pop(task_id, None)
         self._requests.pop(task_id, None)
+        self._persisted_requests.discard(task_id)
         if quarantined is not None:
             if quarantined.is_symlink() or quarantined.is_file():
                 quarantined.unlink(missing_ok=True)
@@ -236,10 +246,21 @@ class TaskManager:
         ]
 
     async def _run_batch_task(self, task_id: str, req: BatchTaskCreateRequest):
+        """Keep later batches queued without preparing their reference images in RAM."""
+        async with self._batch_queue:
+            await self._execute_batch_task(task_id, req)
+
+    async def _execute_batch_task(self, task_id: str, req: BatchTaskCreateRequest):
         """Worker executing the batch task asynchronously."""
         task = self.tasks[task_id]
         task.status = TaskStatus.PROCESSING
+        task.waiting_reason = None
         self._persist(task_id)
+
+        def report_memory_wait(message):
+            if task.waiting_reason != message:
+                task.waiting_reason = message
+                self._persist(task_id)
 
         task_output_dir = os.path.join(self.output_base_dir, task_id)
         os.makedirs(task_output_dir, exist_ok=True)
@@ -325,23 +346,47 @@ class TaskManager:
                 gallery_embedding,
                 target_embedding,
                 prepared_mappings,
-            ) = await self.inference_limiter.run(prepare_sources)
+            ) = await self.inference_limiter.run(prepare_sources, on_memory_wait=report_memory_wait)
 
             # 3. Process each image sequentially in thread pool to avoid blocking async event loop
             for idx, batch_image in enumerate(req.normalized_batch_images):
                 t_start = time.time()
                 img_url = batch_image.image_url
                 try:
-                    manual_mask_arr = decode_manual_mask(batch_image.manual_mask)
-                    target_img = await asyncio.to_thread(load_image_from_source, img_url)
 
-                    # Execute pipeline swap
-                    def do_process(curr_img, curr_manual_mask=manual_mask_arr):
-                        if prepared_mappings:
-                            return self.pipeline.process_image_multi_mapping(
+                    def process_one(batch_image=batch_image, img_url=img_url, idx=idx, t_start=t_start):
+                        manual_mask_arr = decode_manual_mask(batch_image.manual_mask)
+                        target_img = load_image_from_source(img_url)
+                        require_swap_memory(target_img)
+
+                        # Execute pipeline swap
+                        def do_process(curr_img, curr_manual_mask=manual_mask_arr):
+                            if prepared_mappings:
+                                return self.pipeline.process_image_multi_mapping(
+                                    image=curr_img,
+                                    mappings=prepared_mappings,
+                                    identity_blend_strength=req.parameters.identity_blend_strength,
+                                    enable_color_transfer=req.parameters.enable_color_transfer,
+                                    color_transfer_mode=req.parameters.color_transfer_mode,
+                                    color_transfer_ring_strength=req.parameters.color_transfer_ring_strength,
+                                    color_transfer_ring_width_px=req.parameters.color_transfer_ring_width_px,
+                                    enable_dense_mask=req.parameters.enable_dense_mask,
+                                    swapper_model=req.parameters.swapper_model,
+                                    allow_research_models=req.parameters.allow_research_models,
+                                    manual_mask=curr_manual_mask,
+                                    enable_face_restoration=req.parameters.enable_face_restoration,
+                                    restoration_fidelity_weight=req.parameters.restoration_fidelity_weight,
+                                    restoration_strength=req.parameters.restoration_strength,
+                                )
+                            return self.pipeline.process_image(
                                 image=curr_img,
-                                mappings=prepared_mappings,
+                                source_references=source_references,
+                                gallery_embedding=gallery_embedding,
+                                gallery_reference_weights=[r.get("quality_score", 0.5) for r in source_references],
+                                target_embedding=target_embedding,
+                                similarity_threshold=req.parameters.similarity_threshold,
                                 identity_blend_strength=req.parameters.identity_blend_strength,
+                                source_mode=req.parameters.source_mode,
                                 enable_color_transfer=req.parameters.enable_color_transfer,
                                 color_transfer_mode=req.parameters.color_transfer_mode,
                                 color_transfer_ring_strength=req.parameters.color_transfer_ring_strength,
@@ -354,66 +399,51 @@ class TaskManager:
                                 restoration_fidelity_weight=req.parameters.restoration_fidelity_weight,
                                 restoration_strength=req.parameters.restoration_strength,
                             )
-                        return self.pipeline.process_image(
-                            image=curr_img,
-                            source_references=source_references,
-                            gallery_embedding=gallery_embedding,
-                            gallery_reference_weights=[r.get("quality_score", 0.5) for r in source_references],
-                            target_embedding=target_embedding,
-                            similarity_threshold=req.parameters.similarity_threshold,
-                            identity_blend_strength=req.parameters.identity_blend_strength,
-                            source_mode=req.parameters.source_mode,
-                            enable_color_transfer=req.parameters.enable_color_transfer,
-                            color_transfer_mode=req.parameters.color_transfer_mode,
-                            color_transfer_ring_strength=req.parameters.color_transfer_ring_strength,
-                            color_transfer_ring_width_px=req.parameters.color_transfer_ring_width_px,
-                            enable_dense_mask=req.parameters.enable_dense_mask,
-                            swapper_model=req.parameters.swapper_model,
-                            allow_research_models=req.parameters.allow_research_models,
-                            manual_mask=curr_manual_mask,
-                            enable_face_restoration=req.parameters.enable_face_restoration,
-                            restoration_fidelity_weight=req.parameters.restoration_fidelity_weight,
-                            restoration_strength=req.parameters.restoration_strength,
-                        )
 
-                    swap_res = await self.inference_limiter.run(do_process, target_img)
-                    detail = describe_skipped_people(swap_res.person_outcomes)
-                    # A completed no-op still has real detection/matching diagnostics. Keep
-                    # them on the failed result without publishing an unchanged canvas.
-                    img_res = ImageSwapResult(
-                        client_target_id=batch_image.client_target_id,
-                        original_url=img_url,
-                        status="FAILED",
-                        faces_detected=swap_res.faces_detected,
-                        faces_swapped=swap_res.faces_swapped,
-                        swapped_person_indices=swap_res.swapped_person_indices,
-                        requested_person_indices=swap_res.requested_person_indices,
-                        person_outcomes=swap_res.person_outcomes,
-                        matched_similarities=[round(float(s), 4) for s in swap_res.matched_similarities],
-                        cost_ms=round((time.time() - t_start) * 1000, 2),
-                        model_routing=swap_res.model_routing,
-                    )
-                    if swap_res.faces_swapped == 0:
-                        img_res.error = (
-                            detail or f"No visible face swap was produced from {swap_res.faces_detected} faces"
+                        swap_res = do_process(target_img)
+                        detail = describe_skipped_people(swap_res.person_outcomes)
+                        # A completed no-op still has real detection/matching diagnostics. Keep
+                        # them on the failed result without publishing an unchanged canvas.
+                        img_res = ImageSwapResult(
+                            client_target_id=batch_image.client_target_id,
+                            original_url=img_url,
+                            status="FAILED",
+                            faces_detected=swap_res.faces_detected,
+                            faces_swapped=swap_res.faces_swapped,
+                            swapped_person_indices=swap_res.swapped_person_indices,
+                            requested_person_indices=swap_res.requested_person_indices,
+                            person_outcomes=swap_res.person_outcomes,
+                            matched_similarities=[round(float(s), 4) for s in swap_res.matched_similarities],
+                            cost_ms=round((time.time() - t_start) * 1000, 2),
+                            model_routing=swap_res.model_routing,
                         )
-                    else:
-                        # Persist both canvases under the task so history remains reviewable
-                        # after an external source URL or browser data URI disappears.
-                        original_filename = f"original_{idx + 1:04d}.png"
-                        original_path = os.path.join(task_output_dir, original_filename)
-                        if not write_image(original_path, target_img):
-                            raise OSError(f"Failed to write original image: {original_path}")
-                        out_filename = f"res_{idx + 1:04d}.jpg"
-                        out_path = os.path.join(task_output_dir, out_filename)
-                        if not write_image(out_path, swap_res.output_image):
-                            raise OSError(f"Failed to write output image: {out_path}")
+                        if swap_res.faces_swapped == 0:
+                            img_res.error = (
+                                detail or f"No visible face swap was produced from {swap_res.faces_detected} faces"
+                            )
+                        else:
+                            # Persist both canvases under the task so history remains reviewable
+                            # after an external source URL or browser data URI disappears.
+                            original_filename = f"original_{idx + 1:04d}.png"
+                            original_path = os.path.join(task_output_dir, original_filename)
+                            if not write_image(original_path, target_img):
+                                raise OSError(f"Failed to write original image: {original_path}")
+                            out_filename = f"res_{idx + 1:04d}.jpg"
+                            out_path = os.path.join(task_output_dir, out_filename)
+                            if not write_image(out_path, swap_res.output_image):
+                                raise OSError(f"Failed to write output image: {out_path}")
 
-                        img_res.original_url = f"/api/v1/files/{task_id}/{original_filename}"
-                        img_res.processed_url = f"/api/v1/files/{task_id}/{out_filename}"
-                        img_res.status = "PARTIAL" if detail else "SUCCESS"
-                        img_res.warning = detail
-                        img_res.cost_ms = round((time.time() - t_start) * 1000, 2)
+                            img_res.original_url = f"/api/v1/files/{task_id}/{original_filename}"
+                            img_res.processed_url = f"/api/v1/files/{task_id}/{out_filename}"
+                            img_res.status = "PARTIAL" if detail else "SUCCESS"
+                            img_res.warning = detail
+                            img_res.cost_ms = round((time.time() - t_start) * 1000, 2)
+                        return img_res
+
+                    img_res = await self.inference_limiter.run(process_one, on_memory_wait=report_memory_wait)
+                except MemoryPressureError:
+                    # Do not repeat a timed-out memory wait for every remaining picture. Completed files remain valid.
+                    raise
                 except Exception as e:
                     cost_ms = round((time.time() - t_start) * 1000, 2)
                     img_res = ImageSwapResult(
@@ -429,13 +459,23 @@ class TaskManager:
                 task.progress = round(task.processed_images / max(task.total_images, 1), 2)
                 self._persist(task_id)
                 if req.ai_refinement and img_res.processed_url:
+                    report_memory_wait(f"第 {idx + 1} 张本地换脸已完成，等待本图 AI 精修结束后继续下一张。")
                     try:
                         if self.refinement_hook is None:
                             raise RuntimeError("Refinement session service unavailable")
-                        await self.refinement_hook(task_id, req, img_res, source_references, prepared_mappings)
+                        await self.refinement_hook(
+                            task_id,
+                            req,
+                            img_res,
+                            source_references,
+                            prepared_mappings,
+                            on_session_created=lambda: self._persist(task_id),
+                        )
                     except Exception:
                         # A follow-up failure must not discard a successful immutable local result.
                         img_res.refinement_error = "AI 精修未启动；本地结果已保留，可进入精修工作区重试。"
+                    finally:
+                        report_memory_wait(None)
                     self._persist(task_id)
             task.success_count = sum(result.status in {"SUCCESS", "PARTIAL"} for result in task.results)
             task.failure_count = sum(result.status == "FAILED" for result in task.results)
@@ -452,7 +492,13 @@ class TaskManager:
             self._persist(task_id)
         except Exception as e:
             task.status = TaskStatus.FAILED
+            task.waiting_reason = None
             task.error = str(e)
+            task.success_count = sum(item.status in {"SUCCESS", "PARTIAL"} for item in task.results)
+            task.failure_count = sum(item.status == "FAILED" for item in task.results)
+            task.has_partial_failure = bool(
+                task.success_count and (task.failure_count or task.processed_images < task.total_images)
+            )
             task.completed_at = datetime.now(UTC).isoformat()
             self._persist(task_id)
 
@@ -517,6 +563,7 @@ class TaskManager:
                 )
 
             target_img = load_image_from_source(req.target_image_url)
+            require_swap_memory(target_img)
             swap_res = self.pipeline.process_image_multi_mapping(
                 image=target_img,
                 mappings=prepared_mappings,
@@ -550,6 +597,7 @@ class TaskManager:
 
             # 2. Target embedding
             target_img = load_image_from_source(req.target_image_url)
+            require_swap_memory(target_img)
             target_emb = None
             if req.target_reference_url:
                 tgt_ref_img = load_image_from_source(req.target_reference_url)

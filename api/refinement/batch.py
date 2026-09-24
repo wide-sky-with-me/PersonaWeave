@@ -55,12 +55,14 @@ def batch_session_request(task_id, request, result, source_references, prepared_
 def create_batch_refinement_hook(sessions):
     """Bind session API commands to the local task completion boundary without another worker queue."""
 
-    async def start(task_id, request, result, source_references, prepared_mappings):
+    async def start(task_id, request, result, source_references, prepared_mappings, *, on_session_created=None):
         payload = await asyncio.to_thread(
             batch_session_request, task_id, request, result, source_references, prepared_mappings
         )
         session = await sessions.create_session(payload)
         result.refinement_session_id = session["id"]
+        if on_session_created:
+            on_session_created()  # Persist the association before waiting for a potentially slow paid turn.
         await sessions.submit_turn(
             session["id"],
             TurnCreateRequest(
@@ -71,5 +73,8 @@ def create_batch_refinement_hook(sessions):
                 message="对照原图、当前结果和人物参考板检查问题；有明确可修复问题时生成一个整图候选，无明确问题或人物对应不确定时停止并说明。",
             ),
         )
+        # One batch must not fan out nine image-heavy AI conversations while local swapping continues.
+        # Finish this authorized turn (including review_required), without waiting for human acceptance.
+        await sessions.wait_until_idle(session["id"])
 
     return start

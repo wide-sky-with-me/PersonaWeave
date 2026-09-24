@@ -6,6 +6,7 @@ import pytest
 
 from api.portraits.library import (
     age_group_for,
+    archive_outside_age_range,
     build_portrait_library_catalog,
     connect,
     ensure_layout,
@@ -61,6 +62,18 @@ def test_catalog_reports_unavailable_when_no_database_exists(tmp_path: Path):
     assert catalog["available"] is False
     assert catalog["identities"] == []
     assert "root" not in catalog
+
+
+def test_archive_hides_old_people_but_preserves_historical_assets(tmp_path):
+    young, _ = _seed_identity_with_asset(tmp_path, identity_source_key="F01", age=16)
+    old, asset = _seed_identity_with_asset(tmp_path, identity_source_key="F13", age=52)
+    assert archive_outside_age_range(16, 25, root=tmp_path) == 1
+    assert archive_outside_age_range(16, 25, root=tmp_path) == 0
+    catalog = build_portrait_library_catalog(tmp_path)
+    assert [person["id"] for person in catalog["identities"]] == [young]
+    assert catalog["total_assets"] == 1
+    assert resolve_asset_path(asset, root=tmp_path).read_bytes() == b"original-bytes"
+    assert resolve_identity_asset_ids(old, root=tmp_path) == [asset]
 
 
 def test_catalog_groups_assets_by_identity(tmp_path: Path):

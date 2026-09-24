@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS assets (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS archived_identities (
+    identity_id TEXT PRIMARY KEY REFERENCES identities(id),
+    archived_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS import_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     imported_at TEXT NOT NULL,
@@ -169,8 +174,13 @@ def build_portrait_library_catalog(root: Path | None = None) -> dict:
         return empty
 
     with connect(library_root) as conn:
-        identity_rows = conn.execute("SELECT * FROM identities ORDER BY source_key").fetchall()
-        asset_rows = conn.execute("SELECT * FROM assets ORDER BY identity_id, role, label").fetchall()
+        identity_rows = conn.execute(
+            "SELECT * FROM identities WHERE id NOT IN (SELECT identity_id FROM archived_identities) ORDER BY source_key"
+        ).fetchall()
+        asset_rows = conn.execute(
+            "SELECT * FROM assets WHERE identity_id NOT IN (SELECT identity_id FROM archived_identities) "
+            "ORDER BY identity_id, role, label"
+        ).fetchall()
 
     if not identity_rows:
         return empty
@@ -221,6 +231,23 @@ def build_portrait_library_catalog(root: Path | None = None) -> dict:
         "total_assets": total_assets,
         "identities": identities,
     }
+
+
+def archive_outside_age_range(min_age: int, max_age: int, *, root: Path | None = None) -> int:
+    """Hide out-of-range identities from new selections, preserving all historical ID/file lookups.
+
+    This is an explicit library maintenance action, not a permanent age filter on future imports.
+    Existing archives stay archived. Returns the number of newly archived identities.
+    """
+    if min_age < 0 or max_age < min_age:
+        raise ValueError("Invalid portrait age range")
+    with connect(root) as conn:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO archived_identities (identity_id, archived_at) "
+            "SELECT id, datetime('now') FROM identities WHERE age < ? OR age > ?",
+            (min_age, max_age),
+        )
+        return cursor.rowcount
 
 
 def resolve_asset_path(asset_id: str, *, root: Path | None = None, thumbnail: bool = False) -> Path | None:

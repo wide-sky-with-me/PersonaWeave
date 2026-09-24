@@ -21,6 +21,7 @@ PYTHON_SHA256 = "d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2c
 PYTHON_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 CPU_RUNTIME = "onnxruntime==1.23.2"
 GPU_RUNTIME = "onnxruntime-gpu==1.23.2"
+MSVC_FILES = ("msvcp140.dll", "msvcp140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll")
 SAMPLES = {
     "source-01.png": "test_target/01.png",
     "source-02.png": "test_target/02.png",
@@ -77,6 +78,9 @@ def trim_development_files(runtime):
 
 def build(output, msvc_dir, skip_deps=False, archive=True, edition="cpu"):
     """Assemble only shipped source, verified models and isolated Windows dependencies."""
+    missing_msvc = [name for name in MSVC_FILES if not (msvc_dir / name).is_file()]
+    if missing_msvc:
+        raise ValueError("Missing Microsoft VC runtime files: " + ", ".join(missing_msvc))
     output = output.resolve()
     if output == ROOT / "dist" or not output.is_relative_to(ROOT / "dist"):
         raise ValueError("Portable output must be a dedicated directory below dist/")
@@ -148,7 +152,7 @@ def build(output, msvc_dir, skip_deps=False, archive=True, edition="cpu"):
             cwd=ROOT,
         )
     # App-local Microsoft VC runtime; supplied from a verified Microsoft installation by the builder.
-    for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "concrt140.dll"):
+    for name in MSVC_FILES:
         shutil.copyfile(msvc_dir / name, runtime / name)
     for name in ("api", "core", "utils"):
         target = output / name

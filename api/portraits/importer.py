@@ -22,6 +22,7 @@ from PIL import Image
 
 from api.portraits.library import (
     age_group_for,
+    archive_outside_age_range,
     connect,
     ensure_layout,
     opaque_id,
@@ -363,6 +364,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Managed library root (defaults to $PERSONAWEAVE_PORTRAIT_LIBRARY_ROOT or data/portrait_library).",
     )
+    parser.add_argument(
+        "--archive-outside-ages",
+        type=int,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        help="After a successful import, hide existing out-of-range identities; preserve historical references.",
+    )
     return parser.parse_args(argv)
 
 
@@ -372,6 +380,11 @@ def main(argv: list[str] | None = None) -> None:
     print("Portrait library import complete:")
     for key, value in summary.as_dict().items():
         print(f"  {key:<18} {value}")
+    if args.archive_outside_ages:
+        if any((summary.quarantined, summary.invalid_row, summary.missing_source, summary.duplicate_relpath_conflict)):
+            raise ValueError("Import has unresolved errors; existing portraits were not archived")
+        count = archive_outside_age_range(*args.archive_outside_ages, root=args.library_root)
+        print(f"  archived_identities {count}")
 
 
 if __name__ == "__main__":

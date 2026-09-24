@@ -320,6 +320,7 @@ class TaskDetailData(BaseModel):
     completed_at: str | None = None
     results: list[ImageSwapResult] = Field(default_factory=list)
     error: str | None = None
+    waiting_reason: str | None = None
 
 
 class TaskDetailResponse(BaseModel):

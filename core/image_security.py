@@ -13,6 +13,8 @@ import httpx
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
+from core.memory_budget import require_memory
+
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_REDIRECTS = 4
@@ -119,6 +121,7 @@ def decode_image_bytes(data: bytes, content_type: str | None = None) -> np.ndarr
         raise ValueError("Image format is not allowed")
     if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
         raise ValueError("Image exceeds the pixel limit")
+    require_memory(width * height * 4)
     image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Image data could not be decoded")

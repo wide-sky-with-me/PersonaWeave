@@ -251,6 +251,7 @@ def main():
             page.get_by_role("button", name="确认分析，填写意见", exact=True).click()
             page.get_by_role("textbox", name="精修意见").fill("基于 V1 修复 P2 帽檐边缘，保持这版整体构图。")
             page.get_by_role("button", name="结合分析与意见生成", exact=True).click()
+            page.get_by_role("button", name="知道了", exact=True).click()
             expect(page.get_by_role("button", name="查看V3", exact=True)).to_be_visible()
             assert fixture.requests[-1]["base_version_id"] == "2" * 32
             assert fixture.session["versions"][-1]["parent_version_id"] == "2" * 32
@@ -269,6 +270,7 @@ def main():
             page.get_by_role("button", name="确认分析，填写意见", exact=True).click()
             page.get_by_role("textbox", name="精修意见").fill("第二轮只修复残留边缘，保留第一轮的肤色。")
             page.get_by_role("button", name="结合分析与意见生成", exact=True).click()
+            page.get_by_role("button", name="知道了", exact=True).click()
             expect(page.get_by_role("button", name="查看V4", exact=True)).to_be_visible()
             assert fixture.session["versions"][-1]["parent_version_id"] == "4" * 32
             assert fixture.session["accepted_version_id"] == "4" * 32
@@ -276,6 +278,8 @@ def main():
             page.screenshot(path=str(args.output / "second-iteration.png"), full_page=True)
             page.reload(wait_until="domcontentloaded")
             open_session(page)
+            # History retains error details without replaying old failure dialogs or model requests.
+            expect(page.get_by_role("button", name="知道了", exact=True)).to_have_count(0)
             expect(page.get_by_role("link", name="导出已接受版本")).to_be_visible()
             # Refresh retains the selected base; start another analysis only after explicitly advancing it.
             expect(page.get_by_test_id("base-version")).to_contain_text("V3")

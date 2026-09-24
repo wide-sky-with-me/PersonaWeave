@@ -1,5 +1,10 @@
 # FaceFusion local swap parity
 
+Full-canvas alpha compositing computes float32 intermediates in 256-row blocks with pixel-identical results.
+Upload decoding, local inference and batch processing share bounded queues and OS memory headroom checks;
+see [memory scheduling and measured allocations](memory-scheduling.md). This changes memory lifetime, not
+resolution, identity matching, mask semantics or the blend formula.
+
 PersonaWeave's production local swap path follows the processing sequence used by FaceFusion at commit `4b1dedb853e4838ca7f3cf70b572be241aee2497` (https://github.com/facefusion/facefusion):
 
 1. canonical five-point alignment using the model template. The forward warp's interpolation is chosen from the transform's actual scale factor (`INTER_AREA` when shrinking, `INTER_CUBIC` when the pixel-boost destination enlarges the source content — `INTER_AREA` degrades to near-`INTER_NEAREST` on enlargement per OpenCV's own documented behavior, so it is not used unconditionally);
@@ -36,6 +41,8 @@ Uploaded references are scored from effective face size, crop sharpness, detecto
 The portrait-library UI deterministically preselects at most eight non-contact-sheet assets, prioritizing a frontal view, the strongest available left/right profiles, left/right chin-down profiles, and near-30° left/right views before filling any remaining slots. It does not randomly choose six images. The executable policy is `selectDiversePortraitAssets()` in `web/src/utils/portraitAssetSelection.ts`.
 
 For a target with absolute five-point yaw ratio above `0.75`, local swapping is skipped unless at least one source reference is within `0.45` yaw-ratio units. A 2D five-point swapper cannot reliably synthesize the hidden half of an extreme profile; bypassing this guard produced doubled eyes and distorted noses. The skip is reported as `extreme_pose_without_matching_reference`, and batch/sync responses preserve successful people while surfacing an actionable partial-result warning.
+
+Studio shows single-image refusals, failed batch images and partial-person warnings in an acknowledgement dialog. HTTP errors preserve the server's `detail`; a completed batch aggregates failures by image and notifies only once per task, rather than opening a dialog on every poll. Reference-library maintenance and archived-identity semantics are documented in [portrait-library.md](portrait-library.md). Notification regressions are in `web/src/components/ui/ToastProvider.test.tsx` and `web/src/components/studio/BatchControls.test.tsx`.
 
 `identity_blend_strength` controls the visible source-identity contribution on the InSwapper production path. Its API range is `0.4–0.95` and its default is `0.9`; the Studio slider exposes `0.45–0.95`. The previous `0.72` remains an explicit conservative choice. Raising strength cannot create missing pose evidence or bypass the extreme-profile guard, mask intersection, or the unchanged visible-change threshold. The default is synchronized across API, pipeline and Studio by a regression test; see [the measured four-image comparison](./swap-benchmarks.md#recorded-strength-comparison).
 

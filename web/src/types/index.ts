@@ -227,6 +227,7 @@ export interface TaskDetailData {
   completed_at?: string;
   results: ImageSwapResult[];
   error?: string;
+  waiting_reason?: string | null;
 }
 
 export interface ServerHealth {

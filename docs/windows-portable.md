@@ -44,3 +44,34 @@ Windows 驱动检查使用系统 `nvcuda.dll` 的初始化和设备数；`utils/
 本地 Router 初始化失败（例如无法识别模型协议）会单独显示为 AI 路由配置错误，不再误报为上游 HTTP 400；实际服务端错误仍显示 HTTP 状态码。修复配置后须重启程序；旧失败记录保留原错误，不会自动重试。实现与回归见 [模型目录](model-catalog.md)。
 
 工程保存会分别归档素材库参考原图和界面预览缩略图，修复预览地址被误认为本地路径而返回 422 的问题；恢复后的图片独立于原素材库。路径校验与回归见 [工程历史契约](task-history.md)、`api/projects/recovery.py` 和 `tests/test_projects.py`。
+
+## 跨机器复制与 422 排查
+
+复制已配置目录时，需保留同层的 `runtime/`、`api/`、`core/`、`utils/`、`config/`、`models/`、`web/dist/` 和 `manifest.json`。要带走现有素材/工程/结果，必须连同 `data/` 与 `outputs/` 一起复制，复制前停止程序以保证 SQLite 与图片一致。原始干净包不含个人素材库和工程，仅带四张示例图；不能用干净包的示例目录覆盖已配置目录。复制包含 `.env` 的已配置目录会同时携带本机 AI 凭据，应只交给获授权使用这些配置的人。
+
+HTTP 422 表示请求被接口校验或归档逻辑拒绝，不能单凭状态码认定缺驱动或缺模型。原图上传支持 JPEG/PNG/WebP，最大 20 MiB、4000 万像素（`core/image_security.py`）；后续工程图片仍需满足校验。缺失缩略图、过期程序、无法访问的素材及无效工程字段需要结合具体 POST/PUT 路由区分。
+
+`scripts/build_windows_fix.py` 为已有原始 CPU/GPU 清单生成仅含差异源码的修复包，复用 `scripts/upgrade_windows_gpu.py::apply_update` 的版本/摘要/运行锁校验，源码更新不修改模型或用户数据；独立的 `Repair-Runtime.cmd` 只更新程序目录的 VC++ DLL 并备份原文件，不改 Windows 系统库。已单独打过补丁的版本可能不匹配，必须停止而非强行覆盖。`Check-Install.cmd` 可独立执行 `scripts/check_windows_portable.py`，核对文件、补丁标记、素材库引用和临时图片归档，输出不含 Key/图片内容的 `install-check.json`；不调用 AI，也不证明真实图片或全部接口都可用。相关回归见 `tests/test_windows_fix.py`、`tests/test_windows_gpu_upgrade.py` 和 `tests/test_projects.py`。
+
+开发环境依赖核查脚本为 `scripts/verify_windows_dependencies.py`：须由包内 `runtime/python.exe` 执行，在子进程清除 Python/Conda/CUDA Toolkit 路径、仅保留 Windows System32 PATH 后，运行示例换脸并枚举已加载 DLL 的来源。它区分包内、Windows 系统及外部模块；不能把同一台机器的环境隔离测试称为另一台全新 Windows 的验收。GPU 仍需要机器具有可用 NVIDIA 显卡及驱动，不需要额外安装 CUDA Toolkit。
+
+### 2026-09-23 VC++ 漏项核查与修复
+
+原始 CPU/GPU 包均遗漏 `msvcp140_1.dll`。原包摘要核验可全部通过，因为该文件从未进入旧清单；检查 ONNX Runtime 的 PE 导入表（例如 `objdump -p runtime/Lib/site-packages/onnxruntime/capi/onnxruntime_pybind11_state.pyd`）确认它是直接依赖。实际清空开发环境后的 Windows 运行从 System32 加载了该文件，因此本机成功不能证明未安装 VC 运行库的机器可用。
+
+构建清单 `scripts/build_windows_portable.py::MSVC_FILES` 现在包含五个组件：`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`、`concrt140.dll`；构建前先检查是否齐全。修复包使用同版本 14.51.36247.0、Microsoft 数字签名验证为 Valid 的五个组件；`vc-runtime.json` 记录每个文件 SHA-256。不要混用不同版本的零散 DLL。
+
+从已修复 E 盘目录复制的版本可先关闭后端、保留网页，将自检修复包解压到与 `Start.cmd` 同层，执行 `Repair-Runtime.cmd`。它通过 Windows 自带 PowerShell 更新应用目录 DLL，避免使用程序自身 Python 更新其已加载的运行库造成文件锁；锁定运行中的应用、损坏载荷或未记录的 DLL 改动均拒绝更新。原文件及 manifest 备份到 `data/support_backups/`，已有源码补丁、配置和工程保留。原始发行包需修复源码时，顺序为 `Apply-Fix.cmd` 后 `Repair-Runtime.cmd`。
+
+原生验证：隔离开发路径后 CPU/GPU 均检测 5 人、实际换脸 1 人；补丁前后中文受控图片和素材库缩略图接口由 422 变为 200，工程保存/恢复通过。报告为 `build/windows/dependencies-{cpu,gpu}-20260923.json`、`vc-import-audit-20260923.json` 与 `runtime-repair-validation-20260923.json`。环境隔离并不是一台全新 Windows 的验收；另一台机器的 422 仍需检查具体请求，缺库通常也会造成启动或导入失败，不能将所有 422 都归因于此漏项。
+
+## 个人素材包
+
+当前个人完整包含自然上镜风格的虚构中国年轻人素材，男女各 32 位、每人 16 张独立参考。
+解压到新目录即可使用。为控制体积，完整包只带当前可选素材；已有安装目录更新时则保留旧素材，
+以支持历史工程。迁移旧工程必须复制其完整工作目录，不能用新包的 `data/` 覆盖旧目录。
+素材总览见包内 `素材总览.jpg`，制作与验证见 [当前素材实测记录](portrait-chinese-validation.md)。
+
+## 多图排队与内存不足
+
+可一次选入多张图片，程序会逐张读取和处理。右侧或底部若显示等待内存，请先关闭占内存的软件，任务会在内存恢复后继续；等待超过两分钟会停止并弹窗说明，已完成图片保留。不会自动缩小原图或重试付费 AI。旧工作区要使用新增侧脸参考，需要重新从素材库选入人物。详细规则见 [内存与排队](memory-scheduling.md)。

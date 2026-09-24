@@ -4,13 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/services/api';
 import { useStudioStore } from '@/stores/useStudioStore';
 import { useJobActivityStore } from '@/stores/useJobActivityStore';
-import { buildBatchSwapPayload, resolveExecutionMappings } from '@/utils/swapPayload';
+import { buildBatchSwapPayload, buildQuickSwapPayload, resolveExecutionMappings } from '@/utils/swapPayload';
 import { useState } from 'react';
 import { useBatchPipeline } from '@/hooks/useBatchPipeline';
 import { ParameterPanel } from './ParameterPanel';
 import { BatchStatusBar } from './BatchStatusBar';
 import type { PersonMappingItem } from '@/types';
-vi.mock('@/services/api', () => ({ api: { createBatchTask: vi.fn(), getTaskStatus: vi.fn() } }));
+vi.mock('@/services/api', () => ({ api: { createBatchTask: vi.fn(), getTaskStatus: vi.fn(), swapSync: vi.fn() } }));
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/components/ui/ToastProvider', () => ({ useToast: () => toast }));
 vi.mock('@/utils/swapPayload', () => ({
@@ -114,6 +114,65 @@ function mount() {
   );
 }
 describe('explicit batch AI authorization', () => {
+  it('opens a failure notification with the backend detail after a synchronous refusal', async () => {
+    useStudioStore.setState({ activeTargetIndex: 1 });
+    vi.mocked(buildQuickSwapPayload).mockReturnValue({
+      ready: true,
+      autoCreated: false,
+      mappings: [mapping],
+      payload: {
+        person_mappings: [mapping],
+        target_image_url: '/original',
+        parameters: useStudioStore.getState().parameters,
+        return_base64: true,
+      },
+    });
+    vi.mocked(api.swapSync).mockRejectedValue({
+      response: { data: { detail: '人物 #2：缺少同方向侧脸参考' } },
+      message: 'HTTP 400',
+    });
+    mount();
+    fireEvent.click(screen.getByTitle('仅在当前单图上快速试换，预览参数效果'));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: '单图换脸失败',
+          kind: 'error',
+          description: 'group\n人物 #2：缺少同方向侧脸参考',
+        }),
+      ),
+    );
+    expect(useStudioStore.getState().targetImages[1].error).toBe('人物 #2：缺少同方向侧脸参考');
+  });
+
+  it('reports a terminal failed batch exactly once, including each image reason', async () => {
+    vi.mocked(api.getTaskStatus).mockResolvedValue({
+      task_id: 'batch',
+      status: 'FAILED',
+      progress: 1,
+      total_images: 1,
+      processed_images: 1,
+      success_count: 0,
+      failure_count: 1,
+      has_partial_failure: true,
+      created_at: '2026-01-01',
+      results: [{ client_target_id: 'target', status: 'FAILED', error: '缺少侧脸参考' } as any],
+    });
+    mount();
+    fireEvent.click(screen.getByRole('button', { name: /批量换脸/ }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: '批量换脸失败',
+          description: 'group：缺少侧脸参考',
+          kind: 'error',
+        }),
+      ),
+    );
+    await waitFor(() => expect(useStudioStore.getState().isProcessing).toBe(false));
+    expect(toast.mock.calls.filter(([value]) => value.title === '批量换脸失败')).toHaveLength(1);
+  });
+
   it.each(['batch', 'unrelated-task'])('restores frozen pending input only for its own task: %s', async (taskId) => {
     const now = new Date().toISOString();
     useJobActivityStore.getState().upsertJob({

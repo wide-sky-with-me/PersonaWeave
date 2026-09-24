@@ -31,53 +31,53 @@ export const SourceGallery: React.FC = () => {
   );
 
   const analyzeAndAddFiles = async (files: File[], personId: number) => {
-    const results = await Promise.all(
-      files.map(
-        (file, index) =>
-          new Promise<boolean>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = async () => {
-              const base64Data = reader.result as string;
-              let yaw = 0;
-              let yawLabel = '正脸';
-              let qualityScore: number | undefined;
-              let qualityTier: 'excellent' | 'usable' | 'low' | undefined;
-              let qualityNotes: string[] = [];
-              try {
-                const result = await api.detectFaces({ image_url: base64Data });
-                if (result?.faces?.length) {
-                  yaw = Math.round((result.faces[0].yaw || 0) * 45);
-                  yawLabel = Math.abs(yaw) < 8 ? '正脸' : yaw > 0 ? '+' + yaw + '° 右侧' : yaw + '° 左侧';
-                  qualityScore = result.faces[0].quality_score;
-                  qualityTier = result.faces[0].quality_tier;
-                  qualityNotes = result.faces[0].quality_notes || [];
-                }
-              } catch {
-                /* Pose analysis is optional. */
+    const results: boolean[] = [];
+    for (const [index, file] of files.entries()) {
+      results.push(
+        await new Promise<boolean>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const base64Data = reader.result as string;
+            let yaw = 0;
+            let yawLabel = '正脸';
+            let qualityScore: number | undefined;
+            let qualityTier: 'excellent' | 'usable' | 'low' | undefined;
+            let qualityNotes: string[] = [];
+            try {
+              const result = await api.detectFaces({ image_url: base64Data });
+              if (result?.faces?.length) {
+                yaw = Math.round((result.faces[0].yaw || 0) * 45);
+                yawLabel = Math.abs(yaw) < 8 ? '正脸' : yaw > 0 ? '+' + yaw + '° 右侧' : yaw + '° 左侧';
+                qualityScore = result.faces[0].quality_score;
+                qualityTier = result.faces[0].quality_tier;
+                qualityNotes = result.faces[0].quality_notes || [];
               }
-              try {
-                store.addSourceReference({
-                  id: 'src_' + Date.now() + '_' + index + '_' + Math.random().toString(36).slice(2, 7),
-                  name: file.name,
-                  kind: 'manual',
-                  imageData: base64Data,
-                  yaw,
-                  yawLabel,
-                  qualityScore,
-                  qualityTier,
-                  qualityNotes,
-                  personId,
-                });
-                resolve(true);
-              } catch {
-                resolve(false);
-              }
-            };
-            reader.onerror = () => resolve(false);
-            reader.readAsDataURL(file);
-          }),
-      ),
-    );
+            } catch {
+              /* Pose analysis is optional. */
+            }
+            try {
+              store.addSourceReference({
+                id: 'src_' + Date.now() + '_' + index + '_' + Math.random().toString(36).slice(2, 7),
+                name: file.name,
+                kind: 'manual',
+                imageData: base64Data,
+                yaw,
+                yawLabel,
+                qualityScore,
+                qualityTier,
+                qualityNotes,
+                personId,
+              });
+              resolve(true);
+            } catch {
+              resolve(false);
+            }
+          };
+          reader.onerror = () => resolve(false);
+          reader.readAsDataURL(file);
+        }),
+      );
+    }
     const imported = results.filter(Boolean).length;
     if (imported !== files.length) {
       toast({

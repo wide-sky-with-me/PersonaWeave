@@ -58,6 +58,17 @@ class SwapResult:
     person_outcomes: list[dict] = field(default_factory=list)
 
 
+def composite_in_rows(canvas: np.ndarray, swapped: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Preserve float32 alpha math exactly while bounding intermediate arrays to 256 rows."""
+    result = np.empty_like(canvas)
+    for start in range(0, canvas.shape[0], 256):
+        rows = slice(start, start + 256)
+        alpha = mask[rows, :, np.newaxis]
+        blended = canvas[rows].astype(np.float32) * (1.0 - alpha) + swapped[rows].astype(np.float32) * alpha
+        result[rows] = np.clip(blended, 0, 255).astype(np.uint8)
+    return result
+
+
 class PersonaWeavePipeline:
     """Industrial-grade batch targeted face swapping pipeline."""
 
@@ -483,9 +494,7 @@ class PersonaWeavePipeline:
                 bbox_alpha_mean=bbox_mask_mean(warped_mask, target_face.bbox),
                 requested_strength=float(identity_blend_strength),
             )
-        alpha = warped_mask[:, :, np.newaxis]
-        result = canvas.astype(np.float32) * (1.0 - alpha) + warped_face.astype(np.float32) * alpha
-        return np.clip(result, 0, 255).astype(np.uint8)
+        return composite_in_rows(canvas, warped_face, warped_mask)
 
     def process_image(
         self,

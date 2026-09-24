@@ -11,6 +11,7 @@ import { forgetSession } from '../sessionCache';
 import { useWorkbenchStore } from '../workbenchStore';
 import type { SessionCreate, SessionDetail, TurnMode } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
+import { apiErrorMessage } from '@/utils/apiError';
 
 export const sessionKey = (id: string | null) => ['refinement-session', id] as const;
 export const sessionsKey = ['refinement-sessions'] as const;
@@ -95,7 +96,7 @@ export function useSessionWorkbench(target?: TargetImageItem) {
         setError('会话版本已变化，已重新读取。请确认基图与最新状态后再操作。');
       } else if (code === 503) setError('AI 服务尚未就绪，请检查通用模型配置后重试。');
       else if (code === 422 || code === 400)
-        setError('请求字段或范围不符合要求，服务器已拒绝本次操作。请修改人物、参考或意见后再提交。');
+        setError(`服务器已拒绝本次操作：${apiErrorMessage(err, '请修改人物、参考或意见后再提交。')}`);
       else if (code === 404) setError('会话或图片已不可用，请刷新会话列表。');
       else setError('请求未能确认。若已提交，请用“重试同一请求”恢复，不会另建付费轮次。');
     } finally {

@@ -6,6 +6,7 @@ import { useStudioStore } from '@/stores/useStudioStore';
 import type { PersonMappingItem } from '@/types';
 import { buildFacePositionLabels } from '@/utils/faceTopology';
 import { sourceReferenceImageUrl, splitSourceReferences } from '@/utils/sourceReferences';
+import { useToast } from '@/components/ui/ToastProvider';
 
 /* ── Face crop thumbnail ─────────────────────────────────────── */
 const TargetFaceCrop: React.FC<{
@@ -109,6 +110,11 @@ export const MultiPersonMatrixModal: React.FC = () => {
     ),
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const toast = useToast();
+  const reportError = (message: string) => {
+    setErrorMessage(message);
+    toast({ title: '人物映射未完成', description: message, kind: 'error' });
+  };
   useEffect(() => {
     if (!isMatrixOpen) return;
     setErrorMessage(null);
@@ -169,12 +175,12 @@ export const MultiPersonMatrixModal: React.FC = () => {
         };
       });
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : '保存映射失败，请检查每个人物的绑定是否仍然有效');
+      reportError(err instanceof Error ? err.message : '保存映射失败，请检查每个人物的绑定是否仍然有效');
       return;
     }
 
     if (personMappingPayload.length === 0) {
-      setErrorMessage('请至少为一位任务人物分配替换源照片。');
+      reportError('请至少为一位任务人物分配替换源照片。');
       return;
     }
     setPersonMappings(personMappingPayload);

@@ -20,19 +20,29 @@ export function useIdentityClustering({
 }: UseIdentityClusteringOptions) {
   const [isClustering, setIsClustering] = useState(false);
   const [clusteringError, setClusteringError] = useState<string | null>(null);
-  const completedFingerprintRef = useRef('');
+  const inputsRef = useRef<{ id: string; source: string }[]>([]);
+  const completedFingerprintRef = useRef<typeof inputsRef.current | null>(null);
   const generationRef = useRef(0);
-  const batchFingerprint = useMemo(
-    () => targetImages.map((target) => `${target.id}:${target.base64Data || target.url}`).join('|'),
-    [targetImages],
-  );
+  const batchFingerprint = useMemo(() => {
+    const next = targetImages.map((target) => ({ id: target.id, source: target.base64Data || target.url }));
+    // Compare existing string references without allocating another batch-sized base64 string.
+    if (
+      next.length !== inputsRef.current.length ||
+      next.some(
+        (item, index) => item.id !== inputsRef.current[index]?.id || item.source !== inputsRef.current[index]?.source,
+      )
+    ) {
+      inputsRef.current = next;
+    }
+    return inputsRef.current;
+  }, [targetImages]);
 
   useEffect(() => {
     const generation = ++generationRef.current;
     const controller = new AbortController();
 
     if (targetImages.length === 0) {
-      completedFingerprintRef.current = '';
+      completedFingerprintRef.current = null;
       setIsClustering(false);
       setClusteringError(null);
       return () => controller.abort();

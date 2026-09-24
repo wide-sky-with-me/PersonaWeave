@@ -3,8 +3,13 @@
 import asyncio
 import threading
 import time
+import weakref
+
+import numpy as np
+import pytest
 
 from api.inference_limiter import InferenceLimiter, inference_concurrency_from_env
+from core.memory_budget import MemoryPressureError
 
 
 def test_inference_concurrency_defaults_to_one(monkeypatch):
@@ -60,3 +65,76 @@ def test_event_loop_remains_responsive_while_inference_blocks():
         return elapsed
 
     assert asyncio.run(exercise()) < 0.1
+
+
+def test_cancelled_http_caller_does_not_release_a_running_native_worker():
+    async def exercise():
+        limiter = InferenceLimiter(1)
+        started, release, next_started = threading.Event(), threading.Event(), threading.Event()
+
+        def blocked():
+            started.set()
+            release.wait(timeout=2)
+
+        first = asyncio.create_task(limiter.run(blocked))
+        await asyncio.to_thread(started.wait, 1)
+        first.cancel()
+        second = asyncio.create_task(limiter.run(next_started.set))
+        try:
+            await asyncio.sleep(0.03)
+            first.cancel()  # A repeated HTTP cancellation must not unwind temporary-file ownership early.
+            assert not next_started.is_set()
+            assert not first.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        await second
+        assert next_started.is_set()
+
+    asyncio.run(exercise())
+
+
+def test_low_memory_waits_before_dispatch_and_resumes_without_duplicate_inference(monkeypatch):
+    ready, calls, messages = False, [], []
+
+    def check():
+        if not ready:
+            raise MemoryPressureError("内存不足")
+
+    monkeypatch.setattr("api.inference_limiter.require_memory", check)
+
+    async def exercise():
+        nonlocal ready
+        limiter = InferenceLimiter(1, poll_seconds=0.005)
+        pending = asyncio.create_task(limiter.run(lambda: calls.append("inference"), on_memory_wait=messages.append))
+        await asyncio.sleep(0.02)
+        assert not calls and messages
+        ready = True
+        await pending
+        assert calls == ["inference"] and messages[-1] is None
+
+    asyncio.run(exercise())
+
+
+def test_low_memory_timeout_does_not_attempt_inference(monkeypatch):
+    def blocked():
+        raise MemoryPressureError("内存不足")
+
+    monkeypatch.setattr("api.inference_limiter.require_memory", blocked)
+    with pytest.raises(MemoryPressureError, match="等待超时"):
+        asyncio.run(InferenceLimiter(1, memory_wait_seconds=0).run(lambda: pytest.fail("must not run")))
+
+
+def test_retry_drops_refused_frame_before_next_attempt():
+    references = []
+
+    def preflight_then_infer():
+        if references:
+            assert references[0]() is None, "failed preflight traceback retained the previous image"
+            return "completed"
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        references.append(weakref.ref(frame))
+        raise MemoryPressureError("暂时不足")
+
+    assert asyncio.run(InferenceLimiter(1, poll_seconds=0.001).run(preflight_then_infer)) == "completed"

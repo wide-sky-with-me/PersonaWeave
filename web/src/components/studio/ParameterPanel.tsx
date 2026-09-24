@@ -22,6 +22,7 @@ import { api } from '@/services/api';
 import { buildQuickSwapPayload } from '@/utils/swapPayload';
 import { useToast } from '@/components/ui/ToastProvider';
 import type { SwapParameters } from '@/types';
+import { apiErrorMessage } from '@/utils/apiError';
 
 /* ── Scenario Presets definition ────────────────────────────── */
 interface PresetItem {
@@ -295,14 +296,16 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
         modelRouting: swapData.model_routing,
       });
       if (swapData.warning) {
-        toast({ title: '部分人物未完成换脸', description: swapData.warning, kind: 'warning' });
+        toast({ title: '部分人物未完成换脸', description: swapData.warning, kind: 'warning', modal: true });
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Quick swap failed:', err);
+      const message = apiErrorMessage(err, '换脸处理失败');
       updateTargetImageById(submittedTargetId, {
         status: 'FAILED',
-        error: err.response?.data?.message || err.message || '换脸处理失败',
+        error: message,
       });
+      toast({ title: '单图换脸失败', description: `${currentTarget.name}\n${message}`, kind: 'error' });
     } finally {
       setIsSingleRunning(false);
     }
@@ -523,6 +526,14 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
             </span>
           </span>
         </label>
+        {batch.waitingReason && (
+          <p
+            role="status"
+            className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-2.5 text-xs leading-5 text-amber-200"
+          >
+            {batch.waitingReason} 排队任务会自动继续，无需重复点击。
+          </p>
+        )}
         {batch.queryError && (
           <div role="alert" className="rounded-lg border border-err/30 bg-err/10 p-2.5 text-xs text-err">
             <p className="break-words">{batch.queryError}</p>

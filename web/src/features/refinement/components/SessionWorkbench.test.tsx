@@ -9,6 +9,9 @@ import type { SessionDetail, SessionTurn } from '../sessionTypes';
 import { SessionWorkbench } from './SessionWorkbench';
 import { HistoryWorkspace } from '@/features/history/components/HistoryWorkspace';
 
+const toast = vi.hoisted(() => vi.fn());
+vi.mock('@/components/ui/ToastProvider', () => ({ useToast: () => toast }));
+
 vi.mock('@/services/api', () => ({
   api: { getAIModels: vi.fn(), getRefinementTask: vi.fn(), listBatchTaskHistory: vi.fn() },
 }));
@@ -125,6 +128,24 @@ afterEach(() => {
 });
 
 describe('server-backed conversation workbench', () => {
+  it('reports new turn failures once without replaying historical errors on restore', async () => {
+    const restored = { ...fixture(), turns: [{ ...analysis(), status: 'failed' as const, error: '旧分析失败' }] };
+    vi.mocked(sessionApi.get).mockResolvedValue(restored);
+    mount();
+    await screen.findByText('旧分析失败');
+    expect(toast).not.toHaveBeenCalled();
+    const changed = {
+      ...restored,
+      revision: 6,
+      turns: [...restored.turns, { ...analysis(), id: 'new-failure', status: 'failed' as const, error: '新分析失败' }],
+    };
+    act(() => clients.at(-1)!.setQueryData(['refinement-session', 's1'], changed));
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: '新分析失败', kind: 'error' }));
+    act(() => clients.at(-1)!.setQueryData(['refinement-session', 's1'], { ...changed, revision: 7 }));
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
   it('distinguishes native generated resolution from an enlarged output canvas', async () => {
     const generated: SessionTurn = {
       ...analysis(),

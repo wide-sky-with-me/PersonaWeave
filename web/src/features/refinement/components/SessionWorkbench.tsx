@@ -1,5 +1,8 @@
 import { Check, CheckCheck, Minus, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { useEffect, useRef } from 'react';
+import { useToast } from '@/components/ui/ToastProvider';
+import { apiErrorMessage } from '@/utils/apiError';
 import { useStudioStore } from '@/stores/useStudioStore';
 import { RefinementImageViewport } from './RefinementImageViewport';
 import { useSessionWorkbench } from '../hooks/useSessionWorkbench';
@@ -14,6 +17,34 @@ export function SessionWorkbench() {
   const target = targets.find((item) => item.id === targetId);
   const c = useSessionWorkbench(target);
   const { session, workspace } = c;
+  const toast = useToast();
+  const reportedTurns = useRef(new Set<string>());
+  const observedSessions = useRef(new Set<string>());
+  useEffect(() => {
+    if (c.error) toast({ title: 'AI 精修操作未完成', description: c.error, kind: 'error' });
+  }, [c.error, toast]);
+  useEffect(() => {
+    const error = c.detail.error || c.sessions.error;
+    if (error) toast({ title: 'AI 精修状态读取失败', description: apiErrorMessage(error), kind: 'error' });
+  }, [c.detail.error, c.sessions.error, toast]);
+  useEffect(() => {
+    if (!session) return;
+    const restoring = !observedSessions.current.has(session.id);
+    observedSessions.current.add(session.id);
+    for (const turn of session?.turns ?? []) {
+      const message = turn.error || turn.review_error;
+      const key = `${session!.id}:${turn.id}:${message}`;
+      if (!message || reportedTurns.current.has(key)) continue;
+      reportedTurns.current.add(key);
+      // Historical failures remain in the conversation; opening a session must not replay old dialogs.
+      if (restoring) continue;
+      toast({
+        title: turn.review_error ? '精修候选已保留，复评失败' : 'AI 精修失败',
+        description: message,
+        kind: 'error',
+      });
+    }
+  }, [session, toast]);
   const deletion = useSessionDeletion(session ? [session] : []);
   const selectionId = session?.id ?? targetId ?? 'empty';
   const selection = workspace.selections[selectionId] ?? {};

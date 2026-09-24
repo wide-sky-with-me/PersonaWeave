@@ -178,6 +178,12 @@ class RefinementSessionService:
             worker.add_done_callback(finished)
         return self.store.get(session_id)
 
+    async def wait_until_idle(self, session_id):
+        """Join an already scheduled turn for batch backpressure; never submit or repeat model work."""
+        worker = self._workers.get(session_id)
+        if worker is not None:
+            await asyncio.shield(worker)
+
     def _inputs(self, session_id, turn_id):
         session, turn, base_digest = self.store.inputs(session_id, turn_id)
         original = self.store.image(session_id, session["original_digest"])

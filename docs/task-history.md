@@ -4,6 +4,11 @@ This document is the current contract for persisted batch-task history. Task-res
 
 ## Data ownership
 
+Batch tasks wait behind one batch executor before reference preparation. Detail snapshots expose optional
+`waiting_reason` for memory or the current image's authorized AI turn; queue waiting does not invent progress.
+Immutable request payloads are saved once rather than reserialized on each result. Memory-wait timeout preserves
+completed artifacts and counts only actual attempts. See [memory scheduling](memory-scheduling.md).
+
 - `SQLiteTaskStore` in `api/tasks/persistence.py` owns recoverable batch-task metadata and complete task snapshots.
 - When inference returns zero visible swaps, a new failed result retains its real `faces_detected`, requested/swapped person indices, `person_outcomes`, similarities and model routing. It remains `FAILED`, has no processed URL and publishes no output image; it is not reported as zero detected faces unless detection actually returned zero. Failures before a pipeline result exists retain schema defaults. Historical rows with already-lost diagnostics are not retroactively reconstructed.
 - Each newly successful batch result persists two durable artifacts below `outputs/api_results/{task_id}/`: a decoded original canvas (`original_NNNN.png`) and the processed output (`res_NNNN.jpg`). `ImageSwapResult` exposes only guarded `/api/v1/files/...` URLs.

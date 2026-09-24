@@ -1,15 +1,18 @@
 """Controlled image loading and encoding shared by API capabilities."""
 
 import base64
+from io import BytesIO
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from core.image_security import (
     decode_data_uri,
     download_image,
     resolve_managed_url,
 )
+from core.memory_budget import require_memory
 from utils.image_io import read_image
 
 
@@ -32,6 +35,15 @@ def load_image_from_source(source_str: str, *, trusted_local: bool = False) -> n
 
     if not (trusted_local or isinstance(source_str, TrustedImagePath)):
         raise ValueError("Local filesystem image paths are not accepted by the external API")
+    # Inspect the header before OpenCV allocates the complete pixel buffer (including on Windows).
+    try:
+        with Image.open(source_str) as header:
+            width, height = header.size
+    except (OSError, ValueError) as exc:
+        raise ValueError("Failed to read managed local image") from exc
+    if width * height > 40_000_000:
+        raise ValueError("Image exceeds the pixel limit")
+    require_memory(width * height * 4)
     img = read_image(source_str)
     if img is None:
         raise ValueError("Failed to read managed local image")
@@ -59,6 +71,14 @@ def decode_manual_mask(value: str | None) -> np.ndarray | None:
         mask_bytes = base64.b64decode(encoded, validate=True)
     except (ValueError, base64.binascii.Error) as exc:
         raise ValueError("manual_mask must be a valid base64-encoded image") from exc
+    try:
+        with Image.open(BytesIO(mask_bytes)) as header:
+            width, height = header.size
+    except (OSError, ValueError) as exc:
+        raise ValueError("manual_mask must decode to a nonempty image") from exc
+    if width * height > 40_000_000:
+        raise ValueError("Manual mask exceeds the pixel limit")
+    require_memory(width * height * 4)
     mask = cv2.imdecode(np.frombuffer(mask_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
     if mask is None or mask.size == 0:
         raise ValueError("manual_mask must decode to a nonempty image")
