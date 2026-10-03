@@ -12,6 +12,7 @@ Skipped/failed swaps stay in the denominator. Output images contain real people:
 """
 
 import argparse
+import json
 import random
 from pathlib import Path
 
@@ -32,6 +33,12 @@ def parse_args(argv=None):
     parser.add_argument("--identities-per-face", type=int, default=3)
     parser.add_argument("--min-face-px", type=int, default=200, help="Skip faces whose short side is smaller")
     parser.add_argument("--seed", type=int, default=20261003)
+    parser.add_argument(
+        "--assignment",
+        type=Path,
+        help='JSON {image file name: {"1-based face index": identity id}}; replaces the random identity choice '
+        "(use with --identities-per-face 1) so other tools can be scored on the same pairs",
+    )
     parser.add_argument("--eval-models-dir", type=Path, default=Path("models/eval"))
     parser.add_argument(
         "--alphaface-scale",
@@ -264,7 +271,12 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args, arm
             if min(face.bbox[2] - face.bbox[0], face.bbox[3] - face.bbox[1]) >= args.min_face_px
         ]
         genders = {index: target_gender(attribute_model, image, face) for index, face in eligible}
-        plan = {index: rng.sample(by_gender[genders[index]], args.identities_per_face) for index, _face in eligible}
+        if args.assignment:
+            fixed = json.loads(args.assignment.read_text(encoding="utf-8")).get(path.name, {})
+            eligible = [(index, face) for index, face in eligible if str(index) in fixed]
+            plan = {index: [fixed[str(index)]] for index, _face in eligible}
+        else:
+            plan = {index: rng.sample(by_gender[genders[index]], args.identities_per_face) for index, _face in eligible}
         for round_index in range(args.identities_per_face):
             mappings, meta = [], {}
             for index, face in eligible:
@@ -346,6 +358,40 @@ def pipeline_yaw(face):
     return calculate_yaw_ratio(face.kps)
 
 
+def build_scoring(pipeline, library):
+    """Centroids, per-reference units and false-accept thresholds calibrated on the library itself."""
+    from types import SimpleNamespace
+
+    refs = {name: [(r["embedding"], r["quality_score"]) for r in value["refs"]] for name, value in library.items()}
+    genders = {name: value["gender"] for name, value in library.items()}
+    centroids, genuine, impostor, impostor_same = calibration(
+        refs, pipeline.recognizer.build_gallery_embedding, genders
+    )
+    # Sources are gender-matched to targets, so same-gender impostors are the relevant false-accept pool.
+    units = {name: np.stack([unit(embedding) for embedding, _ in pairs]) for name, pairs in refs.items()}
+    mean_genuine, mean_impostor, mean_impostor_same = mean_ref_calibration(units, genders)
+    thresholds = {
+        f"{pool}@{far}": far_threshold(scores, far)
+        for pool, scores in (
+            ("any", impostor),
+            ("same_gender", impostor_same),
+            ("mean_ref_same_gender", mean_impostor_same),
+        )
+        for far in FAR_LEVELS
+    }
+    return SimpleNamespace(
+        centroids=centroids,
+        units=units,
+        thresholds=thresholds,
+        genuine=genuine,
+        impostor=impostor,
+        impostor_same=impostor_same,
+        mean_genuine=mean_genuine,
+        mean_impostor=mean_impostor,
+        mean_impostor_same=mean_impostor_same,
+    )
+
+
 def main():
     args = parse_args()
     if args.output_dir.exists() and any(args.output_dir.iterdir()):
@@ -364,23 +410,14 @@ def main():
     if eval_names:
         scale = args.alphaface_scale or median_raw_embedding_norm(pipeline, library)
         register(pipeline, str(args.eval_models_dir), eval_names, scale)
-    refs = {name: [(r["embedding"], r["quality_score"]) for r in value["refs"]] for name, value in library.items()}
-    genders = {name: value["gender"] for name, value in library.items()}
-    centroids, genuine, impostor, impostor_same = calibration(
-        refs, pipeline.recognizer.build_gallery_embedding, genders
+    scoring = build_scoring(pipeline, library)
+    centroids, units, thresholds = scoring.centroids, scoring.units, scoring.thresholds
+    genuine, impostor, impostor_same = scoring.genuine, scoring.impostor, scoring.impostor_same
+    mean_genuine, mean_impostor, mean_impostor_same = (
+        scoring.mean_genuine,
+        scoring.mean_impostor,
+        scoring.mean_impostor_same,
     )
-    # Sources are gender-matched to targets, so same-gender impostors are the relevant false-accept pool.
-    units = {name: np.stack([unit(embedding) for embedding, _ in pairs]) for name, pairs in refs.items()}
-    mean_genuine, mean_impostor, mean_impostor_same = mean_ref_calibration(units, genders)
-    thresholds = {
-        f"{pool}@{far}": far_threshold(scores, far)
-        for pool, scores in (
-            ("any", impostor),
-            ("same_gender", impostor_same),
-            ("mean_ref_same_gender", mean_impostor_same),
-        )
-        for far in FAR_LEVELS
-    }
     runs, all_tiles = {}, {}
     for arm in args.arms:
         rows, tiles, seconds = run(pipeline, attribute_model, targets, library, centroids, units, args, arm)
