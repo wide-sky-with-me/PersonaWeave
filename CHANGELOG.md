@@ -2,6 +2,7 @@
 
 ## 2026-10-03
 
+- 新增非生产脚本 `scripts/evaluate_identity_similarity.py` 并记录真实照片 × 素材库的身份相似度实测（105 次，部分迁移、非完全身份迁移）；见 `docs/facefusion-local-swap.md`。
 - 新增非生产脚本 `scripts/smoke_portable_real_ai.py`（需 `--allow-paid`），并记录一次授权的真实 AI 端到端实测；见 `docs/windows-portable-validation.md`。
 - 工程素材接口在主机可用内存不足时返回带说明的 HTTP 503，替代未处理的 500；Windows 便携包重建为 2026-10-03 完整版，合入 9/30 的磁盘历史、性能排队与低内存补丁。
 
