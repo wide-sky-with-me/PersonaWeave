@@ -31,7 +31,7 @@ uv run python -m scripts.compare_swap_variants \
 - 变体只有 production 和 production_no_boundary_color。后者只覆盖 enable_color_transfer=false 与 color_transfer_mode=off，其余参数取当前流水线函数默认值并显式记录；swapper_model 按 CLI 原值传递。不能根据脚本变量名推断实际模型，需看 model_routing。
 - 输出目录必须为空，拒绝复用含旧结果的目录，避免失败重跑留下历史成功图冒充本次输出。
 - 每个变体必须 faces_swapped==1、画布形状与输入完全一致、输出数组不与原图完全相同。任何一项不满足都标 failed，不写有效图片路径；不允许原图算有效消融。
-- 成功写无损 PNG：group_production.png、group_production_no_boundary_color.png。不再用 JPEG 重编码差异充当效果差异。已有消费者应改读 manifest 中的 output，而不是硬猜 .jpg。
+- 成功写无损 PNG：group_production.png、group_production_no_boundary_color.png。不用 JPEG 重编码差异充当效果差异。已有消费者应改读 manifest 中的 output，而不是硬猜 .jpg。
 - 一项变体失败仍尽量记录其错误并继续其余变体；任意失败使 CLI 退出码为 1。参数/文件初始化错误也非零退出。不能只看生成了 manifest 就判定实验成功。
 
 ### 1.2 标注期望人物
@@ -168,58 +168,4 @@ uv run python -m scripts.compare_source_strategies \
 
 回归：`uv run pytest tests/test_source_strategy_comparison.py tests/test_source_quality.py`，使用合成图片与模拟推理，覆盖真实选择/分配/姿态保护、参数一致、失败保留及证据未知。
 
-## Recorded strength comparison
-
-以下为 2026-09-07 的有限样本历史证据，保留输入摘要、复现路径与测量解释；当前行为以 [本地换脸契约](facefusion-local-swap.md) 为准。私人输入不随仓库分发，缺少对应本机任务和素材时不能直接复现。
-
-### 诊断可靠性修复复核（2026-09-07）
-
-本轮最终证据目录：`outputs/diagnostics/pw_task_7e24362539-diagnostics-v2-final/`（`-diagnostics-v2/` 是保留的首遍复核，最终版进一步明确了白色表示允许换入、request值不是最终alpha）。原任务和原诊断目录保留。使用同一请求与四张输入重新跑 0.72/0.9/0.95，十二张完整结果与原诊断 JPEG 解码后逐像素差均为 **0**；人数仍分别为 **4/2/0/0、4/3/0/0、4/3/1/1**。这证明诊断改造没有改变这组样本的生产结果，**不是本轮又提升了画质**。四图尝试的脸均使用256工作裁剪，不能验证128尺度修正的真实小脸画质；128/256保护尺度由合成同几何回归覆盖，尚需更多真实小脸样本。
-
-- `report.json` 升为 schema_version 2，逐人包含 matching/source_selection/mask 证据。`image_N_face_K_sources.jpg` 展示该mapping实际全部素材、真实best索引及聚合权重，不再跨人物库寻找最近照片。
-- **更正旧拼图标注**：原“Selected source”只是在所有素材中与混合输入最接近的一张，不代表生产选择器挑中的best，也不是完整模型输入；不得据此判断“像不像那张照片”。best-match 的输入为80%归一化gallery +20%best单张，再归一化。
-- v2 的 `similarity_to_mixed_source_before/after` 明确指与实际混合输入特征的余弦相似度，不是对所展示照片的相似度，也不是独立识别器/未参与输入的素材评测。旧 `source_similarity_*` 数值应按此语义理解。
-- `aligned_output_mae` 替代容易误读的 `raw_crop_mae`；脸框右/下边界改为与生产一致的向上取整。指标尾数变化源自测量修正，不是输出图片变化。
-- 当前仍不以ArcFace诊断分强制通过换脸，也不减弱遮挡/眼镜保护、提高默认值或修改旧任务。新的 [评测契约](swap-benchmarks.md) 区分预期身份、几何关联、未标注和漏检分母。
-
-实际 API 另建默认90%验证任务 `pw_task_db9874dc5a`，终态 PARTIAL、有结果2张/失败2张；逐图检测数为4/3/2/1，换入4/3/0/0。第3/4图的no_visible_change均保留约1.0的目标匹配分和完整source/mask诊断，没有再把它误报成“检测不到人”。浏览器在现有 http://127.0.0.1:3000 刷新后，已验证失败图真实计数、最佳参考#7、80/20系数、mask证据、失败无下载、成功可查看，以及查看前后useStudioStore状态不变；截图 `outputs/diagnostics/history-ui-failed.png`。任务历史轻量缓存会正常更新，这不等于回灌编辑工作区。
-
-### 原始实测：输入与复现
-
-这是四张私人图片的一次限定样本诊断，不是通用质量保证。任务为 `pw_task_7e24362539`；SQLite request JSON 的 SHA-256 为 `0950cbfd6ba47df056c85a2366b5c88eefaeeebf599ac2ca90d6f34274a007a3`。
-
-执行 `uv run python -m scripts.diagnose_batch_strength pw_task_7e24362539 --output outputs/diagnostics/pw_task_7e24362539-strength`。脚本只读原任务，使用 CPUExecutionProvider、不调用外部付费模型；复用原素材、人物映射、0.35 匹配阈值、InSwapper、保护遮罩、边界色彩参数，仅比较 0.72 / 0.9 / 0.95。输出目录包含 report.json、完整对照图片及逐脸拼图；私人图片不加入版本控制。拼图中的 face 编号是该图从左到右的检测序号，不是跨图的任务人物编号。
-
-解码后 BGR 像素 SHA-256：
-
-1. `f2e2feb5aff9f45612e4202e4858f6c7445090ec7b0ddd5e6fd43aeed9737da1`
-2. `5f9880eeb7c8a75d34adc9eafc4da0c17f3c705a996afdae0184d176249a17e4`
-3. `d90b82f81312a649d671817e3e6c387e417f9449f199118219aaca6d2a70f558`
-4. `e8823054a7d40a09519b354f54c77a170bdd3ba8bfa25f171c82f17c5282ce68`
-
-### 结果
-
-| 输入顺序 | 检测脸数 | 72% 通过脸数 | 90% 通过脸数 | 95% 通过脸数 |
-| --- | ---: | ---: | ---: | ---: |
-| 1 | 4 | 4 | 4 | 4 |
-| 2 | 3 | 2 | 3 | 3 |
-| 3 | 2 | 0 | 0 | 1 |
-| 4 | 1 | 0 | 0 | 1 |
-
-- 原始失败不是没有检测到脸：第 3 张的任务人物 #3 / #6 和第 4 张的 #1 均匹配到目标，其中作为代表图的配对相似度为 1.0。失败来自融合后变化不足。任务映射有六个人，不意味着每张照片都能检测到六个人；其余未达阈值的映射不能通过调强度解决。
-- 第 1 张在 72% 下，四张脸的脸框平均实际 alpha 为 0.217–0.392，而不是全脸 72%。模型/边界色彩后的对齐裁剪平均像素差为 7.60–11.99，最终脸框像素差仅 3.67–4.63。保护交集和融合共同削弱了可见变化；不能把全部衰减归因于强度参数。
-- 第 1 张四个换入的素材 ArcFace 余弦相似度（检测序号 2/1/3/4）从 72% 时的 0.194/0.482/0.470/0.525，提高到 90% 时的 0.260/0.611/0.585/0.604。该指标只支持换入特征增强，不是自然度评分，也不是人的身份鉴定。
-- 第 3 张检测脸 #1 被头发和物体遮挡，XSeg mask 在对齐裁剪上的均值仅 0.076，最终脸框平均 alpha 在 72% 时约 0.050、95% 时约 0.066。像素差从 0.77 到 1.01，但素材相似度反而下降。它在所有档位都应继续跳过，不扩大遮罩强行替换。
-- 第 3 张另一张侧脸的像素差从 2.31 到 3.04，第 4 张侧脸从 2.34 到 3.07（72% → 95%）。因此 95% 时两图各保留一个换脸结果；只刚过原有门槛，不能宣称整体身份或自然度达标。
-- 第 3/4 张尝试的脸 yaw 比值均为 -1，侧脸安全缩放生效。95% 请求强度在该分支还要乘 0.65/0.72，而不是把所有皮肤像素以 95% 替换。
-- 眼镜保护覆盖镜框和镜片，因此眼部变化受限。没有为了指标更高删除眼镜、遮挡、密集轮廓或极端侧脸保护。
-
-### 产品调整与边界
-
-常规默认强度从 0.72 改为 0.9，工作台上限从 0.90 开放到已有 API 上限 0.95；用户可以退回 0.72。旧请求和原任务不被改写。这批想要更明显的结果可明确选择 0.95；结果仍需人工对照，尤其是侧脸与眼镜区域。
-
-实际 API 已另建 95% 任务 `pw_task_5e6c58e467` 验证：四图都有正式结果，换脸人数分别为 4/3/1/1，图片失败数为 0。任务仍为 PARTIAL（未匹配或被遮挡的人物继续跳过），不是所有请求人物全部成功；原任务 `pw_task_7e24362539` 保持不变。
-
-原始v1报告采用下取整脸框，而生产右/下边界向上取整，数值存在极小边缘差；v2已统一为生产边界。计数始终直接取生产 SwapResult。v1的 raw_crop_mae 实为边界调色后的对齐输出（不是未经后处理的模型张量），v2已更名 aligned_output_mae。
-
-新失败记录保留真实检测数、人物结果和模型路由，但零换脸仍 FAILED、不发布图片；旧失败记录不能凭空恢复。详见 [本地生产路径](facefusion-local-swap.md)、[任务历史契约](task-history.md)。回归见 tests/test_facefusion_pipeline.py、tests/test_strength_contract.py、tests/test_task_swap_outcome.py。
+默认强度从 0.72 改为 0.9 的实测依据与被否定的方案见决策笔记 [默认强度](../.agents/notes/swap/20260907-default-strength-072-to-09.md)。

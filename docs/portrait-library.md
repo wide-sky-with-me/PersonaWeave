@@ -28,7 +28,7 @@ uv run personaweave-import-portraits --source data/portrait_refresh_20260923 --a
 ## 生成素材质量检查
 
 使用内置生图工具生成虚构人物。当前中国人物版本的原始图板、逐人物提示词、裁切图和校验报告
-保存于 `data/portrait_chinese_20260923/`；此前补充旧人物角度的批次保留在
+保存于 `data/portrait_chinese_20260923/`；补充旧人物角度的批次保留在
 `data/portrait_refresh_20260923/`。用户已明确允许批量生成与自动裁切。
 每张图板按规则网格裁切，不镜像冒充另一侧脸，不把裁切后的头像重复计为独立人物。
 

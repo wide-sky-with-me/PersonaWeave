@@ -1,7 +1,16 @@
 # Changelog
 
+## 2026-10-04
+
+- 文档治理改为三层：`AGENTS.md` 只写规则（15,092 字压到 8,398 字，细则链接到权威文档）、`docs/` 只写当前事实、新增 `.agents/notes/` 记录决策与被放弃的方案（无全局索引，只增不改）。新增 `tests/test_documentation_governance.py`：文档字符上限（存量超限文档只降不升）、事实文档禁用历史变迁词、决策笔记结构与链接。
+- 压缩与迁移：删除约 5.7 万字的一次性前端样式审计报告，保留其会再次踩到的结论为决策笔记；`windows-portable.md` 由按日期堆叠的流水账（10,116 字）重写为当前事实（5,345 字），事故教训迁入 Windows 决策笔记；`facefusion-local-swap.md` 与 `swap-benchmarks.md` 中按日期堆叠的评测记录迁为 swap 决策笔记；README/DESIGN 尾部按修复时间追加的补丁段落改为指向专题文档的导航。
+
 ## 2026-10-03
 
+- 前端工作台三阶段体验与特色重构：
+  1. **文案与视觉降噪**：消除参数面板与操作区的说明书式长句文案，优化深色体系阶梯（`#09090c`、`#07070a`），将强霓虹光晕收敛为细腻内敛的光影质感；
+  2. **交互顺滑化与参数场景分级**：采用渐进式披露设计（Progressive Disclosure），常驻 4 组场景推荐预设与特征融合主滑块，将 ONNX 换脸模型、余弦截断阈值 $\tau$ 及光影色温适配收纳至“高级算法调校”折叠面板并提供实时摘要；重构单图试换与批量换脸按钮视觉层级；
+  3. **特色凸显（画布内联快速映射与精修闭环导航）**：目标画布人脸框支持原位点击呼出快速指派 Popover，展示源人物封面头像与素材计数，打通轻量直选与矩阵大表的自然分流；AI 精修工作台顶栏新增“返回画布”快捷导航，打通准备区与精修工作区双向心流。
 - 新增扩散换脸评估工具（`scripts/diffusion_swap_prepare.py`、`diffusion_pair_patch.py`、`evaluate_diffusion_swaps.py`）与 `--assignment`/`--single-reference`；记录 REFace 与 DiffSwap++ 的身份相似度对比（明显弱于 ONNX 模型，且慢、覆盖率低），不改生产默认与路由。见 `docs/facefusion-local-swap.md`。
 - 新增非生产评估适配器 `scripts/swap_eval_adapters.py`（HyperSwap 1a/1b、AlphaFace、Ghost 2/3）及 FaceFusion 模型许可核对；8 个模型身份相似度对比见 `docs/facefusion-local-swap.md`。生产默认与路由不变，权重仅本地评估。
 - 身份相似度脚本的 `--strengths` 改为 `--arms MODEL[:强度]`，可对比换脸模型并记录耗时；回退到别的模型的结果不计入该臂。新增 InSwapper/HyperSwap/Ghost 身份相似度对比记录，不改默认模型或路由。见 `docs/facefusion-local-swap.md`。
@@ -204,7 +213,7 @@
 
 ### 换脸可见强度与失败诊断
 
-- 基于四张真实图片的 72% / 90% / 95% 受保护对照，将 InSwapper 的 API/流水线/Studio 默认强度调至 90%，工作台上限从 90% 对齐至 API 的 95%；不放宽人物匹配、可见变化阈值、侧脸或遮挡保护。证据和适用边界见 [强度实测记录](docs/swap-benchmarks.md#recorded-strength-comparison)。
+- 基于四张真实图片的 72% / 90% / 95% 受保护对照，将 InSwapper 的 API/流水线/Studio 默认强度调至 90%，工作台上限从 90% 对齐至 API 的 95%；不放宽人物匹配、可见变化阈值、侧脸或遮挡保护。证据和适用边界见 [决策笔记](.agents/notes/swap/20260907-default-strength-072-to-09.md)。
 - 新增非生产只读复现工具 `scripts/diagnose_batch_strength.py`，保存逐脸模型输出、遮罩、融合和素材相似度证据，不覆盖任务历史或发布诊断候选。
 - 修复批任务零换脸时异常分支丢失真实检测数、人物结果和模型路由的问题；零换脸仍为 FAILED 且不发布图片，旧历史缺失字段不自动重建。
 

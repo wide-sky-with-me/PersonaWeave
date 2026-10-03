@@ -57,7 +57,7 @@ Other files bundled in `buffalo_l.zip` may also be present. The script keeps exi
 
 ## Masked post-swap restoration model
 
-`codeformer.onnx` (`core/restorer.py`) is an **opt-in** (`enable_face_restoration=false` by default) production capability, not a diagnostic script. It restores skin-texture and edge detail lost to the swap models' 256x256 working-crop cap (see `swap_single_face_facefusion` in `core/pipeline.py`). This project previously shipped full-face CodeFormer/GFPGAN restoration in 0.1.0 and retired it because it could alter identity and protected pixels outside the swap's own mask (see `CHANGELOG.md`, `docs/engineering-architecture.md`). The current reintroduction is deliberately scoped to avoid that failure mode:
+`codeformer.onnx` (`core/restorer.py`) is an **opt-in** (`enable_face_restoration=false` by default) production capability, not a diagnostic script. It restores skin-texture and edge detail lost to the swap models' 256x256 working-crop cap (see `swap_single_face_facefusion` in `core/pipeline.py`). Full-face CodeFormer/GFPGAN restoration (0.1.0) is retired because it could alter identity and protected pixels outside the swap's own mask (see `CHANGELOG.md`, `docs/engineering-architecture.md`). The current reintroduction is deliberately scoped to avoid that failure mode:
 
 - restoration output is blended back only through `crop_mask` — the same dense-landmark/occlusion/region-protection mask that already gates the swap itself, so it can never touch background, occluded, or region-protected pixels;
 - `restoration_fidelity_weight` (default `0.75`) uses CodeFormer's own identity-preservation control to bias toward the already-swapped face over generative hallucination;

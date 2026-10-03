@@ -11,7 +11,7 @@
 
 ## 历史证据读取与人工评价
 
-`api/refinement/legacy_quality.py::QualityEvaluationStore` 仅负责读取已有证据、校验访问、提交人工评价和计算历史汇总。历史质量生产器已删除：生产代码不再提供 image / initial / start_generation / save_generation / candidate 等旧 worker 写入方法，也不为新会话创建旧表记录。测试使用临时 SQLite 与人工构造的内容寻址 fixture，不向用户档案灌测试数据。
+`api/refinement/legacy_quality.py::QualityEvaluationStore` 仅负责读取已有证据、校验访问、提交人工评价和计算历史汇总。历史质量生产器已删除：生产代码不提供 image / initial / start_generation / save_generation / candidate 等旧 worker 写入方法，也不为新会话创建旧表记录。测试使用临时 SQLite 与人工构造的内容寻址 fixture，不向用户档案灌测试数据。
 
 评价绑定历史 task_id 与候选 digest。PUT 使用 expected_revision 与 candidate_digest 检查陈旧请求；覆盖的人物 ID 必须与该历史任务一致。已保留的不同候选评价互不覆盖；旧记录表明不同轮次产生相同 digest 时，后续评价不能改写首轮是否 ready 的事实。
 

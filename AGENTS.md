@@ -1,274 +1,107 @@
 # Agent Guidelines (AGENTS.md)
 
-本文件规定了 AI Agent 在本代码库/项目中进行开发、维护和执行任务时必须严格遵守的行为准则与操作规范。
+AI Agent 在本仓库开发、维护和执行任务时必须遵守本文件。每条只写规则，细节在链接的文档里；开工前先读与改动相关的链接。
 
----
+## 文档分三层，不混写
 
-## 1. 核心设计原则 (Core Principles)
+| 层 | 位置 | 写什么 |
+| --- | --- | --- |
+| 规则 | 本文件 | 必须遵守的原则，每条一两行，附链接 |
+| 事实 | `docs/`、`README.md`、`DESIGN.md` | 当前系统怎样运转，只写确定的当前事实 |
+| 决策 | `.agents/notes/<领域>/` | 为什么这样做、否定过什么方案、踩过的坑 |
 
-### 1.1 遵守 KISS 原则，拒绝过度设计 (Keep It Simple, Stupid)
-- **实用优先**：优先采用最直接、简单且健壮的方案解决问题，坚决避免过早优化和不必要的抽象层（如滥用设计模式、过度解耦、多层包装）。
-- **按需编码**：仅实现当前明确需要的功能，不预先编写“未来可能用到”的未决逻辑（YAGNI 原则 - You Aren't Gonna Need It）。
-- **直观易读**：代码逻辑应当自解释，结构扁平清晰，避免晦涩难懂的奇技淫巧。
+`CHANGELOG.md` 是历史记录，不能作为当前能力依据。分层、长度上限、笔记格式和检查见 [documentation-governance.md](docs/documentation-governance.md)，笔记写法见 [.agents/notes/README.md](.agents/notes/README.md)。
 
-### 1.2 代码注释与文档规范 (Code Commenting)
-- **关键位置必须写好注释**：
-  - **核心业务逻辑与算法**：复杂计算、状态流转、非平凡算法分支需附带逻辑解释。
-  - **非显而易见的决策 (Why)**：解释为什么采用某种特殊解法、规避了什么已知 Bug 或系统限制。
-  - **接口与函数说明**：公共函数/类提供清晰的 Docstring，标明核心入参、返回值及可能的异常。
-  - **规避冗余注释**：避免对显而易见的代码进行“废话式”直译注释（例如 `i = i + 1  # i加1`）。
+## 1. 核心原则
 
----
+- **KISS / YAGNI**：用最直接、健壮的方案，不预先实现“将来可能用到”的逻辑，不滥用设计模式和多层包装。
+- **注释**：核心算法、状态流转、非显而易见的决策（为什么、规避了什么限制）和公共函数的 Docstring 必须写；不写逐行直译式废话。
 
-## 2. 环境与包管理规范 (`uv`)
+## 2. Python 环境（`uv`）
 
-本项目强制使用 **[`uv`](https://github.com/astral-sh/uv)** 作为 Python 环境与依赖管理工具，严禁随意使用原生 `pip` 污染全局或系统环境。
+- 强制使用 `uv`，禁止用原生 `pip` 污染环境：`uv venv`、`uv add [--dev] <包>`、`uv sync`、`uv run <命令>`、`uv run pytest`。
+- 引入依赖前先检查：系统与架构（`uname -a`、`/etc/os-release`）、`uv run python --version`、`pyproject.toml`/`uv.lock` 现有依赖；优先标准库和已有依赖，不为微小功能引入大库；确认版本冲突与平台支持；安装后立即做导入冒烟验证。
 
-### 2.1 常用工作流命令
-- **虚拟环境管理**：
-  ```bash
-  # 创建虚拟环境
-  uv venv
+## 3. 格式与检查（`ruff`）
 
-  # 激活虚拟环境（Linux/macOS）
-  source .venv/bin/activate
-  ```
-- **依赖管理**：
-  ```bash
-  # 安装/添加依赖
-  uv add <package_name>
-  # 添加开发依赖
-  uv add --dev <package_name>
-  # 依据 pyproject.toml / requirements.txt 同步依赖
-  uv sync
-  # 或使用 uv pip 兼容命令
-  uv pip install -r requirements.txt
-  ```
-- **运行命令与脚本**：
-  ```bash
-  # 在虚拟环境中执行命令
-  uv run <command>
-  # 运行指定 Python 脚本
-  uv run python main.py
-  # 运行测试
-  uv run pytest
-  ```
+- 改完 Python 必须依次执行 `uv run ruff format .` 与 `uv run ruff check .`，0 报错 0 警告。
+- 不留未使用的 import 和局部变量；不写 `except Exception: pass`（捕获具体异常或说明原因）；双引号，行宽 120（以 `pyproject.toml` 为准）。
 
----
+## 4. 前端（`pnpm`）
 
-## 3. 代码风格、格式化与规范检查 (`ruff`)
+- 只用 `pnpm`：`pnpm install`、`pnpm add [-D]`、`pnpm dev`、`pnpm lint`、`pnpm build`。修改后执行 `pnpm --dir web format` 与 `pnpm --dir web lint`（含 Prettier 与 TypeScript 检查）。
+- 组件职责清晰、单向数据流；原子组件优先 shadcn/ui + Radix。深色主题（`#09090b`/`#18181b`，`border-white/10`，`backdrop-blur-md`），强调色 `#6366f1`/`#06b6d4`；交互过渡用 Framer Motion 弹簧 `{ type: "spring", stiffness: 300, damping: 25 }`。
+- 全局客户端状态用 Zustand，服务端交互与轮询用 TanStack Query；及时 `URL.revokeObjectURL`。
+- 精修与历史分别在 `web/src/features/refinement/`、`web/src/features/history/`，测试就近放置；Hook 管远程交互与草稿，组件负责展示，Hook 不反向导入组件。样式踩坑见 [决策笔记](.agents/notes/frontend/20260928-tailwind-style-pitfalls.md)。
 
-本项目强制使用 **[`ruff`](https://github.com/astral-sh/ruff)** 作为 Python 代码的统一格式化器 (Formatter) 与静态规范检查器 (Linter)。
+## 5. 完成前自检
 
-### 3.1 核心命令与工作流
-所有代码编写或修改完成后，**必须依次执行格式化与规范检查，确保 0 报错、0 警告**：
+- Python：`ruff format` + `ruff check` 干净；前端：`pnpm --dir web lint` 通过。
+- 运行测试（`uv run pytest` / `pnpm test`）或做功能验证，不能只靠推测。
+- 不留临时测试文件和垃圾代码；Python 全部经 `uv` 执行，前端经 `pnpm`。
+- 行为、默认值、模型、状态机、接口、存储或失败语义变化时，同一变更内更新权威文档和 `CHANGELOG.md`；涉及文档运行 `uv run pytest tests/test_documentation_consistency.py tests/test_documentation_governance.py`。
 
-- **代码格式化**：
-  ```bash
-  # 自动格式化项目所有 Python 文件
-  uv run ruff format .
+## 6. 模块规则
 
-  # 仅检查代码格式是否合规（不修改文件，CI/前置校验常用）
-  uv run ruff format --check .
-  ```
+### 6.1 面部解析（`core/face_parser.py::DenseFaceParser`）
+106 点：0–32 下颌线，33–42 左眉，43–52 右眉，53–71 鼻，72–92 嘴，93–96 / 97–105 左右眼。掩码在 512×512 对齐空间生成并做 31×31 高斯羽化；关键点失败必须降级为椭圆默认掩码，禁止抛异常中断流水线。
 
-- **规范检查与静态分析 (Linting)**：
-  ```bash
-  # 检查代码中的规范问题、未使用的导入/变量、潜在 Bug
-  uv run ruff check .
+### 6.2 手动保护画笔
+状态在 `useStudioStore`；遮罩为 base64 灰度 PNG，经 `manual_mask` 传后端，`pipeline.py` 用 `mask_warped = mask_warped * (1.0 - manual_mask)` 回填；255 = 保护（保留原图），0 = 允许换脸。
 
-  # 自动修复所有可安全自动修复的规范问题（如导入排序、废弃语法等）
-  uv run ruff check --fix .
-  ```
+### 6.3 多角色映射
+- `PersonMappingItem`：稳定 `person_index`、`target_reference_url` + `target_reference_person_index`、三选一的 `source_identity_id` / `source_asset_ids` / `source_manual_images` 与 `source_mode`。`person_mappings` 与顶层单角色 source/target 字段互斥，`api/schemas.py` 拒绝混用，禁止恢复“非空时静默优先”。
+- 非空时路由到 `process_image_multi_mapping()`；`person_index` 恒为 **1-based**，按人脸从左到右。
+- 人物-人脸分配只能用 `resolve_person_mapping_assignment()`（匈牙利算法全局最优），**禁止**改回按列表顺序逐个贪心；必须保留“低于阈值的配对优化前屏蔽、优化后用真实相似度再校验”。详见 [facefusion-local-swap.md](docs/facefusion-local-swap.md)。
 
-### 3.2 规范与编码准则
-1. **导入语句 (Imports)**：
-   - 严禁残留未使用的 `import`。
-   - 遵循 `isort` 规则自动分组排序（标准库 -> 第三方库 -> 本地模块）。
-2. **变量与代码清理**：
-   - 严禁残留未使用的局部变量（若必要请使用 `_` 或 `_var` 显式命名）。
-   - 避免无意义的盲目捕获 `except Exception: pass`，如有特定目的应显式捕获具体异常或添加说明。
-3. **一致性风格**：
-   - 字符串引号统一采用双引号 `"`（由 Ruff Formatter 自动维护）。
-   - 单行最大字符宽度遵循 `pyproject.toml` 配置（120 字符）。
+### 6.4 AI 网关与模型（`core/ai/`）
+权威文档 [model-catalog.md](docs/model-catalog.md)，可执行事实源 `config/ai_gateway.yaml`。
+- 所有 VLM/图像编辑访问必须经 `AIGateway`，禁止业务代码实例化 LiteLLM Router 或裸调第三方 SDK；视觉调 `Router.acompletion`，图像调 `Router.aimage_edit`，禁止手写供应商 HTTP 或私有协议回退。
+- 默认目录只有 `personaweave-vision-default` 与 `personaweave-refine-default`；`model_name` 是稳定别名，禁止恢复供应商专属默认目录、按别名猜能力或伪造零成本定价。
+- 模型与连接来自 `AI_VISION_*` / `AI_IMAGE_*`（`MODEL`/`API_BASE`/`API_KEY`）；YAML 密钥与 base URL 用 `os.environ/NAME`；禁止在代码硬编码密钥，不得读取或提交用户实际凭据来验证文档。
+- `image_models[].generation` 必须三选一：`{size: "auto"}`、`{sizes: [...]}`、`{max_side, min_side, grid, max_pixels?, delimiter: "x"}`；缺失、混用或无效须拒绝。fallback 必须同能力，图像 fallback 必须相同 `generation`；默认 `num_retries=0`、图像 deployment `max_retries=0`，重试由用户显式承担费用。原生 provider 的图像编辑支持按 endpoint 核实，不能凭 chat 或任意 URL 判定。
+- VLM 输出必须走 Pydantic 契约（仲裁 `core/ai/contracts.py`；精修 `core/refinement/contracts.py`），禁止解析裸 JSON；精修初请求提供完整 JSON schema 且 `max_text_repairs=0`。VLM 仲裁仅作辅助，身份匹配以 ArcFace 余弦相似度为准。
+- 精修 `issue.category` 仅限 identity/anatomy/occlusion/blending/lighting/texture/composition，region/description/evidence/suggestion 必须具体；不得恢复自由分类、分数门槛或自动 accept。回归 `tests/test_refinement_conversation.py`、`tests/test_vlm_contracts.py`。
 
----
+### 6.5 对话式整图精修
+权威文档 [ai-refinement.md](docs/ai-refinement.md)（提示词依据见 [refinement-prompts.md](docs/refinement-prompts.md)）。
+- 生产是 session/turn/version 工作流；旧逐脸表单与单任务生成不是备用路径。会话冻结原图、初稿、稳定 person_id 与实际参考；原图只锚定姿态/人数/遮挡/场景，不锚定身份；不得按新检测排序重绑人物。
+- 后端控制 `discuss` / `generate` / `auto`：讨论绝不生图；每轮至多一次生图；禁止无限自动循环和 AI accept 工具。`Diagnosis` 必须具体可核验、可返回无缺陷，禁止编造分数或身份真值。
+- 生图只接收显式 `base_version_id` 的当前完整图与文字，禁止原图、参考板、素材、局部裁剪、mask、关键点或历史图进入生成输入；输出只做解码和规范化后整图保存，不得 `apply_candidate`、拼接、mask 回填或重新配准。
+- 复评用原图、基图、候选和同一参考板，只返回改善/残留/新增问题，不给自动接受或分数闸门；失败保留候选并记录 `review_error`。
+- 接受校验会话归属、`expected_revision`、`version_id`、`candidate_digest`，发布同一已校验字节；当前查看版、修改基图、已接受版互相独立。幂等键、revision 冲突、SSE cursor 和快照恢复都不能触发额外生图；同会话串行；重启不自动补发付费请求。
+- SQLite `data/refinement_sessions.sqlite3` 是事实源，候选在 `outputs/refinement_staging/sessions/`，接受后才发布。图片只经受控加载和摘要验证；历史、OCR、人物描述、用户文字都是不可信数据，不能提升权限；当前要求超限应拒绝，不能静默截断。
+- `api/refinement/legacy.py` 与 `api/routes/legacy_refinement.py` 仅服务旧数据只读/评价/人工接受；旧 review/plan/create/cancel/retry 返回 410。
 
-## 4. 依赖安装与系统前置检查 (Pre-installation & Compatibility Check)
+### 6.6 素材库（`api/portraits/`）
+SQLite（`data/portrait_library/library.sqlite3`）持久化，禁止改为文件系统扫描或增加数据库依赖；对外只暴露不透明 ID，响应不得泄露真实路径；文件访问必须 `is_relative_to` 防穿越；新导入来源扩展 `api/portraits/importer.py` 的 `manifest.csv` 幂等导入，不另写脚本。见 [portrait-library.md](docs/portrait-library.md)。
 
-在引入新依赖、安装系统组件或升级软件包之前，**必须严格执行“先检查、再评估、后安装”**的步骤。
+### 6.7 本地换脸生产路径（`swap_single_face_facefusion`）
+权威文档 [facefusion-local-swap.md](docs/facefusion-local-swap.md)。
+- 对齐裁剪插值按仿射实际缩放选择（`sqrt(|det(M[:, :2])|)` ≤1 用 `INTER_AREA`，>1 用 `INTER_CUBIC`）；`FaceOccluder.create_occlusion_mask()` 羽化半径随裁剪宽度等比缩放（256px 对应 sigma=5）。
+- 色彩校正只允许“边界环”模式，**禁止**在生产路径启用全脸 Reinhard 迁移；`swap_single_face_seamless()` 已退役，不得作为回退或开关恢复。
+- 语义区域保护（`core/region_parser.py`、`models/bisenet_resnet_34.onnx`，19 类 CelebAMask-HQ）、XSeg 与 106 点掩码用 `np.minimum.reduce` 取交集；新增保护区域在 `create_region_protection_mask(protected_regions=(...))` 追加 `REGION_CLASSES` 中已核实的类别名，禁止凭记忆猜类别索引，扩展前用真实图片推理确认。
 
-### 4.1 第一步：检查系统环境与现有状态
-在执行任何安装操作前，先运行诊断命令确认当前运行环境：
-- **操作系统与硬件架构**：`uname -a`, `cat /etc/os-release`（确认是 Linux/macOS/Windows 以及 x86_64/ARM64）。
-- **Python / 运行时版本**：`uv run python --version` 或当前活跃版本。
-- **现有已安装库**：检查 `pyproject.toml`、`uv.lock` 或 `uv pip list`，避免重复安装或引起依赖版本颠簸（Dependency Thrashing）。
+### 6.8 模型资产
+`models/` 下大小异常（几字节到几十字节）的 `.onnx` 先用 `file`/`cat` 检查，失败下载会留下伪装成权重的文本错误页。新增或修复模型前用 `onnxruntime.InferenceSession(...).get_inputs()/get_outputs()` 核实输入输出，并在 `tests/fixtures/` 的真实图片上推理核对输出语义；新增下载源必须验证 SHA-256（或来源完整性摘要），并同步 `models/README.md` 与 `scripts/download_models.py`。
 
-### 4.2 第二步：必要性评估 (Necessity Assessment)
-- **优先使用标准库/现有依赖**：评估该功能是否可以通过 Python 标准库（如 `pathlib`, `json`, `dataclasses`, `functools`, `typing` 等）或已有依赖轻量实现。
-- **避免臃肿库**：严禁为了微小功能引入庞大的全家桶库（例如仅为了简单求均值而引入大型复杂依赖）。
+### 6.9 批任务历史与结果回看
+权威文档 [task-history.md](docs/task-history.md)。服务端 SQLite 快照是事实源，浏览器 `localStorage` 只存不含图片的轻量关联；历史列表只返回有上限的轻量摘要，禁止传完整 `results`、请求体、图片 URL、base64；详情按 `task_id` 获取，新历史类型沿用“摘要 + 详情”。新成功结果同步保存不可变原始画布和处理产物，只经受控 `/api/v1/files/` 暴露，缺失时明确返回不可用，禁止猜路径或重建替代结果。历史查看器只读，不写入 `useStudioStore`；服务端状态始终优先。
 
-### 4.3 第三步：兼容性与安全性验证 (Compatibility & Safety Verification)
-- **依赖冲突检查**：确认待安装包与已有核心依赖的版本兼容性范围。
-- **平台支持**：确认目标包是否支持当前的操作系统及架构（避免缺少编译环境导致 C 扩展构建失败）。
-- **安装后验证**：安装后必须立即运行一次冒烟测试或轻量验证脚本，确认依赖能够正常导入并正常运行：
-  ```bash
-  uv run python -c "import <package_name>; print(<package_name>.__version__)"
-  ```
+### 6.10 工程边界
+权威文档 [engineering-architecture.md](docs/engineering-architecture.md)。
+- 依赖方向 `web/src → api → core → provider/runtime` 单向，`core` 禁止导入 `api`；`core/__init__.py`、`api/__init__.py` 保持无副作用；改包边界跑 `tests/test_package_boundaries.py`。
+- 每个实现必须归类：生产代码从当前 API/CLI/UI 可达；诊断/评测只能放 `scripts/` 并标注非生产；退役实现连同导出、启动检查、下载器和专属测试一并移除，禁止保留未经批准的“影子流水线”。删除前先核实入口、测试引用、文档契约和运行资产。
+- 兼容分支必须有明确调用方、回归测试、弃用说明和删除条件，禁止无边界的 `hasattr` 或双配置格式。
+- 跨层事实只有一个可执行来源：模型/角色/生成能力 `config/ai_gateway.yaml`，下载摘要 `scripts/download_models.py`，通用 API 契约 `api/schemas.py`，精修会话契约 `api/refinement/contracts.py`，精修模型输出 `core/refinement/contracts.py`，任务状态来自服务端持久化；前端、脚本、文档不得另建别名或能力清单。
+- 按变化原因拆分模块，不按行数；新抽象必须消除重复事实、隔离副作用或形成可独立测试的边界，否则保留直观函数。未经实测的数据不得伪装成精确默认值（耗时等优先从真实完成数据推导，样本不足写“暂无可靠估计”）。
+- 目录：`api/app.py` 只装配，生命周期 `api/lifecycle.py`，路由 `api/routes/`，批任务 `api/tasks/`，精修 `api/refinement/`，素材库 `api/portraits/`，共享图片 I/O `api/media.py`（不得为复用反向依赖任务管理器）；AI 配置/网关/契约 `core/ai/`（`configuration.py` 不导入 LiteLLM/provider，`ImageEditResult` 来自 `core/ai/types.py`），精修契约/证据/提示词/服务 `core/refinement/`。
 
----
+## 7. 文档规则
 
-## 5. 前端工程与工作台开发规范 (`pnpm`)
-
-本项目的前端工作台（Web Studio）强制使用 **[`pnpm`](https://pnpm.io/)** 作为唯一的包管理器，严禁随意使用 `npm` 或 `yarn` 导致 lockfile 混乱与幽灵依赖问题。
-
-### 5.1 常用前端工作流命令
-- **依赖安装与更新**：
-  ```bash
-  # 安装项目所有依赖
-  pnpm install
-
-  # 添加生产依赖
-  pnpm add <package_name>
-
-  # 添加开发依赖
-  pnpm add -D <package_name>
-  ```
-- **开发、构建与检查**：
-  ```bash
-  # 启动本地热重载开发服务器
-  pnpm dev
-
-  # 执行代码规范与静态分析
-  pnpm lint
-
-  # 执行生产构建
-  pnpm build
-  ```
-
-### 5.2 前端代码风格、组件设计与动效规范
-1. **组件化与 KISS 原则**：
-   - 遵循单向数据流与清晰职责边界，严禁将所有状态塞入单一臃肿组件。
-   - 基础原子组件优先选用基于 **shadcn/ui + Radix UI Primitives** 的无头封装，业务组件保持自解释与纯粹。
-2. **UI/UX 现代科技美学规范 (Figma 级高质感)**：
-   - **深色模式与层次感 (Dark Cyber-Aesthetics)**：采用深灰黑底色（如 `#09090b`, `#18181b`）、细微半透明边框（`border-white/10`）与精细磨砂玻璃模糊（`backdrop-blur-md`）。
-   - **数据与交互反馈**：人脸识别框、置信度标签、相似度热力图与对比滑块需具备清晰高亮态（Primary Accent Color 如 Electric Indigo `#6366f1` 或 Neon Cyan `#06b6d4`）。
-   - **物理微动效 (Micro-Interactions)**：交互过渡统一使用 **Framer Motion** 的弹簧物理曲线（`type: "spring", stiffness: 300, damping: 25`），避免僵硬生硬的线性突变。
-3. **状态与数据流控制**：
-   - 全局客户端状态采用 **Zustand**，异步服务端接口交互与状态轮询采用 **TanStack Query (React Query)**。
-   - 严格处理图片与 Blob 的内存回收（及时调用 `URL.revokeObjectURL` 避免内存泄漏）。
-
----
-
-## 6. 执行与验证规范 (Execution & Quality Checklist)
-
-AI Agent 在完成代码编写或修改后，必须遵守以下质量清单：
-
-- [ ] **Python 后端代码规范 (Ruff)**：是否执行了 `uv run ruff format .` 与 `uv run ruff check .` 并达到 0 警告 / 0 报错？
-- [ ] **前端代码规范 (pnpm)**：是否严格使用 `pnpm` 管理依赖，且组件结构扁平清晰无冗余？
-- [ ] **代码简洁性**：是否遵循 KISS 原则？是否存在冗余类/函数/包装层？
-- [ ] **注释完整性**：核心逻辑、边界情况、非直观设计是否有清晰注释？
-- [ ] **环境隔离**：所有 Python 执行通过 `uv`，前端执行通过 `pnpm`？
-- [ ] **运行验证**：修改后是否运行了测试用例 (`uv run pytest` / `pnpm test`) 或执行了功能验证？
-- [ ] **环境整洁**：未留下未清理的临时测试文件或垃圾代码。
-
----
-
-## 7. 新增功能模块开发规范 (New Feature Module Conventions)
-
-### 7.1 面部解析与密集关键点模块 (Dense Face Parser)
-- `core/face_parser.py` 中的 `DenseFaceParser` 类负责 106 点面部关键点提取与解剖学轮廓掩码生成。
-- 关键点索引约定：0-32 为下颌线，33-42 为左眉，43-52 为右眉，53-71 为鼻部，72-92 为嘴部，93-96 与 97-105 分别为左右眼轮廓。
-- 掩码生成必须在 512×512 对齐空间中完成，并使用 31×31 高斯模糊进行边缘羽化。
-- 当关键点提取失败时，必须优雅降级为椭圆默认掩码，禁止抛出异常中断流水线。
-
-### 7.2 手动保护画笔交互规范 (Manual Protection Brush)
-- 前端保护画笔相关状态统一管理在 `useStudioStore` 的 Zustand store 中。
-- 画笔遮罩数据以 base64 编码的 PNG 灰度图传递至后端 `manual_mask` 参数。
-- 后端在 `pipeline.py` 中通过 `mask_warped = mask_warped * (1.0 - manual_mask)` 实现保护区域像素回填。
-- 遮罩值约定：白色 (255) = 保护区域（保留原图），黑色 (0) = 允许换脸区域。
-
-### 7.3 多角色映射矩阵 (Multi-Person Matrix Mapping)
-- API 层通过 `PersonMappingItem` 模型定义单个人物映射关系：稳定的 `person_index`、代表图上的 `target_reference_url` + `target_reference_person_index`，以及三选一的 `source_identity_id` / `source_asset_ids` / `source_manual_images` 和 `source_mode`。
-- `person_mappings` 多角色模式与请求顶层的单角色 source/target 字段互斥；`api/schemas.py` 会拒绝混用，禁止恢复“非空时静默优先”的旧行为。
-- 当 `person_mappings` 非空时，后端自动路由至 `process_image_multi_mapping()` 方法。
-- 人物编号 (`person_index`) 始终为 **1-based**，按合影中人脸从左至右排序。
-- 人物-人脸的分配必须通过 `resolve_person_mapping_assignment()`（`core/pipeline.py`，匈牙利算法全局最优解）完成，**禁止**改回按列表顺序逐个贪心抢占最佳匹配——贪心分配会让排序靠前的映射抢走本该属于后一个映射的更强匹配。新增筛选/排序逻辑时必须保留"低于阈值的配对在优化前屏蔽、优化后用真实相似度再校验"的双重保护。
-
-### 7.4 VLM 多模态仲裁器 (VLM Arbiter)
-- `core/ai/arbiter.py` 通过 `core.ai.gateway.AIGateway`（LiteLLM Router 封装，见 7.5）接入视觉大模型，**不再直接调用 LiteLLM**。
-- API 密钥通过环境变量 `.env` 配置，禁止在代码中硬编码。
-- VLM 仲裁结果仅作为辅助参考，最终身份匹配仍以 ArcFace 余弦相似度为准。
-
-### 7.5 AI Gateway 配置规范 (`core/ai/gateway.py`)
-- 所有 VLM/图像编辑模型访问必须经由 `AIGateway` 统一网关，禁止在业务代码中直接实例化 LiteLLM Router 或裸调用第三方 SDK。
-- 原生 `config/ai_gateway.yaml::model_list` 同时声明视觉与图像 deployment，`model_name` 是稳定别名，允许同别名多 deployment；`PERSONAWEAVE_AI_CONFIG` 可覆盖路径。默认目录只有 `personaweave-vision-default` 和 `personaweave-refine-default`，禁止恢复供应商专属默认目录或伪造零成本定价。
-- VLM 业务用途通过 `vision_roles` 和 `AIGateway.vision_alias()` 解析；默认三个角色均指向 `personaweave-vision-default`，默认图像别名为 `personaweave-refine-default`。图像 `image_models` 仅含 `model_name/display_name/description/generation`，只引用同一 `model_list`，禁止再维护 `provider/params` 路由。
-- 模型与连接分别通过 `AI_VISION_MODEL`、`AI_VISION_API_BASE`、`AI_VISION_API_KEY` 和 `AI_IMAGE_MODEL`、`AI_IMAGE_API_BASE`、`AI_IMAGE_API_KEY` 配置；YAML 密钥/base URL 必须使用 `os.environ/NAME`，模型也支持该引用。不得读取或提交用户实际凭据来验证文档。
-- `image_models[].generation` 必须明确三选一：`{size: "auto"}`（默认，不承诺 4K）、`{sizes: ["1024x1024", ...]}`（选最接近画布宽高比）、`{max_side, min_side, grid, max_pixels?, delimiter: "x"}`（动态范围）。禁止按别名猜测能力；缺失、混用或无效策略须拒绝。
-- 视觉调用 `Router.acompletion`，图像调用 `Router.aimage_edit`（LiteLLM 1.98.0 在实例上动态注册），禁止手写供应商 HTTP 或私有协议回退。原生 provider 的支持范围按 endpoint 核实，不能凭任意 URL 或支持 chat 就判定支持图像编辑。结果统一为 `ImageEditResult`；目录 API 保持形状，provider 标记 `litellm`，实际模型可逗号分隔，不暴露连接/凭据。
-- fallback 必须同能力；图像 fallback 必须相同 `generation`。默认 Router `num_retries=0`、图像 deployment `max_retries=0`，用户可显式增加并承担重复付费风险。旧变量/配置不兼容，退役别名不得静默映射；已生成旧候选的接受仍只认 revision/digest 校验后的 staging 字节，迁移见 `docs/model-catalog.md`。
-- VLM 输出必须走 Pydantic 契约：身份仲裁使用 `core/ai/contracts.py`；对话精修使用 `core/refinement/contracts.py::Diagnosis/CandidateReview`，禁止业务直接解析裸 JSON。精修初请求需提供完整 JSON schema，显式 `max_text_repairs=0`；通用网关/仲裁默认保留至多两次文本修复，独立于用户配置的 Router 重试成本。
-- 新精修 issue.category 仅可为 identity/anatomy/occlusion/blending/lighting/texture/composition；region/description/evidence/suggestion 必须具体，长度约束与合格/不合格 few-shot 同步修改。不得恢复自由分类、分数门槛或自动 accept 字段。对应回归是 `tests/test_refinement_conversation.py`，共享解析与仲裁回归是 `tests/test_vlm_contracts.py`。
-
-### 7.6 对话式整图 AI 精修规范 (Conversational Whole-image Refinement)
-- `docs/ai-refinement.md` 是精修架构权威，提示词官方依据与获取限制见 `docs/refinement-prompts.md`。现行生产是 session/turn/version 工作流；旧逐脸范围表单与单任务生成不是备用路径。
-- 会话冻结原图、本地初稿、稳定 person_id 与实际参考素材。诊断同时读取原图、当前图、按人物分板的参考；原图只锚姿态/人数/遮挡/场景，不锚原人物身份。不得按新检测排序或参考板到达顺序重绑人物。
-- `Diagnosis` 必须具体可核验，可返回无缺陷；缺参考为 unavailable，侧脸/小脸/遮挡证据不足为 uncertain，位置不确定需澄清，禁止强制找刺或编造分数/身份真值。
-- 后端控制 `discuss` / `generate` / `auto`。讨论绝不生图；自动首轮只有明确问题、有效计划且对应确定时才生成；每轮至多调用一次生图，无限自动循环与 AI accept 工具均禁止。
-- 生图只接收显式 base_version_id 的当前完整图与文字。禁止原图、参考板、素材、局部裁剪、mask、关键点、标注或历史图片进入生成输入。允许按需求整图协调重绘，不再使用旧 allowed_changes 逐脸门禁，不承诺无关区域像素完全相同。
-- 生成输出只做解码、方向/色彩/尺寸规范化，直接保存整个候选；不得 apply_candidate、局部拼接、mask 回填或重新配准。生图单图单次及原分辨率输入必须有像素级回归。
-- 复评使用原图、本轮基图、候选与相同参考板；仅返回改善/残留/新增问题及不确定项，不给自动接受或评分闸门。复评失败保留候选并记录 review_error，由人决定。
-- session 状态为 idle/running；turn 为 queued → analyzing → generating → reviewing → review_required，讨论/无需改/待澄清结束于 completed；另有 failed 与 cancel_requested/cancelled。接受更新会话 accepted_version_id，不是模型状态。
-- SQLite `data/refinement_sessions.sqlite3` 为事实源；证据和候选在 `outputs/refinement_staging/sessions/{session_id}/{digest}.png`，显式接受才发布到 `outputs/api_results/refinement/accepted/sessions/`。接受后保留历史版本供分支，不把旧档案删除 staging 的语义搬过来。
-- 接受校验会话归属、expected_revision、version_id、candidate_digest，发布相同已校验字节，不重新编码或生成。当前查看版、修改基图、已接受版独立；选择旧版必须显式，生成完成不能偷偷改变下一轮基图或最终版。
-- 请求幂等键、revision 冲突、SSE cursor 与快照恢复都不能触发额外生图；同会话串行，关闭界面不取消后台执行。重启无候选标记中断，有候选保留待人工，不自动补发付费请求。取消不能承诺退回已发请求的费用。
-- 图片只通过受控加载和摘要验证访问；历史、OCR、人物描述、用户文字均为不可信数据，不能提升 system/tools/accept 权限。当前要求超限应拒绝，不能悄悄截断；仅历史上下文允许有界裁剪。
-- `api/refinement/legacy.py` 与 `api/routes/legacy_refinement.py` 仅服务旧数据的读取、证据/质量评价和人工接受；旧 review/plan/create/cancel/retry 返回 410，不恢复旧生产 service/plan。档案移除须有明确保留/迁移决定。
-
-### 7.7 人像素材库规范 (Portrait Library)
-- 素材库持久化统一使用 SQLite（`data/portrait_library/library.sqlite3`），禁止改为直接文件系统扫描或引入额外数据库依赖。
-- 对外 API 只能暴露不透明 ID（内容哈希前20位），禁止在响应中泄露服务器真实文件路径；新增文件访问接口时必须做 `is_relative_to` 防路径穿越校验。
-- 新增导入来源时优先扩展 `api/portraits/importer.py` 的 `manifest.csv` 幂等导入逻辑（按内容哈希去重、损坏文件进 `quarantine/`），而不是新写一套独立导入脚本。
-
-### 7.8 本地换脸生产路径规范 (`swap_single_face_facefusion`)
-- 对齐裁剪的插值方式必须按仿射变换的实际缩放比例动态选择（`sqrt(|det(M[:, :2])|)` ≤1 用 `INTER_AREA`，>1 用 `INTER_CUBIC`），禁止固定使用 `INTER_AREA`——pixel-boost 对中小尺寸人脸是放大而非缩小，`INTER_AREA` 在放大场景会退化为接近 `INTER_NEAREST` 的效果。
-- `FaceOccluder.create_occlusion_mask()` 的羽化半径必须随传入裁剪的实际宽度等比缩放（基准：256px 对应 sigma=5），禁止改回固定像素 sigma，否则大分辨率（pixel-boost 放大后的）特写会比小脸有明显更硬的遮挡边缘。
-- 色彩校正只允许使用"边界环"模式接入生产路径（`reinhard_color_transfer` 计算全脸调和结果，但只取 mask 与其腐蚀版本之差的窄环混合回原始换脸结果）；**禁止**在生产路径 `swap_single_face_facefusion` 中启用全脸 Reinhard 迁移——全脸迁移改变换脸区域本体色调，存在识别漂移/色彩饱和度整体偏移的风险。旧诊断变体 `swap_single_face_seamless()` 已退役，不得将其作为回退、实验开关或受支持替代路径恢复。
-- 合影多人映射的人物-人脸分配必须使用全局最优算法，见 7.3。
-- 语义区域保护（`core/region_parser.py` 的 `RegionFaceParser`，`models/bisenet_resnet_34.onnx`）与 XSeg 遮挡 mask、106点解剖学 mask 通过 `np.minimum.reduce` 一起取交集，加入新保护区域时优先在 `create_region_protection_mask(protected_regions=(...))` 里追加 `core/region_parser.py::REGION_CLASSES` 中已核实的类别名，禁止凭记忆猜测新的类别索引——该模型是 19 类 CelebAMask-HQ 语义分割，索引已对照 FaceFusion 官方源码与真实推理输出核实（详见 [docs/facefusion-local-swap.md](docs/facefusion-local-swap.md)），扩展前应类似地用真实图片跑一次推理确认新增类别的行为。
-
-### 7.9 模型资产完整性核查规范 (Model Asset Verification)
-- 遇到 `models/` 下大小异常（几字节到几十字节）的 `.onnx` 文件时，先用 `file`/`cat` 检查内容，不要假设它是有效权重——本项目已经发生过失败下载留下纯文本错误页（如 `Entry not found`）伪装成 `.onnx` 扩展名的情况（`bisenet_resnet_34.onnx`/`face_parser.onnx`），`models/README.md` 会记录已知的此类问题。
-- 新增/修复模型资产前，必须用 `onnxruntime.InferenceSession(...).get_inputs()/get_outputs()` 核实真实的输入输出张量名与形状，并尽量在一张真实测试图片（`tests/fixtures/`）上跑一次推理核对输出语义（如类别数、类别分布），不要只凭文件名或代码里的猜测就接入生产路径。
-- 新增模型下载源必须验证 SHA-256（或来源方提供的完整性摘要）与实际下载文件一致，并在 `models/README.md` 与 `scripts/download_models.py` 中同步记录来源 URL、许可证与摘要。
-
-### 7.10 文档事实同步与冲突治理 (Documentation Governance)
-- `docs/documentation-governance.md` 定义文档权威层级和证据矩阵。行为、默认值、模型、状态机、接口、存储或失败语义发生变化时，代码修改必须在同一变更中更新对应权威文档、`README.md` / `DESIGN.md` 摘要和 `CHANGELOG.md`；不得把文档更新留作后续任务。
-- AI 精修以 `docs/ai-refinement.md` 为权威设计，本地换脸以 `docs/facefusion-local-swap.md` 为权威设计，模型目录以 `config/ai_gateway.yaml` 为可执行事实源并由 `docs/model-catalog.md` 镜像。`CHANGELOG.md` 只记录历史，不得作为当前能力依据。
-- 非显而易见的能力声明必须至少链接到生产代码/配置、回归测试或带输入/指标/校验和的可重复实测记录。不得根据未使用模块、文件名、Prompt 文案、旧变更记录或供应商营销名推断“已支持”。
-- 删除或替换架构时必须移除相互冲突的现行描述，或明确标为“已退役历史实现”；禁止在两个文档中保留两套同时生效的状态机、默认值或模型清单。
-- 文档修改后必须运行 `uv run pytest tests/test_documentation_consistency.py`。新增可机械验证的不变量时应同步扩展该测试；涉及 Python 文件仍须按第 3、6 节执行完整 Ruff 检查。
-
-### 7.11 批量任务历史与结果回看 (Batch Task History)
-- `docs/task-history.md` 是批量任务历史的权威契约。服务端 SQLite 快照是任务状态事实源；浏览器 `localStorage` 只能保存不含图片的轻量工作区关联，不得覆盖服务端状态。
-- 新增历史列表接口必须返回有上限的轻量摘要，禁止为展示历史列表传输完整 `results`、请求体、原图/结果 URL、base64 或 data URI；完整详情只能在用户打开单个任务时按 `task_id` 获取。旧 `GET /api/v1/batch-tasks` 完整列表仅为兼容性保留并已 deprecated，新代码不得继续依赖。新增历史类型时继续使用“summary projection + detail aggregate”，不得直接复用重量级详情对象。
-- 新成功结果必须在提交结果时同步保存后续复核所需的不可变原始画布和处理产物，并只通过受控 `/api/v1/files/` URL 暴露。任务记录或文件被清理时明确返回不可用，禁止猜测路径、重建替代结果或把缺失结果显示为成功。
-- 历史查看器必须为只读边界，不得把旧任务的 source、target、mapping、mask、结果或精修状态静默写入 `useStudioStore`。只有 `QUEUED`/`PROCESSING` 且具有本机明确关联的任务可以重新连接活动工作区。
-- 服务端和浏览器信息合并时，服务端状态始终优先；浏览器数据只允许补充目标名称/ID和工作区关联。相关变更必须覆盖摘要不泄漏图片载荷、跨重启恢复、无本机元数据仍可查看、结果文件缺失降级等测试。
-
-### 7.12 工程边界、死代码与 AI 开发防回归 (Engineering Architecture)
-- `docs/engineering-architecture.md` 是工程依赖方向、生产/诊断/退役代码分类、兼容策略和模块拆分准则的权威文档。进行跨模块重构或清理前必须先核实生产入口、测试引用、文档契约和运行资产，禁止仅凭文件名或“看起来没用”删除代码。
-- `web/src → api → core → provider/runtime` 是单向依赖。`core` 禁止反向导入 `api`；`core/__init__.py` 与 `api/__init__.py` 必须保持无副作用，禁止为了缩短 import 而在包入口重新导出推理模型、创建 FastAPI 应用或设置全局运行状态。修改包边界需跑 `tests/test_package_boundaries.py`。
-- 每个实现必须明确归类：生产代码必须从当前 API/CLI/UI 入口可达；诊断/评测代码只能放 `scripts/` 并标注非生产；退役实现应从当前源码、导出、启动检查、下载器和仅为其存在的测试中一并移除，历史只留在已明确标记的 Changelog/Git 历史中。禁止保留与权威架构冲突的“影子流水线”作为未经批准的回退。
-- 兼容分支只有在具备明确调用方、回归测试、弃用说明和删除条件时才能保留。不得用无边界的 `hasattr`、双配置格式或宽泛异常吞噬来永久兼容未知旧实现；兼容期结束后应删除分支和对应迁移代码。
-- 跨层事实必须只有一个可执行来源：模型/角色/生成能力来自 `config/ai_gateway.yaml`，模型下载摘要来自 `scripts/download_models.py`，通用 API 契约来自 `api/schemas.py`，精修会话 API 契约来自 `api/refinement/contracts.py`，精修模型输出及共享输入预算来自 `core/refinement/contracts.py`，任务状态来自服务端持久化。前端、评测脚本和文档不得另建别名、默认值或能力清单；可读文档中的重复事实要由一致性测试约束。
-- 模块按“变化原因”拆分，不按行数机械拆分：展示、纯计算、外部 I/O、任务状态机、持久化和 provider 协议应形成可测试边界；同一状态机的连续步骤不应被拆成多层一行转发。新抽象必须至少消除一份重复事实、隔离一种副作用或形成可独立测试的稳定边界，否则遵循 KISS 保留直观函数。
-- 未经实测的数据不得伪装成精确默认值或用户提示。批任务耗时等运行指标优先从已完成任务的真实数据推导；样本不足时明确表达“暂无可靠估计”，禁止继续写死貌似精确但无证据的常量。
-
-
-### 7.13 目录组织与格式门槛
-- `api/app.py` 只装配应用，生命周期在 `api/lifecycle.py`，HTTP 路由在 `api/routes/`；本地批任务在 `api/tasks/`，新精修会话契约、状态与持久化在 `api/refinement/`，素材库在 `api/portraits/`。共享图片 I/O 使用 `api/media.py`，禁止为复用加载函数反向依赖任务管理器。
-- AI 配置、网关、仲裁契约与协议位于 `core/ai/`；对话精修契约、三证据/参考板、提示词与服务位于 `core/refinement/`，纯编码、声明尺寸与规范化在 `image_ops.py`。`core/ai/configuration.py` 不得导入 LiteLLM/provider，公共 `ImageEditResult` 来自 `core/ai/types.py`。
-- 前端精修和历史分别归 `web/src/features/refinement/`、`web/src/features/history/`，测试就近放置。精修 Hook 管理远程交互与草稿，组件负责展示，禁止 Hook 反向导入组件。
-- 前端代码修改后执行 `pnpm --dir web format` 与 `pnpm --dir web lint`，后者包含 Prettier 和 TypeScript 检查。目录/包边界变化必须执行 `tests/test_package_boundaries.py`，同步调用方和文档，不保留无调用方的旧路径转发层。
+- **写哪一层**：规则进本文件，事实进 `docs/`，决策与教训进 `.agents/notes/`；不要把规则、事实和决策混在同一处，也不要往本文件追加长篇细则——写进对应文档后在此留一行链接。
+- **docs 只写当前事实**：不写“以前/此前/现在/不再/已退役”等历史变迁词，不手抄接口或字段清单（链接到代码、配置、测试）；变更历史写进 `CHANGELOG.md`。非显而易见的能力声明必须链接到生产代码/配置、回归测试或带输入/指标/校验和的可复现记录，不得据文件名、未使用模块、Prompt 文案、旧记录或供应商营销名推断“已支持”。
+- **长度受限**：单篇文档超过上限会被 `tests/test_documentation_governance.py` 拒绝；超长时拆分或压缩，不要提高上限（存量超限文档的上限只降不升）。
+- **决策笔记**：非平凡改动（改默认值、模型/供应商选择、状态机、存储或失败语义、安全边界，排出会再踩的坑，拒绝了看似合理的方案）必须新增一篇笔记，含“背景/决策/被放弃的方案/影响与验证”；不建全局索引；只新增，不改写旧结论，被取代时在新笔记注明。
+- **删除/替换架构**时同一变更移除冲突的现行描述，或明确标为历史；不得在两处保留两套同时生效的状态机、默认值或模型清单。
+- 检查：`uv run pytest tests/test_documentation_consistency.py tests/test_documentation_governance.py`；新增可机械验证的不变量时同步扩展测试。

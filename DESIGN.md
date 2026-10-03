@@ -30,7 +30,7 @@ web/src → HTTP API → api → core → provider / ONNX runtime
 工程媒体回看复用相同 MIME 规则并保留原始字节。辅助帧不进入检测/聚类，既有编码体积、主图像素与内存保护不变；
 相机文件兼容契约与回归见 [Windows 使用说明](docs/windows-portable.md)。
 
-准备工作区的任务操作集中在右侧“换脸控制”，窄屏由抽屉承载；顶部准备标签及底部状态栏仅负责展示。`App` 唯一挂载 `useBatchPipeline` 管理批任务提交、轮询与导出，侧栏通过显式属性调用，关闭抽屉或切换工作区不影响任务恢复。见 [工程架构](docs/engineering-architecture.md)。
+准备工作区的任务操作集中在右侧“换脸控制”，常驻场景推荐预设与特征融合主滑块，高级算法调校（推理模型、余弦截断阈值 $\tau$、光影色温适配）由渐进折叠面板收纳并动态透出摘要；窄屏由抽屉承载；顶部准备标签及底部状态栏仅负责展示。`App` 唯一挂载 `useBatchPipeline` 管理批任务提交、轮询与导出，侧栏通过显式属性调用，关闭抽屉或切换工作区不影响任务恢复。见 [工程架构](docs/engineering-architecture.md)。
 
 ## 两条图像处理流程
 
@@ -64,44 +64,13 @@ VLM 和图像模型访问均经过 `AIGateway`，分别调用 LiteLLM `Router.ac
 
 边界由 `tests/test_package_boundaries.py` 验证，任务/精修行为由 API 与领域回归覆盖；前端执行类型检查、Vitest 和生产构建。离线算法比较与历史实测集中在 [评测说明](docs/swap-benchmarks.md)，测试通过不代表画质达标。旧路线图和退役实现只在 Git / [Changelog](CHANGELOG.md) 中查阅。
 
-画布工具与结果操作分区：顶部负责视图/人物定位，下方固定区域提供当前图精修与下载；角色映射决定实际换脸对象。窄屏保留文字导航和完整可见操作，快捷键仅作用于活动画布；加载、错误和空状态分别呈现。布局边界与不触发真实模型的截图验证见 [工程架构](docs/engineering-architecture.md#界面交互与可视验证)。
+## 专题契约
 
-实测边界：[五人合影两轮精修记录](docs/refinement-live-test-20260911.md) 验证了真实生成和版本衔接，但候选出现相貌漂移及小遮挡细节错误，未定稿；不能据流程通过宣称画质达标。
+当前行为由各专题文档定义，此处不重复：
 
-网关将本地 Router 初始化失败与已发请求的上游 HTTP 错误分别分类，固定提示不含凭据或原始异常。OpenAI 兼容模型使用显式 `openai/` 协议前缀，详见 [模型目录](docs/model-catalog.md) 与 `tests/test_litellm_gateway.py`。
-
-默认网关请求等待 300 秒，精修分析/复评阶段上限为 330 秒，为证据编码与响应校验预留时间；不改变自动重试策略。图像编辑的独立等待限制见 [精修契约](docs/ai-refinement.md)。
-
-内部无损 PNG 快照与外部上传分别校验大小，保留 4000 万像素及内存预算；生图网关对内部当前画布原分辨率无损编码。超过上传字节限制的工程快照经摘要验证后恢复为受控图片 URL，避免再次自动保存时被当作外部上传拒绝。见 [精修契约](docs/ai-refinement.md) 与 `tests/test_large_refinement_snapshots.py`。
-
-**完整编辑工程**：`api/projects/` 管理独立 SQLite 文档与图片快照，`features/projects/` 管理图片归档、串行自动保存和显式恢复。任务/会话历史只读入口不写准备区；“恢复工程”在校验所有图片后原子还原编辑输入及精修草稿。服务端任务状态和接受指针不由工程文档覆盖，旧记录的缺失状态不推断。权威契约见 [工程恢复](docs/task-history.md#complete-studio-projects-and-explicit-recovery)。
-
-接受结果通过明确 session/target 关联同步到工作台最终图片；本地初稿和精修修改基图保持独立。全局会话观察覆盖准备区与刷新恢复，ZIP 从当前工程收集完成图片并核对服务端接受版，不再依赖活动批任务中的本地结果数组。已接受文件失败不会静默降级成本地初稿；任务历史仍保留原执行记录。
-
-旧批任务的精修输入按保存的逐图匹配和明确参考素材补建，要求原图与本地结果摘要一致，编码不同则核对像素完全一致；工程列表、任务/会话历史与刷新统一补齐此前迁移漏掉的输入。未分配到当前图的跳过角色不参与该图身份绑定，已有草稿、图片与有效输入不覆盖。运行中任务的参考输入随工程保存，以任务 ID 验证完成结果归属，仅作为精修输入来源，不驱动任务执行。
-
-工程保存会分别归档素材库参考原图和界面预览缩略图，修复预览地址被误认为本地路径而返回 422 的问题；恢复后的图片独立于原素材库。路径校验与回归见 [工程历史契约](docs/task-history.md)、`api/projects/recovery.py` 和 `tests/test_projects.py`。
-
-Windows 跨机器排查可使用只读文件核验及临时工程自检，原始交付包可用按清单匹配的源码修复包更新；配置好的目录迁移需同时保留素材库、工程数据库与结果文件。见 [Windows 复制与排查](docs/windows-portable.md#跨机器复制与-422-排查)。
-
-Windows 便携包的 VC++ 五组件清单已补齐 ONNX Runtime 所需 `msvcp140_1.dll`，旧包可使用 `Repair-Runtime.cmd` 更新应用运行库；构建前校验与原生依赖证据见 [Windows 运行库核查](docs/windows-portable.md#2026-09-23-vc-漏项核查与修复)。
-素材归档只改变新选择目录，旧身份及图片 ID 仍可解析，维护流程见 [素材库维护](docs/portrait-library.md)。
-个人素材包的中国年轻人设定与自然上镜审美由离线生图提示词定义，不通过人脸识别推断国籍或年龄；全新人物使用新 ID，不能覆盖旧身份下的参考图。已有工作目录保留归档素材，面向新安装的完整包可只携带当前可选素材。
-失败展示统一复用 `ToastProvider` 的确认弹窗；HTTP 错误优先读取服务端 `detail`，单图失败立即通知，
-批任务终态按图片汇总通知且同任务只通知一次，精修失败和候选复评失败保留原状态语义。
-
-本地执行队列向健康接口提供不含输入的占用快照（等待数、操作类别、阶段及持续时间），模型后端读取已加载 ONNX 会话，不能将包的 CUDA 能力当作实际执行证据。读取批请求或启动 worker 异常必须记录终态，取消的原生运算结束前仍占槽。串行模型的闲置线程关闭空转，不改变默认线程数与数学精度。见 [排队契约](docs/memory-scheduling.md)。
-
-多图内存边界覆盖上传、解码、跨图分析、本地批任务及批量自动精修。共享槽位覆盖完整单图生命周期，取消 HTTP 不提前放行原生线程；内存不足等待恢复，批次间不预加载参考图。融合分块保持同一公式，详见 [内存与排队](docs/memory-scheduling.md)。
-
-Windows 完整包构建会重新构建前端、携带自检工具并逐项核验 ZIP 摘要；启动前检查数据目录可写性。个人授权配置与短目录交付约定见 [Windows 完整包重建](docs/windows-portable.md#2026-09-29-完整包重建与防漂移)。
-
-批任务等待与历史不再常驻完整请求图片：请求在执行/明确恢复时按需读取，旧失败内联原图仍可恢复。删除精修后失效最终图明确标记，下载只在确认会话缺失时使用独立副本；切换工程清理任务展示状态。见 [内存生命周期](docs/memory-scheduling.md)、[历史与工程契约](docs/task-history.md)。Windows 构建通过依赖指纹/完整文件校验后才能复用运行时，全流程暂存发布并保留自检故障证据，见 [便携构建](docs/windows-portable.md)。
-
-单图检测的空跨图人物编号不参与自动配对；未知人物与未完成分析不能推断为一人。已保存的无效映射会阻止提交，可在人物映射中重新明确绑定，原图和素材保留。见 [单图人物映射边界](docs/facefusion-local-swap.md#single-image-mapping-identity-boundary)。
-
-参考素材在逐张特征提取后释放像素，授权的批量精修证据无损落盘；工程提交完成后可用磁盘引用替换照片内联字节，恢复按张验证。精修查看/接受只校验已验证快照的摘要，不重复完整解码；接受后立即保存关联工程，失败单独提示。详情见 [内存调度](docs/memory-scheduling.md)、[精修](docs/ai-refinement.md) 和 [历史](docs/task-history.md)。
-
-精修与本地换脸共用高内存任务队列；证据分阶段读盘，版本/参考列表使用独立 384px 缩略图。
-本地回贴限定到人脸投影区域以减少临时数组，原分辨率保留；少量 OpenCV 插值取整差异和
-测试证据见 [内存调度](docs/memory-scheduling.md)。最低硬件容量尚未通过受限环境验收。
+- 本地换脸、模型与许可：[facefusion-local-swap.md](docs/facefusion-local-swap.md)
+- 对话式整图精修：[ai-refinement.md](docs/ai-refinement.md)，实测边界见 [refinement-live-test-20260911.md](docs/refinement-live-test-20260911.md)（真实生成与版本衔接已验证，但候选出现相貌漂移，不能据流程通过宣称画质达标）
+- AI 网关、超时、重试与降级：[model-catalog.md](docs/model-catalog.md)
+- 批任务、工程与历史：[task-history.md](docs/task-history.md)；内存与排队：[memory-scheduling.md](docs/memory-scheduling.md)
+- 素材库：[portrait-library.md](docs/portrait-library.md)；Windows 便携版：[windows-portable.md](docs/windows-portable.md)
+- 工程边界与清理：[engineering-architecture.md](docs/engineering-architecture.md)；文档分层与治理：[documentation-governance.md](docs/documentation-governance.md)

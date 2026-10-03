@@ -138,6 +138,6 @@ Project import keeps external uploads subject to the 20 MiB limit. PNGs encoded 
 
 ## Image availability and older session pages
 
-Refinement history requests server pages with `limit/offset`; it no longer paginates only the newest 50 entries in memory. Full versions remain detail-only. A failed image request does not mean its session or accepted result was deleted: use the image reload action, which never reruns AI. The server verifies persisted artifact digests without redundant full-canvas decoding during display.
+Refinement history requests server pages with `limit/offset`; it does not paginate only the newest 50 entries in memory. Full versions remain detail-only. A failed image request does not mean its session or accepted result was deleted: use the image reload action, which never reruns AI. The server verifies persisted artifact digests without redundant full-canvas decoding during display.
 
 Accepted workspace results are flushed to the editor project before the acceptance action finishes; project-save failure remains explicit while the session's accepted result remains saved. Restored photographs stay as verified, independently owned project URLs. Brush images keep their inline mask contract. Saved current input is replaced only when no newer edit or local processing can be interrupted. Regressions: `HistoryWorkspace.test.tsx`, `SessionWorkbench.test.tsx`, `projectController.test.ts`, `largeProjectSnapshot.test.ts`.

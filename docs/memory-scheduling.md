@@ -5,7 +5,7 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
 
 ## 内存生命周期
 
-- 浏览器逐张检测图片尺寸、关闭检测位图，再逐张读取文件；人物聚类的输入比较不再拼接整批 base64 字符串。
+- 浏览器逐张检测图片尺寸、关闭检测位图，再逐张读取文件；人物聚类的输入比较不拼接整批 base64 字符串。
 - `InferenceLimiter` 在图片加载之前获取共享槽位。取消 HTTP 等待者不等于取消原生推理线程，
   该线程实际结束前不会放行下一项。生产仍只允许一个共享流水线推理槽位。
 - 同时提交的批任务按提交顺序等待；只有进入执行的批任务才准备参考图。每张目标图的加载、换脸、
@@ -14,7 +14,7 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
   按需加载参考/目标这一对图片，结束后清理临时目录；人物坐标和 ArcFace 判断仍使用原分辨率证据。
 - 批量自动精修先持久化会话关联，再等待本图已提交的 AI 轮次结束，才继续下一张；不会同时启动
   整批图像上下文，也不等待人工接受。等待不会提交或重试新的模型请求。
-- 不可变批请求只首次保存，进度更新不再重复序列化整批图片。等待中的 worker 仅持有任务 ID，进入执行后才从 SQLite 读取请求，结束后释放；精修溯源和显式工程恢复按需读取，不重新执行任务。启动逐条读取状态，不读取历史请求图片。
+- 不可变批请求只首次保存，进度更新不重复序列化整批图片。等待中的 worker 仅持有任务 ID，进入执行后才从 SQLite 读取请求，结束后释放；精修溯源和显式工程恢复按需读取，不重新执行任务。启动逐条读取状态，不读取历史请求图片。
 - 新失败项不重复保存内联原图，恢复使用持久请求中的输入；旧失败记录的内联原图留在 SQLite，仅详情/恢复时读取，包括没有请求快照的旧记录。摘要和常驻状态不持有这些字节。旧精修档案也不预加载已经不用的请求。
 - 工程自动保存成功后，浏览器素材去重缓存仅保留此次保存用到的引用，释放已删除照片和被替换的遮罩。
 - 融合按 256 行计算 float32 中间结果，
@@ -63,7 +63,7 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
 
 `/api/v1/health::local_inference` 只返回本地槽位的等待数量、当前操作类别、阶段和已持续秒数，不保存请求或图片。`waiting_memory` 与 `finishing_cancelled_request` 分别表示内存等待和已取消 HTTP 的原生线程仍在收尾；后者必须真正结束后才能放行。界面每次健康轮询同步这些事实。`model_providers` 从各模型的已加载会话读取，区分 CPU 回退与 CUDA 加载，但不宣称所有算子都在 GPU 执行。
 
-后台读取持久请求或初始化异常不再遗留没有 worker 的 QUEUED/PROCESSING 任务：保存 FAILED，保留已有结果并放行后续批次。回归：`tests/test_batch_memory_queue.py`、`tests/test_inference_limiter.py`。
+后台读取持久请求或初始化异常不遗留没有 worker 的 QUEUED/PROCESSING 任务：保存 FAILED，保留已有结果并放行后续批次。回归：`tests/test_batch_memory_queue.py`、`tests/test_inference_limiter.py`。
 
 多个串行使用的 ORT 模型通过 `utils/gpu_helper.py::local_session_options` 关闭 `session.intra_op.allow_spinning` 与 `session.inter_op.allow_spinning`，保留 ORT 自动线程数、精度和图优化。依据：[ONNX Runtime 线程管理](https://onnxruntime.ai/docs/performance/tune-performance/threading.html)。Windows i7-12800HX / ORT 1.23.2、同一测试合影仅换一人的三次 CPU 对照：原默认空转为 4.017/4.295/4.604 秒，关闭空转为 约 1.29/1.18/1.12 秒；所有输出像素摘要一致。固定 2/4 线程在本例更慢，因此生产不强行减少线程数。结果不代表另一台机器的耗时。另在 RTX 4070 Laptop 8 GiB 上用相同输入对照 CUDA：热运行约 0.70 秒与 0.71 秒，耗时没有明显改善，但进程 CPU 时间从约 5.1–7.7 秒降到 0.94–1.39 秒；该组输出像素摘要同样一致。关闭空转主要减少无用 CPU 占用，不能承诺解决所有 GPU 慢或内存等待。
 
@@ -75,7 +75,7 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
 
 工程提交成功且没有并行新编辑、没有本地处理或尚未完成的人脸分析时，将工作区照片的 data URI 替换为工程拥有的磁盘 URL；图片、结果和参考在显示/使用时读取。恢复先逐张校验摘要，再保留 URL，避免并行读取整批照片和将照片全部转回 base64。画笔及撤销帧保留现有 base64 契约。推理模型、当前运算数组与浏览器可见图仍需内存；此变更不承诺固定内存上限，不降低现有准入预算。
 
-精修图片查看不再重新解码完整画布，见 [精修契约](ai-refinement.md)。回归：`tests/test_reference_disk_lifetime.py`、`tests/test_batch_refinement.py`、`tests/test_refinement_sessions.py`，以及 `projectController.test.ts`、`largeProjectSnapshot.test.ts`。
+精修图片查看不重新解码完整画布，见 [精修契约](ai-refinement.md)。回归：`tests/test_reference_disk_lifetime.py`、`tests/test_batch_refinement.py`、`tests/test_refinement_sessions.py`，以及 `projectController.test.ts`、`largeProjectSnapshot.test.ts`。
 
 ## 精修共享队列、缩略图与局部回贴
 
@@ -105,6 +105,5 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
 
 工程素材导入/保存在图片校验前同样做内存预算。可用内存或 Windows 提交额度不足时，
 `/api/v1/projects/*` 返回 HTTP 503 和“等待可用内存”说明，而不是无说明的 500；稍后或释放内存后可重试，
-不表示工程数据无效（此前该路径未捕获 `MemoryPressureError`，在 2026-10-03 原生 GPU 冒烟中暴露：
-测试机可用量 493 MiB、需约 519 MiB）。实现 `api/routes/projects.py::checked`，回归
+不表示工程数据无效（该路径捕获 `MemoryPressureError`；原生 GPU 冒烟记录：测试机可用量 493 MiB、需约 519 MiB）。实现 `api/routes/projects.py::checked`，回归
 `tests/test_projects.py::test_low_host_memory_reports_actionable_503_for_project_media`。
