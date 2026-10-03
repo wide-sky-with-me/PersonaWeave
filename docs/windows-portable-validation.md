@@ -30,3 +30,15 @@ GPU 差分升级的数据保留、路径约束、完整性预检、中断重试�
 - 测试未配置 AI Key，`ai_refinement_ready=false` 符合预期；此次 Windows 验证未调用付费 AI。精修需要首次填写服务配置。
 
 可重复运行的脚本为 [`scripts/smoke_windows_portable.py`](../scripts/smoke_windows_portable.py)；本次 JSON、日志、图片与浏览器截图保存在本地 `build/windows/`，不会进入用户数据目录或交付包。源码回归覆盖便携配置、单实例、样例缺失和私有文件打包拦截，见 [`tests/test_windows_portable.py`](../tests/test_windows_portable.py)。
+
+## 真实 AI 端到端（2026-10-03，GPU 包）
+
+用户明确授权后，在 `PersonaWeave-Windows-GPU-20261003` 的一次性副本上运行
+[`scripts/smoke_portable_real_ai.py`](../scripts/smoke_portable_real_ai.py)，使用包内 `.env` 的视觉与图像服务；
+副本测试后删除，用户已安装目录和数据未参与。流程与结果：本地 GPU 换脸（5 人检出、1 人替换）→ 创建精修会话 →
+`discuss` 轮（视觉诊断 1 次，状态 completed，版本数仍为 1，未生图）→ `generate` 轮（整图生图 1 次并复评，
+状态 review_required、`review_error` 为空，生成候选 3,353,015 字节且摘要与回读一致）→ 校验 revision/摘要后接受并发布。
+每个付费请求只发送一次、无重试；服务端日志无异常。人工查看：候选保持 5 人、姿态、构图与背景，
+属整图重绘，细节（如背心文字）可能与基图略有差异——这是整图协调重绘的既定语义，不承诺其余区域逐像素相同。
+诊断文本指出人物 1 的可见脸部特征与参考仍有明显差异，说明此流程验证的是链路可用与状态机正确，
+**不代表换脸身份相似度或精修画质的验收**。耗时、费用及模型名不作记录；仅在这一台 Windows 机器、单次观测。
