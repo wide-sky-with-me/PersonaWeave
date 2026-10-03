@@ -257,7 +257,9 @@ def test_generation_uses_only_selected_full_resolution_image_and_can_repaint_eve
         )
     )
     images, prompt, options = gateway.generated[0]
-    decoded = decode_image(base64.b64decode(images[0].split(",", 1)[1]))
+    from core.ai.gateway import AIGateway
+
+    decoded = decode_image(AIGateway._image_bytes(images[0]))
     assert len(images) == 1 and np.array_equal(decoded, current)
     assert candidate.shape == current.shape and np.all(candidate == 220)
     assert options == {"alias": "other-service", "parameters": {"size": "1024x1024"}}

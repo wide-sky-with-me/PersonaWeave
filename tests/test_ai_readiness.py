@@ -26,10 +26,18 @@ def test_missing_or_invalid_ai_config_keeps_local_api_up(monkeypatch, tmp_path, 
     module = importlib.import_module("api.app")
     lifecycle = importlib.import_module("api.lifecycle")
     system_routes = importlib.import_module("api.routes.system")
-    monkeypatch.setattr(lifecycle, "PersonaWeavePipeline", lambda: object())
+    monkeypatch.setattr(
+        lifecycle,
+        "PersonaWeavePipeline",
+        lambda: SimpleNamespace(execution_providers=lambda: {"detector": ["CPUExecutionProvider"]}),
+    )
     monkeypatch.setattr(lifecycle, "TaskManager", lambda **kwargs: SimpleNamespace(tasks={}, _requests={}))
     store = RefinementSessionStore(tmp_path / "sessions.sqlite3", tmp_path / "sessions", tmp_path / "published")
-    monkeypatch.setattr(lifecycle, "RefinementSessionService", lambda ai: RefinementSessionService(ai=ai, store=store))
+    monkeypatch.setattr(
+        lifecycle,
+        "RefinementSessionService",
+        lambda ai, inference_limiter: RefinementSessionService(ai=ai, store=store, inference_limiter=inference_limiter),
+    )
     monkeypatch.setattr(
         lifecycle,
         "LegacyRefinementArchive",

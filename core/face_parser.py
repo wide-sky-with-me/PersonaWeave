@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 from insightface.model_zoo import get_model
 
-from utils.gpu_helper import get_optimal_providers
+from utils.gpu_helper import get_optimal_providers, local_session_options
 
 
 class DenseFaceParser:
@@ -21,7 +21,7 @@ class DenseFaceParser:
             raise FileNotFoundError(f"106-point landmark model not found at {model_path}")
 
         opt_providers = providers or get_optimal_providers()
-        self.model = get_model(model_path, providers=opt_providers)
+        self.model = get_model(model_path, providers=opt_providers, sess_options=local_session_options())
 
     def extract_106_landmarks(self, image: np.ndarray, face_or_bbox) -> np.ndarray:
         """

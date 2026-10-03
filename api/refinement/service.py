@@ -8,12 +8,14 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from api.inference_limiter import InferenceLimiter
 from api.media import TrustedImagePath, load_image_from_source
 from api.portraits.library import resolve_asset_ids, resolve_identity_asset_ids
 from api.refinement.contracts import ModelUnavailable
 from api.refinement.store import RefinementSessionStore, fingerprint
 from core.ai.types import ModelConfigurationError, ModelRequestError
 from core.refinement.contracts import MAX_EVIDENCE_PIXELS
+from core.refinement.evidence import image_work
 
 _ARTIFACT_URL = re.compile(r"^/api/v1/refinement/sessions/([a-f0-9]{32})/artifacts/([a-f0-9]{64})$")
 # Allow evidence encoding/validation around the default 300-second gateway request.
@@ -59,11 +61,12 @@ def _count_evidence_pixels(pixels, image):
 class RefinementSessionService:
     """Persist commands before scheduling; the server, never a browser, owns running turns."""
 
-    def __init__(self, ai=None, store=None, max_concurrent=1):
+    def __init__(self, ai=None, store=None, max_concurrent=1, inference_limiter=None):
         if max_concurrent < 1:
             raise ValueError("max_concurrent must be positive")
         self.ai = ai
         self.store = store or RefinementSessionStore()
+        self.inference_limiter = inference_limiter or InferenceLimiter(1)
         self._workers = {}
         self._slots = asyncio.Semaphore(max_concurrent)
         self._closing = False
@@ -76,6 +79,13 @@ class RefinementSessionService:
 
     def artifact_bytes(self, session_id, digest):
         return self.store.artifact_bytes(session_id, digest)
+
+    async def thumbnail_bytes(self, session_id, digest):
+        """Cached reads remain available during inference; only cache misses need the image slot."""
+        cached = await asyncio.to_thread(self.store.cached_thumbnail, session_id, digest)
+        if cached is not None:
+            return cached
+        return await self.inference_limiter.run(self.store.thumbnail_bytes, session_id, digest)
 
     def events(self, session_id, after=0):
         return self.store.events(session_id, after)
@@ -98,12 +108,15 @@ class RefinementSessionService:
         try:
             original = self._load_source(request.original_image_url)
             pixels = _count_evidence_pixels(0, original)
+            original_shape = original.shape[:2]
+            original_digest = self.store.snapshot(session_id, original)
+            del original
             baseline = self._load_source(request.baseline_image_url)
             pixels = _count_evidence_pixels(pixels, baseline)
-            if original.shape[:2] != baseline.shape[:2]:
+            if original_shape != baseline.shape[:2]:
                 raise ValueError("Original and baseline must share the same image canvas")
-            original_digest = self.store.snapshot(session_id, original)
             baseline_digest = self.store.snapshot(session_id, baseline)
+            del baseline
             people, reference_count = [], 0
             for person in request.people:
                 asset_ids = person.source_asset_ids
@@ -124,6 +137,7 @@ class RefinementSessionService:
                     reference = self._load_source(location)
                     pixels = _count_evidence_pixels(pixels, reference)
                     digests.append(self.store.snapshot(session_id, reference))
+                    del reference
                 # Position is frozen from the caller's original-image binding, never
                 # re-detected or sorted from a generated image or reference-board order.
                 locator = person.person_locator.strip() or f"原图中从左到右第{person.face_index}位人物"
@@ -145,7 +159,7 @@ class RefinementSessionService:
     async def create_session(self, request):
         """Freeze image evidence without requiring a model service or exposing source locations."""
         request_hash = fingerprint(request.model_dump(exclude={"request_id"}))
-        return await asyncio.to_thread(self._snapshot_creation, request, request_hash)
+        return await self.inference_limiter.run(self._snapshot_creation, request, request_hash)
 
     async def submit_turn(self, session_id, request):
         """Deduplicate before validation/scheduling so reconnects never repeat a paid operation."""
@@ -186,16 +200,16 @@ class RefinementSessionService:
 
     def _inputs(self, session_id, turn_id):
         session, turn, base_digest = self.store.inputs(session_id, turn_id)
-        original = self.store.image(session_id, session["original_digest"])
+        original = self.store.evidence(session_id, session["original_digest"])
         pixels = _count_evidence_pixels(0, original)
-        current = self.store.image(session_id, base_digest)
+        current = self.store.evidence(session_id, base_digest)
         pixels = _count_evidence_pixels(pixels, current)
         people = json.loads(session["people"])
         references = {}
         for person in people:
             images = []
             for digest in person.pop("reference_digests"):
-                image = self.store.image(session_id, digest)
+                image = self.store.evidence(session_id, digest)
                 pixels = _count_evidence_pixels(pixels, image)
                 images.append(image)
             references[person["person_id"]] = images
@@ -269,8 +283,8 @@ class RefinementSessionService:
         stage = "queued"
         candidate_id = None
         try:
-            async with self._slots:
-                turn, original, current, people, references, history, previous_diagnosis = await asyncio.to_thread(
+            async with self._slots, self.inference_limiter.lease("refinement_turn"):
+                turn, original, current, people, references, history, previous_diagnosis = await image_work(
                     self._inputs, session_id, turn_id
                 )
                 stage = "analysis"
@@ -317,8 +331,12 @@ class RefinementSessionService:
                 candidate_id, interrupted = await self._durable_candidate(session_id, turn_id, candidate, metadata)
                 if interrupted or candidate_id is None:
                     raise asyncio.CancelledError
+                # Drop the decoded candidate before loading review evidence one image at a time.
+                version = next(v for v in self.store.get(session_id)["versions"] if v["id"] == candidate_id)
+                del candidate
                 stage = "review"
                 try:
+                    candidate = await image_work(self.store.evidence, session_id, version["digest"])
                     async with asyncio.timeout(VISION_STAGE_TIMEOUT_SECONDS):
                         review = await self.ai.review(
                             original, current, candidate, people, references, diagnosis, turn["message"]

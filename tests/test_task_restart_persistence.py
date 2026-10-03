@@ -44,7 +44,10 @@ def test_batch_restart_recovers_terminal_and_fails_interrupted(tmp_path):
     assert interrupted.status == TaskStatus.FAILED
     assert "restart" in interrupted.error
     assert interrupted.completed_at
-    assert recovered._requests["processing"] == request
+    assert recovered._requests == {}
+    assert recovered.get_request_snapshot("processing") == request
+    assert recovered.get_request_snapshot("completed") == request
+    assert recovered._requests == {}
 
 
 def test_interrupted_batch_recounts_only_persisted_results(tmp_path):
@@ -233,3 +236,32 @@ def test_only_explicit_human_accepting_record_recovers_publication(tmp_path, mon
     recovered = LegacyRefinementArchive(tmp_path / "staging", tmp_path / "accepted", db_path=db_path)
     assert recovered.get(task.task_id).status == RefinementTaskStatus.ACCEPTED
     assert (recovered.accepted_dir / "human.png").read_bytes() == content
+
+
+def test_legacy_failed_inline_original_hydrates_only_on_detail(tmp_path, monkeypatch):
+    """An old record without a recipe must still recover its sole original image."""
+    store = SQLiteTaskStore(tmp_path / "tasks.db")
+    original = "data:image/png;base64," + "A" * 100_000
+    task = TaskDetailData(
+        task_id="old",
+        status=TaskStatus.PROCESSING,
+        total_images=1,
+        created_at="now",
+        results=[ImageSwapResult(client_target_id="one", original_url=original, status="FAILED")],
+    )
+    store.save("batch", "old", task.model_dump(mode="json"))
+    manager = TaskManager(None, output_base_dir=tmp_path / "output", db_path=store.path)
+    assert manager.tasks["old"].results[0].original_url == ""
+    assert manager.get_request_snapshot("old") is None
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            manager._store, "load_state", lambda *args: (_ for _ in ()).throw(AssertionError("summary hydrated"))
+        )
+        assert manager.list_task_summaries()[0].failure_count == 1
+    assert manager.get_task("old").results[0].original_url == original
+    assert manager.list_tasks()[0].results[0].original_url == original
+    assert manager.get_task("old").status == TaskStatus.FAILED
+    assert store.load_state("batch", "old")["results"][0]["original_url"] == original
+    assert manager.tasks["old"].results[0].original_url == ""
+    assert manager.delete_task("old")
+    assert not manager._inline_failed_originals

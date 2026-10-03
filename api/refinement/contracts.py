@@ -76,6 +76,7 @@ class SessionPerson(BaseModel):
     face_index: int
     person_locator: str
     reference_urls: list[str]
+    reference_thumbnail_urls: list[str] = Field(default_factory=list)
     reference_status: Literal["available", "missing"]
 
 
@@ -84,6 +85,7 @@ class ImageVersion(BaseModel):
     parent_version_id: str | None
     digest: str
     image_url: str
+    thumbnail_url: str | None = None
     kind: Literal["baseline", "candidate"]
     created_at: str
     model: str | None = None

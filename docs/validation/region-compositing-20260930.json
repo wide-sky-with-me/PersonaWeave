@@ -1,0 +1,21 @@
+{
+  "opencv": "5.0.0",
+  "canvas": [
+    4000,
+    3000
+  ],
+  "seed": 20260930,
+  "input_sha256": "9aec9dbe1cef476289ba0dc743fd6e0c336697a1d453fe729226c2401494129c",
+  "full_canvas_warp": {
+    "tracked_peak_bytes": 169188766,
+    "seconds": 0.2447859160020016,
+    "output_sha256": "f2b847e571e0fbc758b449abd9fc590888afbb4efb6f88f2987db564b6699896"
+  },
+  "region_warp": {
+    "tracked_peak_bytes": 46624268,
+    "seconds": 0.01004822899994906,
+    "output_sha256": "a9a5415a9167a087fd7a6bce6263a9c1c8be434d047f0235f405a5762cace1fa"
+  },
+  "max_channel_difference": 1,
+  "changed_channel_fraction": 3.952777777777778e-05
+}

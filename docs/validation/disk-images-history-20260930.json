@@ -1,0 +1,298 @@
+{
+  "scope": "Native Windows installed GPU program, public fixture swap plus read-only verification of existing saved records; no paid AI calls",
+  "cuda_before": {
+    "mode": "sleep",
+    "provider": "cuda",
+    "ort": "1.23.2",
+    "cpu_count": 24,
+    "startup_seconds": 1.6294543999974849,
+    "sessions": {
+      "detector": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "recognizer": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "swapper": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "occluder": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "region_parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ]
+    },
+    "runs": [
+      {
+        "seconds": 1.5032432000007248,
+        "cpu_seconds": 1.625,
+        "reference_seconds": 0.5175133000011556,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.3375549000011233,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.27146900000298047,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.07388670000000275,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.29031599999871105,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.10148330000083661,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.11680410000190022,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      },
+      {
+        "seconds": 0.721250599999621,
+        "cpu_seconds": 0.9375,
+        "reference_seconds": 0.10238560000288999,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.05948979999811854,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.10759370000232593,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.05244029999812483,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.23284009999770205,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.03695690000313334,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.05475080000178423,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      },
+      {
+        "seconds": 0.7052441999985604,
+        "cpu_seconds": 1.390625,
+        "reference_seconds": 0.10252000000036787,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.05898439999509719,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.1083922000034363,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.04681720000007772,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.22005319999880157,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.0355161000006774,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.059104399999341695,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      }
+    ],
+    "source_code_sha256": {
+      "utils/gpu_helper.py": "81bda4a62a9826b17c5dc8e4322adefda2e52c54e6575b34ca8d348aebea453f",
+      "core/pipeline.py": "160fc5a5964abd5913ad88ade4c9b6eff877464480aaa3069e354f7c37df5bf9"
+    },
+    "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+    "shape": [
+      1600,
+      1067,
+      3
+    ]
+  },
+  "cuda_after": {
+    "mode": "sleep",
+    "provider": "cuda",
+    "ort": "1.23.2",
+    "cpu_count": 24,
+    "startup_seconds": 2.434257200002321,
+    "sessions": {
+      "detector": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "recognizer": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "swapper": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "occluder": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "region_parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ]
+    },
+    "runs": [
+      {
+        "seconds": 1.4190318000037223,
+        "cpu_seconds": 1.671875,
+        "reference_seconds": 0.6361332000014954,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.4850750000041444,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.23121950000495417,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.07325880000280449,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.19514899999921909,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.07910270000138553,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.08112570000230335,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      },
+      {
+        "seconds": 0.5797807999988436,
+        "cpu_seconds": 0.5,
+        "reference_seconds": 0.08697709999978542,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.05276369999774033,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.10058639998896979,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.04676649999601068,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.15993560000060825,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.03025820000038948,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.04026059999887366,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      },
+      {
+        "seconds": 0.5532936999952653,
+        "cpu_seconds": 0.5625,
+        "reference_seconds": 0.09136039999430068,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.05513640000572195,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.10178449998056749,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.04467779999686172,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.13014400000247406,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.030167600001732353,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.04210880000027828,
+            "calls": 1
+          }
+        },
+        "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+      }
+    ],
+    "source_code_sha256": {
+      "utils/gpu_helper.py": "f1cbd836ba04aa29463cb0085eef5c6a28e08f3994cc79bfdb562cb18b505e40",
+      "core/pipeline.py": "2f6fce5f01eb72cd2b4ad753aab5cb3e8163d81cf54ec6c3094705a743d8690a"
+    },
+    "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+    "shape": [
+      1600,
+      1067,
+      3
+    ]
+  },
+  "saved_image_checks": 13,
+  "saved_image_digests_match": true,
+  "sessions_preserved": 1,
+  "accepted_preserved": 1,
+  "projects_preserved": 1,
+  "backend_tests_passed": 783,
+  "frontend_tests_passed": 204
+}

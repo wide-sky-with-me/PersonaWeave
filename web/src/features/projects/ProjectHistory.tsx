@@ -58,7 +58,7 @@ export function ProjectHistory() {
         </p>
       )}
       {!query.isLoading && !query.isError && !query.data?.length && (
-        <p className="mt-3 text-xs text-zinc-500">还没有保存的工程。旧任务可通过“恢复工程”迁移已有内容。</p>
+        <p className="mt-3 text-xs text-zinc-400">还没有保存的工程。旧任务可通过“恢复工程”迁移已有内容。</p>
       )}
       <div className="mt-3 grid gap-2 md:grid-cols-2">
         {query.data?.map((project) => (
@@ -68,11 +68,11 @@ export function ProjectHistory() {
           >
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm">{project.title}</p>
-              <p className="mt-1 text-2xs text-zinc-500">{new Date(project.updated_at).toLocaleString('zh-CN')}</p>
+              <p className="mt-1 text-2xs text-zinc-400">{new Date(project.updated_at).toLocaleString('zh-CN')}</p>
             </div>
             <RestoreProjectButton id={project.id} />
             <button
-              className="btn btn-ghost btn-xs text-zinc-500 hover:text-red-300"
+              className="btn btn-ghost btn-xs text-zinc-400 hover:text-red-300"
               disabled={state.status === 'loading' || state.status === 'saving'}
               aria-label={`删除工程 ${project.id}`}
               onClick={() => void remove(project)}

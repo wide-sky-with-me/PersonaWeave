@@ -41,6 +41,7 @@ export interface SessionPerson {
   face_index: number;
   person_locator: string;
   reference_urls: string[];
+  reference_thumbnail_urls?: string[];
   reference_status: 'available' | 'missing';
 }
 export interface ImageVersion {
@@ -48,6 +49,7 @@ export interface ImageVersion {
   parent_version_id: string | null;
   digest: string;
   image_url: string;
+  thumbnail_url?: string | null;
   kind: 'baseline' | 'candidate';
   created_at: string;
   model?: string;

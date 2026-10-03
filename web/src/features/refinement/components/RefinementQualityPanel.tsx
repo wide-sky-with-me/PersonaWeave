@@ -50,7 +50,7 @@ function EvidenceImage({ label, url }: { label: string; url: string | null }) {
           />
         </a>
       ) : (
-        <p className="flex aspect-[4/3] items-center justify-center text-2xs text-zinc-500">不可用；不以当前画布替代</p>
+        <p className="flex aspect-[4/3] items-center justify-center text-2xs text-zinc-400">不可用；不以当前画布替代</p>
       )}
     </figure>
   );
@@ -115,7 +115,7 @@ function QualityForm({
         <EvidenceImage label="最初本地换脸" url={candidate.initial_local_url} />
         <EvidenceImage label="本轮精修候选" url={candidate.candidate_url} />
       </div>
-      <p className="text-2xs text-zinc-500">
+      <p className="text-2xs text-zinc-400">
         第 {candidate.generation_count} 次生成 · 请求模型 {candidate.model_alias} · 实际模型{' '}
         {typeof candidate.audit.model === 'string' ? candidate.audit.model : '未知'} · 耗时{' '}
         {typeof candidate.audit.elapsed_seconds === 'number'
@@ -124,7 +124,7 @@ function QualityForm({
         · 费用未知 · 以上只使用服务端保存的证据，不将继续精修的底图冒充最初本地结果。
       </p>
       {saved && (
-        <p className="text-2xs text-zinc-500">
+        <p className="text-2xs text-zinc-400">
           上次保存：{saved.updated_at}；未保存的修改不影响已有评价，评价不等于接受。
         </p>
       )}
@@ -243,7 +243,7 @@ export function RefinementQualityPanel({ task }: { task: RefinementTaskData }) {
           重新读取评价
         </button>
       </div>
-      <p className="mt-1 text-2xs text-zinc-500">人工评价与接受独立；未评价不计为可交付，模型评分不是成片率。</p>
+      <p className="mt-1 text-2xs text-zinc-400">人工评价与接受独立；未评价不计为可交付，模型评分不是成片率。</p>
       {summary.data && (
         <details className="mt-3 rounded-lg border border-border p-2 text-2xs text-zinc-400">
           <summary className="cursor-pointer text-zinc-300">
@@ -279,7 +279,7 @@ export function RefinementQualityPanel({ task }: { task: RefinementTaskData }) {
           </p>
         </details>
       )}
-      {summary.isError && <p className="mt-2 text-2xs text-zinc-500">汇总暂不可用，不显示推测成片率。</p>}
+      {summary.isError && <p className="mt-2 text-2xs text-zinc-400">汇总暂不可用，不显示推测成片率。</p>}
       {quality.isLoading && (
         <p role="status" className="mt-2 text-xs text-zinc-400">
           正在读取不可变证据…

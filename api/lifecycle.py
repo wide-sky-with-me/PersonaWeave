@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
             "[PersonaWeave API] Optional AI services are unavailable; local swap and saved sessions remain available."
         )
 
-    refinement_sessions = RefinementSessionService(ai=refinement_service)
+    refinement_sessions = RefinementSessionService(ai=refinement_service, inference_limiter=inference_limiter)
     legacy_archive = LegacyRefinementArchive()
     task_manager.refinement_hook = create_batch_refinement_hook(refinement_sessions)
     app.state.inference_limiter = inference_limiter

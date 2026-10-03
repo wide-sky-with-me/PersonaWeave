@@ -21,11 +21,11 @@ export const CanvasBatchFilmstrip: React.FC<CanvasBatchFilmstripProps> = ({
   isProcessing,
 }) => {
   return (
-    <div className="h-[72px] border-t border-white/10 bg-[#121215]/90 backdrop-blur-xl px-3 flex items-center gap-3 overflow-x-auto shrink-0 select-none">
+    <div className="h-[72px] border-t border-border bg-surface/90 backdrop-blur-xl px-3 flex items-center gap-3 overflow-x-auto shrink-0 select-none">
       <button
         onClick={onUploadClick}
         disabled={isProcessing}
-        className="w-14 h-14 rounded-xl border border-dashed border-white/25 hover:border-primary bg-surface-2 hover:bg-primary-muted/30 flex flex-col items-center justify-center text-zinc-300 hover:text-primary transition-all shrink-0 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+        className="w-14 h-14 rounded-xl border border-dashed border-white/25 hover:border-primary bg-surface-2 hover:bg-primary-muted/30 flex flex-col items-center justify-center text-zinc-300 hover:text-primary-soft transition-all shrink-0 active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         title="添加更多待换脸图片"
       >
         <Upload className="w-4 h-4" />
@@ -42,7 +42,7 @@ export const CanvasBatchFilmstrip: React.FC<CanvasBatchFilmstripProps> = ({
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
               className={`group relative w-14 h-14 rounded-xl border-2 transition-all shrink-0 bg-black/50 ${
                 isActive
-                  ? 'border-primary shadow-lg shadow-primary/30 ring-1 ring-primary/40'
+                  ? 'border-primary shadow-glow-primary ring-1 ring-primary/40'
                   : 'border-white/15 hover:border-white/40 opacity-80 hover:opacity-100'
               }`}
             >

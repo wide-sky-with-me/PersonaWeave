@@ -84,10 +84,10 @@ export const CanvasFaceMarkersOverlay: React.FC<CanvasFaceMarkersOverlayProps> =
                 }}
                 className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold shadow-lg transition-all whitespace-nowrap flex items-center gap-1 ${
                   isSelected
-                    ? 'bg-cyan-400 text-black border border-cyan-200 shadow-cyan-400/50'
+                    ? 'bg-accent text-black border border-accent/40 shadow-glow-accent'
                     : currentMapping
-                      ? 'bg-indigo-950 text-cyan-200 border border-cyan-400/60 shadow-md'
-                      : 'bg-zinc-900/95 text-zinc-100 border border-white/30 hover:border-cyan-400'
+                      ? 'bg-primary-muted text-primary-soft border border-primary-border shadow-md'
+                      : 'bg-surface-3/95 text-zinc-100 border border-border-strong hover:border-accent'
                 }`}
                 title="点击手动指定替换源或修改人物编号"
               >
@@ -113,7 +113,7 @@ export const CanvasFaceMarkersOverlay: React.FC<CanvasFaceMarkersOverlayProps> =
                     </span>
                     <button
                       onClick={() => setEditingFaceIndex(null)}
-                      className="text-zinc-500 hover:text-white p-0.5 rounded transition-colors"
+                      className="text-zinc-400 hover:text-white p-0.5 rounded transition-colors"
                     >
                       ✕
                     </button>

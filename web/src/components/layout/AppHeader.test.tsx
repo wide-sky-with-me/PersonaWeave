@@ -23,3 +23,20 @@ it('does not claim readiness or GPU acceleration from missing health or provider
   expect(screen.queryByText('GPU')).not.toBeInTheDocument();
   expect(screen.queryByTitle('GPU 硬件加速已启用')).not.toBeInTheDocument();
 });
+
+it('shows actual CPU fallback even when the runtime advertises CUDA capability', () => {
+  useStudioStore.setState({
+    serverHealth: {
+      status: 'ok',
+      app_name: 'PersonaWeave',
+      version: 'test',
+      pipeline_ready: true,
+      gpu_available: true,
+      providers: ['CUDAExecutionProvider'],
+      model_providers: { detector: ['CPUExecutionProvider'], inswapper_128: ['CPUExecutionProvider'] },
+    },
+  });
+  render(<AppHeader />);
+  expect(screen.getByText('CPU 模式')).toBeInTheDocument();
+  expect(screen.queryByText('CUDA 已加载')).not.toBeInTheDocument();
+});

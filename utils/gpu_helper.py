@@ -117,3 +117,17 @@ def get_optimal_providers() -> list:
     if "CPUExecutionProvider" in avail:
         providers.append("CPUExecutionProvider")
     return providers if providers else ["CPUExecutionProvider"]
+
+
+def local_session_options():
+    """Let idle model pools sleep while the shared pipeline runs another model.
+
+    ORT defaults to spinning worker pools. Six serially used sessions otherwise
+    compete for CPU even during CUDA work. Keep ORT's core count and math unchanged.
+    """
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return options

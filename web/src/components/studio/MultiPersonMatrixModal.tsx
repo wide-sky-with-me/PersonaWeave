@@ -7,6 +7,7 @@ import type { PersonMappingItem } from '@/types';
 import { buildFacePositionLabels } from '@/utils/faceTopology';
 import { sourceReferenceImageUrl, splitSourceReferences } from '@/utils/sourceReferences';
 import { useToast } from '@/components/ui/ToastProvider';
+import { hasValidPersonIndices } from '@/utils/swapPayload';
 
 /* ── Face crop thumbnail ─────────────────────────────────────── */
 const TargetFaceCrop: React.FC<{
@@ -105,6 +106,7 @@ export const MultiPersonMatrixModal: React.FC = () => {
   const [mappings, setMappings] = useState<Record<number, number>>(() =>
     Object.fromEntries(
       personMappings
+        .filter(hasValidPersonIndices)
         .map((mapping) => [mapping.person_index, personIdForMapping(mapping)])
         .filter((entry): entry is [number, number] => entry[1] !== undefined),
     ),
@@ -121,6 +123,7 @@ export const MultiPersonMatrixModal: React.FC = () => {
     setMappings(
       Object.fromEntries(
         personMappings
+          .filter(hasValidPersonIndices)
           .map((mapping) => [mapping.person_index, personIdForMapping(mapping)])
           .filter((entry): entry is [number, number] => entry[1] !== undefined),
       ),
@@ -206,7 +209,7 @@ export const MultiPersonMatrixModal: React.FC = () => {
             initial={{ opacity: 0, scale: 0.96, x: '-50%', y: 'calc(-50% + 16px)' }}
             animate={{ opacity: 1, scale: 1, x: '-50%', y: '-50%' }}
             exit={{ opacity: 0, scale: 0.96, x: '-50%', y: 'calc(-50% + 16px)' }}
-            transition={{ duration: 0.18, ease: 'easeOut' }}
+            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
             className="fixed left-1/2 top-1/2 z-[91] w-[calc(100%-2rem)] max-w-4xl max-h-[88dvh] bg-surface-2 border border-border rounded-2xl shadow-elevated flex flex-col overflow-hidden"
           >
             {/* ── Header ── */}
@@ -235,7 +238,7 @@ export const MultiPersonMatrixModal: React.FC = () => {
                     className="btn btn-sm btn-outline gap-1.5 text-xs text-zinc-200"
                     title="按当前显示顺序逐一配对，不会进行智能匹配"
                   >
-                    <Wand2 className="w-3.5 h-3.5 text-primary" />
+                    <Wand2 className="w-3.5 h-3.5 text-primary-soft" />
                     <span>按顺序绑定</span>
                   </button>
                 )}
@@ -262,7 +265,7 @@ export const MultiPersonMatrixModal: React.FC = () => {
             {/* ── Body ── */}
             <div className="flex-1 overflow-y-auto p-4 min-h-0">
               {batchPeople.length === 0 ? (
-                <div className="py-16 flex flex-col items-center justify-center gap-3 text-zinc-500">
+                <div className="py-16 flex flex-col items-center justify-center gap-3 text-zinc-400">
                   <Users className="w-10 h-10 opacity-30" />
                   <p className="text-sm text-center">当前批次还没有完成跨图片人物识别。</p>
                 </div>

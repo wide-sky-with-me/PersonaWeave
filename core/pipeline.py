@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from core.color_matcher import reinhard_color_transfer
+from core.compositing import region_bbox_mean, warp_face_region
 from core.detector import DetectedFace, FaceDetector
 from core.face_assignment import resolve_person_mapping_assignment
 from core.face_metrics import (
@@ -27,7 +28,7 @@ from core.occluder import FaceOccluder
 from core.recognizer import FaceRecognizer
 from core.region_parser import RegionFaceParser
 from core.restorer import CodeFormerRestorer
-from core.swap_diagnostics import bbox_mask_mean, mask_component, select_source_embedding, validated_mask
+from core.swap_diagnostics import mask_component, select_source_embedding, validated_mask
 from core.swapper import (
     ARCFACE_112_V1_TEMPLATE,
     ARCFACE_128_TEMPLATE,
@@ -152,6 +153,28 @@ class PersonaWeavePipeline:
             self.restorer = None
         print("PersonaWeave Pipeline initialized successfully.")
 
+    def execution_providers(self) -> dict[str, list[str]]:
+        """Report loaded session providers, including CPU fallback; not a kernel profiler."""
+        sessions = {
+            "detector": self.detector.model.session,
+            "recognizer": self.recognizer.model.session,
+        }
+        if self.parser is not None:
+            sessions["landmarks"] = self.parser.model.session
+        for name, component in (
+            ("occlusion", self.occluder),
+            ("regions", self.region_parser),
+            ("restoration", self.restorer),
+        ):
+            if component is not None:
+                sessions[name] = component.session
+        with self._swapper_lock:
+            for name, swapper in self._swapper_cache.items():
+                sessions[name] = swapper.session
+                if name == GHOST_1_256_SPEC.name:
+                    sessions["crossface_ghost"] = swapper.converter
+        return {name: session.get_providers() for name, session in sessions.items()}
+
     def get_swapper(self, model_name: str):
         """Return a cached adapter, loading an available model at most once."""
         with self._swapper_lock:
@@ -187,7 +210,7 @@ class PersonaWeavePipeline:
             image_paths: List of file paths to source identity photos.
 
         Returns:
-            List of dicts with keys: 'path', 'image', 'face', 'embedding', 'yaw'.
+            Small reference feature dictionaries; decoded source pixels are released after extraction.
         """
         references = []
         for path in image_paths:
@@ -202,19 +225,21 @@ class PersonaWeavePipeline:
             faces = self.detector.detect_faces(img, max_num=1, confidence_threshold=0.25)
             if not faces:
                 print(f"[Warning] No face detected in reference image: {path}")
+                del img
                 continue
 
             emb = self.recognizer.extract_embedding(img, faces[0])
             references.append(
                 {
                     "path": path,
-                    "image": img,
                     "face": faces[0],
                     "embedding": emb,
                     "yaw": calculate_yaw_ratio(faces[0].kps),
                     "quality_score": calculate_reference_quality(img, faces[0]),
                 }
             )
+
+            del img
 
         if not references:
             raise ValueError("No valid faces could be extracted from the provided reference photos.")
@@ -456,10 +481,11 @@ class PersonaWeavePipeline:
 
         inverse = cv2.invertAffineTransform(affine_matrix)
         height, width = canvas.shape[:2]
-        warped_face = cv2.warpAffine(
-            swapped_crop, inverse, (width, height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE
-        )
-        warped_mask = cv2.warpAffine(crop_mask, inverse, (width, height), flags=cv2.INTER_LINEAR).clip(0.0, 1.0)
+        warped = warp_face_region(swapped_crop, crop_mask, inverse, canvas.shape)
+        if warped is None:
+            return canvas.copy()
+        region, warped_face, warped_mask = warped
+        left, top, right, bottom = region
         # InSwapper needs enough alpha to make the requested identity visible. Faces at
         # or above the 96px pixel-boost threshold have a 256px working crop and can safely
         # use a stronger composite. Only genuinely tiny native-resolution faces retain a
@@ -483,7 +509,7 @@ class PersonaWeavePipeline:
             if protection.max() > 1.0:
                 protection /= 255.0
             manual_keep = 1.0 - protection.clip(0.0, 1.0)
-            warped_mask *= manual_keep
+            warped_mask *= manual_keep[top:bottom, left:right]
             components.append(mask_component("manual", "applied", manual_keep))
         else:
             components.append(mask_component("manual", "disabled"))
@@ -491,10 +517,12 @@ class PersonaWeavePipeline:
             diagnostics.update(
                 components=components,
                 intersection_mean=float(crop_mask.mean()),
-                bbox_alpha_mean=bbox_mask_mean(warped_mask, target_face.bbox),
+                bbox_alpha_mean=region_bbox_mean(warped_mask, region, target_face.bbox, canvas.shape),
                 requested_strength=float(identity_blend_strength),
             )
-        return composite_in_rows(canvas, warped_face, warped_mask)
+        result = canvas.copy()
+        result[top:bottom, left:right] = composite_in_rows(canvas[top:bottom, left:right], warped_face, warped_mask)
+        return result
 
     def process_image(
         self,

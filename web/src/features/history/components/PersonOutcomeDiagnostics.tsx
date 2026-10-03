@@ -19,10 +19,10 @@ const reasons: Record<string, string> = {
 /** Read-only evidence; absent legacy fields must not imply zero or successful validation. */
 export const PersonOutcomeDiagnostics: React.FC<{ outcomes?: PersonSwapOutcome[] | null }> = ({ outcomes }) => {
   if (!outcomes?.length)
-    return <p className="text-xs text-zinc-500">暂无逐人诊断（旧记录或处理未完成，不能推断未检测到人脸）。</p>;
+    return <p className="text-xs text-zinc-400">暂无逐人诊断（旧记录或处理未完成，不能推断未检测到人脸）。</p>;
   return (
     <section aria-label="逐人诊断" className="space-y-2">
-      <p className="text-2xs text-zinc-500">
+      <p className="text-2xs text-zinc-400">
         相似度、遮罩均值和混合权重是处理证据，不是自然度评分或身份验证。素材仅显示索引及组合，不代表单张照片。
       </p>
       {outcomes.map((outcome, position) => {

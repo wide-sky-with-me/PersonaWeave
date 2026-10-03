@@ -60,7 +60,7 @@ export const ToastProvider: React.FC<React.PropsWithChildren> = ({ children }) =
                 {dialogs[0]?.description || '操作未完成，请检查输入后重试。'}
               </Dialog.Description>
               <div className="mt-5 flex items-center justify-between gap-3">
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-zinc-400">
                   {dialogs.length > 1 ? `还有 ${dialogs.length - 1} 条提示` : ''}
                 </span>
                 <Dialog.Close className="btn btn-primary px-5 py-2">知道了</Dialog.Close>
@@ -91,7 +91,7 @@ export const ToastProvider: React.FC<React.PropsWithChildren> = ({ children }) =
             >
               <div className="flex items-start gap-2">
                 <Icon
-                  className={`mt-0.5 h-4 w-4 shrink-0 ${toast.kind === 'error' ? 'text-err' : toast.kind === 'warning' ? 'text-warn' : toast.kind === 'success' ? 'text-ok' : 'text-primary'}`}
+                  className={`mt-0.5 h-4 w-4 shrink-0 ${toast.kind === 'error' ? 'text-err' : toast.kind === 'warning' ? 'text-warn' : toast.kind === 'success' ? 'text-ok' : 'text-primary-soft'}`}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-zinc-100">{toast.title}</p>

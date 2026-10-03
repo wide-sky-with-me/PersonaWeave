@@ -1,5 +1,9 @@
 """Portrait source resolution and swap-reference preparation."""
 
+from collections.abc import Callable
+
+import numpy as np
+
 from api.media import TrustedImagePath, load_image_from_source
 from api.portraits.library import resolve_asset_ids, resolve_identity_asset_ids
 from core.face_metrics import calculate_reference_quality, calculate_yaw_ratio
@@ -29,24 +33,27 @@ def resolve_source_locations(
     return locations
 
 
-def build_source_references(pipeline: PersonaWeavePipeline, source_locations: list[str]) -> list[dict]:
-    """Loads each source location, extracts its face embedding, and packages
-    the reference metadata consumed by the swap pipeline."""
+def build_source_references(
+    pipeline: PersonaWeavePipeline, source_locations: list[str], snapshot: Callable[[np.ndarray], str] | None = None
+) -> list[dict]:
+    """Retain small identity features; optionally freeze actual reference pixels on disk for AI evidence."""
     refs = []
     for location in source_locations:
         img = load_image_from_source(location)
         faces = pipeline.detector.detect_faces(img, max_num=1, confidence_threshold=0.25)
         if not faces:
+            del img
             continue
         emb = pipeline.recognizer.extract_embedding(img, faces[0])
         refs.append(
             {
                 "path": location,
-                "image": img,
+                **({"snapshot_url": snapshot(img)} if snapshot else {}),
                 "face": faces[0],
                 "embedding": emb,
                 "yaw": calculate_yaw_ratio(faces[0].kps),
                 "quality_score": calculate_reference_quality(img, faces[0]),
             }
         )
+        del img  # Release this decoded reference before loading the next one.
     return refs

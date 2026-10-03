@@ -77,7 +77,7 @@ export interface PortraitLibraryData {
 }
 export interface DetectedFaceBox {
   index: number; // 1-based spatial index on this image
-  global_person_id?: number; // Global consistent person ID across entire batch
+  global_person_id?: number | null; // Single-image detection has no cross-image identity yet.
   bbox: [number, number, number, number]; // [x1, y1, x2, y2]
   score?: number;
   yaw?: number;
@@ -103,6 +103,8 @@ export interface TargetImageItem {
   processedBase64?: string;
   refinedUrl?: string;
   acceptedRefinement?: { sessionId: string; versionId: string; revision: number };
+  /** Persist absence so reopening a project cannot silently export its baseline as the final result. */
+  refinementResultUnavailable?: boolean;
   status: 'PENDING' | 'IDLE' | 'PROCESSING' | 'SUCCESS' | 'FAILED';
   costMs?: number;
   facesDetected?: number;
@@ -237,6 +239,11 @@ export interface ServerHealth {
   pipeline_ready: boolean;
   providers: string[];
   gpu_available: boolean;
+  model_providers?: Record<string, string[]>;
+  local_inference?: {
+    queued: number;
+    active: { operation: string; phase: string; elapsed_seconds: number; waiting_reason: string | null }[];
+  } | null;
 }
 
 export type RefinementTaskStatus =

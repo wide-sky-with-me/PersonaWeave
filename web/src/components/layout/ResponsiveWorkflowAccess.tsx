@@ -41,7 +41,7 @@ export function ResponsiveWorkflowAccess({
               onClick={() => onOpenPanel('sources')}
               aria-label="打开源身份面板"
             >
-              <Users className="h-4 w-4 text-primary" /> 源身份
+              <Users className="h-4 w-4 text-primary-soft" /> 源身份
             </button>
             <button
               className="btn btn-sm btn-outline min-h-9 shrink-0 gap-1.5 text-xs text-zinc-200 xl:hidden"
@@ -60,13 +60,13 @@ export function ResponsiveWorkflowAccess({
                   className={`inline-flex shrink-0 items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium border transition-colors ${
                     item.complete
                       ? 'bg-white/[0.02] text-zinc-300 border-white/10'
-                      : 'bg-transparent text-zinc-500 border-white/5'
+                      : 'bg-transparent text-zinc-400 border-white/5'
                   }`}
                 >
                   {item.complete ? (
                     <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
                   ) : (
-                    <Circle className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
+                    <Circle className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
                   )}
                   <span>{item.label}</span>
                 </span>
@@ -100,7 +100,7 @@ export function ResponsiveWorkflowAccess({
             >
               <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
                 <Dialog.Title className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
-                  <activeMeta.icon className="h-4 w-4 text-primary" />
+                  <activeMeta.icon className="h-4 w-4 text-primary-soft" />
                   {activeMeta.label}
                 </Dialog.Title>
                 <Dialog.Close className="btn btn-ghost btn-sm" aria-label={`关闭${activeMeta.label}面板`}>

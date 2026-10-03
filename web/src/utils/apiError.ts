@@ -1,3 +1,10 @@
+import axios from 'axios';
+
+/** Only explicit server absence is definitive; connection failures do not remove associations. */
+export function isResourceUnavailable(error: unknown): boolean {
+  return axios.isAxiosError(error) && [404, 410].includes(error.response?.status ?? 0);
+}
+
 /** Preserve server explanations without displaying request bodies, keys or image data. */
 export function apiErrorMessage(error: unknown, fallback = '操作失败，请重试'): string {
   const value = error as { response?: { data?: { detail?: unknown; message?: unknown } }; message?: unknown } | null;

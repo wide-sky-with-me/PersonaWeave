@@ -125,6 +125,29 @@ def test_http_contract_safe_media_and_stale_save(store):
         assert client.post(f"/api/v1/projects/{project['id']}/assets", json={"image": "data:"}).status_code == 422
 
 
+def test_camera_mpo_survives_project_save_restore_and_serves_as_jpeg(store, camera_mpo_bytes):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.projects = store
+    app.state.refinement_sessions = None
+    app.state.task_manager = None
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects").json()["data"]
+        endpoint = f"/api/v1/projects/{project['id']}"
+        source = "data:image/jpeg;base64," + base64.b64encode(camera_mpo_bytes).decode()
+        response = client.post(endpoint + "/assets", json={"image": source})
+        assert response.status_code == 200, response.text
+        asset = response.json()["data"][0]
+        doc = document(asset)
+        assert (
+            client.put(endpoint, json={"expected_revision": 0, "title": "Camera", "document": doc}).status_code == 200
+        )
+        assert client.post(endpoint + "/restore").json()["data"]["document"] == doc
+        media = client.get(endpoint + "/assets/" + asset["$asset"])
+        assert media.headers["content-type"] == "image/jpeg"
+        assert media.content == camera_mpo_bytes  # Preserve camera bytes without lossy re-encoding.
+
+
 def test_project_import_reads_managed_image_under_unicode_directory(tmp_path, monkeypatch):
     root = tmp_path / "材料" / "图片换脸任务"
     image = root / "data" / "人物.png"

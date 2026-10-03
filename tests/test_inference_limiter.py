@@ -138,3 +138,57 @@ def test_retry_drops_refused_frame_before_next_attempt():
         raise MemoryPressureError("暂时不足")
 
     assert asyncio.run(InferenceLimiter(1, poll_seconds=0.001).run(preflight_then_infer)) == "completed"
+
+
+def test_queue_snapshot_identifies_cancelled_native_work_and_waiters(monkeypatch):
+    monkeypatch.setattr("api.inference_limiter.require_memory", lambda: None)
+
+    async def exercise():
+        limiter = InferenceLimiter(1)
+        started, release = threading.Event(), threading.Event()
+
+        def execute_sync_swap():
+            started.set()
+            release.wait(timeout=2)
+
+        first = asyncio.create_task(limiter.run(execute_sync_swap))
+        await asyncio.to_thread(started.wait, 1)
+        second = asyncio.create_task(limiter.run(lambda: None))
+        await asyncio.sleep(0)
+        assert limiter.snapshot()["queued"] == 1
+        assert limiter.snapshot()["active"][0]["operation"] == "single_swap"
+        first.cancel()
+        await asyncio.sleep(0)
+        assert limiter.snapshot()["active"][0]["phase"] == "finishing_cancelled_request"
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert limiter.snapshot()["queued"] == 0
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert limiter.snapshot() == {"queued": 0, "active": []}
+        assert await limiter.run(lambda: "next") == "next"
+
+    asyncio.run(exercise())
+
+
+def test_queue_snapshot_reports_memory_wait_and_clears_on_cancel(monkeypatch):
+    def insufficient():
+        raise MemoryPressureError("等待可用内存")
+
+    monkeypatch.setattr("api.inference_limiter.require_memory", insufficient)
+
+    async def exercise():
+        limiter = InferenceLimiter(1, poll_seconds=0.01)
+        pending = asyncio.create_task(limiter.run(lambda: None))
+        await asyncio.sleep(0.005)
+        active = limiter.snapshot()["active"][0]
+        assert active["phase"] == "waiting_memory"
+        assert active["waiting_reason"] == "等待可用内存"
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert limiter.snapshot() == {"queued": 0, "active": []}
+
+    asyncio.run(exercise())

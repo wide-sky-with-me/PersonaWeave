@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/services/api';
@@ -10,7 +10,15 @@ import { useBatchPipeline } from '@/hooks/useBatchPipeline';
 import { ParameterPanel } from './ParameterPanel';
 import { BatchStatusBar } from './BatchStatusBar';
 import type { PersonMappingItem } from '@/types';
-vi.mock('@/services/api', () => ({ api: { createBatchTask: vi.fn(), getTaskStatus: vi.fn(), swapSync: vi.fn() } }));
+import { newProject, restoreProject } from '@/features/projects/projectController';
+import { useProjectStore } from '@/features/projects/projectStore';
+import { apiClient } from '@/services/api';
+import { studioSnapshot } from '@/features/projects/projectSnapshot';
+import { CanvasBatchFilmstrip } from './CanvasBatchFilmstrip';
+vi.mock('@/services/api', () => ({
+  api: { createBatchTask: vi.fn(), getTaskStatus: vi.fn(), swapSync: vi.fn() },
+  apiClient: { post: vi.fn() },
+}));
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/components/ui/ToastProvider', () => ({ useToast: () => toast }));
 vi.mock('@/utils/swapPayload', () => ({
@@ -30,6 +38,15 @@ const clients: QueryClient[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
   useJobActivityStore.setState({ jobs: [] });
+  useProjectStore.setState({
+    id: null,
+    revision: 0,
+    title: '',
+    status: 'idle',
+    error: null,
+    warnings: [],
+    workspaceRevision: 0,
+  });
   useStudioStore.setState({
     activeTaskId: null,
     isProcessing: false,
@@ -87,6 +104,116 @@ beforeEach(() => {
         refinement_session_id: 'server-session',
       },
     ],
+  });
+});
+
+describe('missing tasks and workspace changes', () => {
+  it.each([404, 410])('releases only the unavailable task targets and allows a new project (%s)', async (status) => {
+    const now = new Date().toISOString();
+    useStudioStore.setState({ activeTaskId: 'batch', isProcessing: true });
+    useStudioStore.getState().updateTargetImageById('target', {
+      status: 'PROCESSING',
+      pendingRefinement: {
+        taskId: 'batch',
+        input: { original_image_url: '/original', baseline_image_url: '', people: [] },
+      },
+    });
+    useJobActivityStore.getState().upsertJob({
+      taskId: 'batch',
+      targetIds: ['target'],
+      targetNames: ['group'],
+      status: 'PROCESSING',
+      submittedAt: now,
+      updatedAt: now,
+    });
+    vi.mocked(api.getTaskStatus).mockRejectedValue({
+      isAxiosError: true,
+      response: { status },
+      message: 'Task unavailable',
+    });
+    mount();
+    await waitFor(() => expect(useStudioStore.getState().activeTaskId).toBeNull());
+    expect(useStudioStore.getState().isProcessing).toBe(false);
+    expect(useStudioStore.getState().targetImages[0].status).toBe('IDLE');
+    expect(useStudioStore.getState().targetImages[1]).toMatchObject({
+      status: 'FAILED',
+      error: expect.stringContaining('任务已不存在'),
+    });
+    expect(useStudioStore.getState().targetImages[1].pendingRefinement).toBeUndefined();
+    expect(screen.getByRole('button', { name: /启动批量换脸/ })).toBeEnabled();
+    expect(screen.getByTitle('仅在当前单图上快速试换，预览参数效果')).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '重试连接' })).not.toBeInTheDocument();
+    const studio = useStudioStore.getState();
+    render(
+      <CanvasBatchFilmstrip
+        targetImages={studio.targetImages}
+        activeTargetIndex={0}
+        onSelectTargetIndex={studio.setActiveTargetIndex}
+        onRemoveTargetImage={studio.removeTargetImage}
+        onUploadClick={() => undefined}
+        isProcessing={studio.isProcessing}
+      />,
+    );
+    expect(screen.getByRole('button', { name: '移除图片 2：group' })).toBeEnabled();
+    await act(async () => {
+      await newProject();
+    });
+    expect(useStudioStore.getState().targetImages).toEqual([]);
+    expect(screen.getByRole('contentinfo', { name: '任务状态栏' })).not.toHaveTextContent('任务已不存在');
+    expect(api.getTaskStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['new', 'restore'])('clears previous failed task facts when switching editor (%s)', async (operation) => {
+    vi.mocked(api.getTaskStatus).mockResolvedValue({
+      task_id: 'batch',
+      status: 'FAILED',
+      progress: 1,
+      total_images: 2,
+      processed_images: 2,
+      success_count: 0,
+      failure_count: 2,
+      has_partial_failure: true,
+      created_at: '2026-01-01',
+      results: [],
+      error: 'Previous batch failed',
+    });
+    mount();
+    fireEvent.click(screen.getByRole('button', { name: /启动批量换脸/ }));
+    await waitFor(() =>
+      expect(screen.getByRole('contentinfo', { name: '任务状态栏' })).toHaveTextContent('批量任务失败'),
+    );
+    const emptyStudio = {
+      ...studioSnapshot(),
+      targetImages: [],
+      sourcePeople: [],
+      sourceGallery: [],
+      personMappings: [],
+    };
+    vi.mocked(apiClient.post).mockResolvedValue({
+      data: {
+        data: {
+          id: 'restored',
+          revision: 1,
+          title: 'Restored',
+          document: {
+            schema: 1,
+            studio: emptyStudio,
+            workbench: { view: 'prepare', sessionId: null, targetId: null, selections: {} },
+            warnings: [],
+          },
+        },
+      },
+    });
+    await act(async () => {
+      if (operation === 'new') await newProject();
+      else await restoreProject('restored');
+    });
+    const footer = screen.getByRole('contentinfo', { name: '任务状态栏' });
+    expect(footer).not.toHaveTextContent('批量任务失败');
+    expect(footer).not.toHaveTextContent('s/图');
+    expect(footer).not.toHaveTextContent('失败 2');
+    expect(footer).toHaveTextContent('0%');
+    expect(useStudioStore.getState().activeTaskId).toBeNull();
   });
 });
 afterEach(() => {

@@ -24,6 +24,19 @@ from core.image_security import resolve_managed_url
 
 router = APIRouter(prefix="/api/v1/refinement/sessions", tags=["Refinement sessions"])
 
+# Only these application-owned messages may cross the HTTP boundary. Arbitrary
+# loader/provider exception text can include image bytes, paths or credentials.
+_INPUT_ERRORS = {
+    "Image exceeds the encoded byte limit": "输入图片超过 20 MiB 上传限制，请检查原图和人物参考。",
+    "Image exceeds the pixel limit": "输入图片超过 4000 万像素限制，请缩小图片后重试。",
+    "Original and baseline must share the same image canvas": "原图与本地换脸结果的尺寸不一致，请使用同一次换脸的结果。",
+    "Session image evidence exceeds the decoded pixel budget": "原图、当前图和参考图的累计像素超过精修容量限制，请减少参考图或降低分辨率。",
+    "Select at most eight reference images for each person": "每个人物最多使用 8 张精修参考图，请明确选择后重新执行本地换脸。",
+    "A session may contain at most 64 reference images": "精修会话最多支持 64 张人物参考图，请减少参考图后重试。",
+    "Reference identity is unavailable": "人物参考素材已不可用，请重新选择素材。",
+    "Failed to read managed local image": "原图、换脸结果或人物参考文件无法读取，请检查图片是否仍然存在。",
+}
+
 
 def _service(request):
     service = getattr(request.app.state, "refinement_sessions", None)
@@ -43,9 +56,12 @@ async def _call(operation):
         raise HTTPException(410, str(exc)) from None
     except ModelUnavailable as exc:
         raise HTTPException(503, str(exc)) from None
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
-            422, "Invalid refinement input; check image sources, references and model selection"
+            422,
+            _INPUT_ERRORS.get(
+                str(exc), "Invalid refinement input; check image sources, references and model selection"
+            ),
         ) from None
     except (OSError, sqlite3.Error):
         raise HTTPException(503, "Refinement storage is unavailable") from None
@@ -111,6 +127,16 @@ async def get_artifact(session_id: str, digest: str, request: Request):
         content,
         media_type="image/png",
         headers={"ETag": f'"{digest}"', "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.get("/{session_id}/artifacts/{digest}/thumbnail")
+async def get_thumbnail(session_id: str, digest: str, request: Request):
+    content = await _call(_service(request).thumbnail_bytes(session_id, digest))
+    return Response(
+        content,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff"},
     )
 
 

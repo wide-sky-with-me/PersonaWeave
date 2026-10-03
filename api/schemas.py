@@ -423,6 +423,18 @@ class SyncSwapResponse(BaseModel):
     data: SyncSwapData
 
 
+class LocalInferenceActivity(BaseModel):
+    operation: str
+    phase: str
+    elapsed_seconds: float
+    waiting_reason: str | None = None
+
+
+class LocalInferenceStatus(BaseModel):
+    queued: int = 0
+    active: list[LocalInferenceActivity] = Field(default_factory=list)
+
+
 class HealthResponse(BaseModel):
     status: str = "ok"
     app_name: str = "PersonaWeave"
@@ -431,6 +443,8 @@ class HealthResponse(BaseModel):
     providers: list[str] = Field(default_factory=list)
     gpu_available: bool = False
     ai_refinement_ready: bool = False
+    model_providers: dict[str, list[str]] = Field(default_factory=dict)
+    local_inference: LocalInferenceStatus | None = None
 
 
 class FaceDetectionRequest(BaseModel):

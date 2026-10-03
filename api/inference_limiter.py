@@ -5,6 +5,7 @@ import contextvars
 import os
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from functools import partial
 from typing import TypeVar
 
@@ -40,6 +41,43 @@ class InferenceLimiter:
         self._semaphore = asyncio.Semaphore(concurrency)
         self.memory_wait_seconds = memory_wait_seconds
         self.poll_seconds = poll_seconds
+        self._waiting = 0
+        self._active = {}
+
+    def snapshot(self) -> dict:
+        """Expose queue occupancy without retaining or returning any image/request input."""
+        now = time.monotonic()
+        return {
+            "queued": self._waiting,
+            "active": [
+                {
+                    **{key: value for key, value in item.items() if key != "started"},
+                    "elapsed_seconds": round(now - item["started"], 1),
+                }
+                for item in self._active.values()
+            ],
+        }
+
+    @asynccontextmanager
+    async def lease(self, operation: str):
+        """Serialize image-heavy async stages with native inference without retrying AI calls.
+
+        Async callers own cancellation cleanup before exiting this lease. Blocking callers
+        use run(), which drains native threads before releasing their slot.
+        """
+        self._waiting += 1
+        try:
+            await self._semaphore.acquire()
+        finally:
+            self._waiting -= 1
+        token = object()
+        active = {"operation": operation, "phase": "running", "started": time.monotonic(), "waiting_reason": None}
+        self._active[token] = active
+        try:
+            yield active
+        finally:
+            self._active.pop(token, None)
+            self._semaphore.release()
 
     async def run(self, function: Callable[..., T], /, *args, on_memory_wait=None, **kwargs) -> T:
         """Queue before decoding, wait for headroom, and keep cancelled worker threads serialized.
@@ -47,12 +85,22 @@ class InferenceLimiter:
         Only explicit pre-allocation MemoryPressureError is retried, never model/provider errors.
         Cancelling an HTTP coroutine cannot cancel a native thread; its slot stays owned until done.
         """
-        await self._semaphore.acquire()
-        deadline = time.monotonic() + self.memory_wait_seconds
-        try:
+        operation = {
+            "detect_one": "face_detection",
+            "detect_and_embed_images": "face_clustering",
+            "read_snapshot": "cluster_snapshot",
+            "prepare_sources": "source_preparation",
+            "process_one": "batch_swap",
+            "execute_sync_swap": "single_swap",
+            "_snapshot_creation": "refinement_snapshot",
+            "thumbnail_bytes": "refinement_thumbnail",
+        }.get(getattr(function, "__name__", ""), "local_inference")
+        async with self.lease(operation) as active:
+            deadline = time.monotonic() + self.memory_wait_seconds
             while True:
                 try:
                     require_memory()
+                    active.update(phase="running", waiting_reason=None)
                     context = contextvars.copy_context()
                     worker = asyncio.get_running_loop().run_in_executor(
                         None, partial(context.run, function, *args, **kwargs)
@@ -60,6 +108,7 @@ class InferenceLimiter:
                     try:
                         result = await asyncio.shield(worker)
                     except asyncio.CancelledError:
+                        active["phase"] = "finishing_cancelled_request"
                         # The route may own temporary files used by this thread. Drain it before
                         # unwinding the route, including when a second cancellation arrives.
                         while not worker.done():
@@ -77,6 +126,7 @@ class InferenceLimiter:
                     return result
                 except MemoryPressureError as exc:
                     message = str(exc)
+                    active.update(phase="waiting_memory", waiting_reason=message)
                     worker = None  # Drop a failed Task and its traceback before waiting for memory to recover.
                     if time.monotonic() >= deadline:
                         raise MemoryPressureError(
@@ -86,5 +136,3 @@ class InferenceLimiter:
                         on_memory_wait(message)
                 # Leave the exception handler before sleeping so tracebacks do not retain decoded images.
                 await asyncio.sleep(self.poll_seconds)
-        finally:
-            self._semaphore.release()

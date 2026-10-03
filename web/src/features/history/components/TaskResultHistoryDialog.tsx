@@ -67,7 +67,7 @@ export const TaskResultHistoryDialog: React.FC<TaskResultHistoryDialogProps> = (
           <header className="flex items-start justify-between gap-4">
             <div>
               <Dialog.Title className="text-sm font-semibold text-zinc-100">任务结果回看</Dialog.Title>
-              <Dialog.Description className="mt-1 text-xs text-zinc-500">
+              <Dialog.Description className="mt-1 text-xs text-zinc-400">
                 只读查看图片结果与失败诊断，不会覆盖当前工作台。{taskId}
               </Dialog.Description>
             </div>
@@ -129,7 +129,7 @@ export const TaskResultHistoryDialog: React.FC<TaskResultHistoryDialogProps> = (
                 </p>
               )}
               {!results.length ? (
-                <p className="mt-6 text-sm text-zinc-500">暂无逐图记录或诊断，不能据此推断没有检测到人脸。</p>
+                <p className="mt-6 text-sm text-zinc-400">暂无逐图记录或诊断，不能据此推断没有检测到人脸。</p>
               ) : (
                 <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
                   <nav aria-label="任务图片" className="flex shrink-0 gap-2 overflow-auto md:w-48 md:flex-col">
@@ -248,7 +248,7 @@ export const TaskResultHistoryDialog: React.FC<TaskResultHistoryDialogProps> = (
                         </div>
                       ) : hasOutput ? (
                         <div className="rounded-lg border border-border p-3">
-                          <p className="mb-2 text-xs text-zinc-500">原图不可用，仅显示已保存结果，无法前后对比。</p>
+                          <p className="mb-2 text-xs text-zinc-400">原图不可用，仅显示已保存结果，无法前后对比。</p>
                           {imageUnavailable ? (
                             <p role="alert" className="text-xs text-err">
                               结果图片不可用，文件可能已被清理。
@@ -263,7 +263,7 @@ export const TaskResultHistoryDialog: React.FC<TaskResultHistoryDialogProps> = (
                           )}
                         </div>
                       ) : (
-                        <p className="rounded-lg border border-dashed border-border p-5 text-sm text-zinc-500">
+                        <p className="rounded-lg border border-dashed border-border p-5 text-sm text-zinc-400">
                           此图片没有可用的成功结果，无法对比或下载。未生成替代图片。
                         </p>
                       )}

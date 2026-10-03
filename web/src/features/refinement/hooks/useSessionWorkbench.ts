@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
+import { saveProject } from '@/features/projects/projectController';
 import { useStudioStore } from '@/stores/useStudioStore';
 import type { TargetImageItem } from '@/types';
 import { sessionApi } from '../sessionApi';
@@ -11,7 +12,7 @@ import { forgetSession } from '../sessionCache';
 import { useWorkbenchStore } from '../workbenchStore';
 import type { SessionCreate, SessionDetail, TurnMode } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
-import { apiErrorMessage } from '@/utils/apiError';
+import { apiErrorMessage, isResourceUnavailable } from '@/utils/apiError';
 
 export const sessionKey = (id: string | null) => ['refinement-session', id] as const;
 export const sessionsKey = ['refinement-sessions'] as const;
@@ -46,7 +47,7 @@ export function useSessionWorkbench(target?: TargetImageItem) {
     if (session && !detail.isError) syncAcceptedResult(session);
   }, [session, detail.isError]);
   useEffect(() => {
-    if (workspace.sessionId && axios.isAxiosError(detail.error) && detail.error.response?.status === 404) {
+    if (workspace.sessionId && isResourceUnavailable(detail.error)) {
       void forgetSession(client, workspace.sessionId);
     }
   }, [client, workspace.sessionId, detail.error]);
@@ -186,6 +187,11 @@ export function useSessionWorkbench(target?: TargetImageItem) {
       const version = session?.versions.find((item) => item.id === viewVersionId);
       if (!session || !version || session.status === 'running' || session.active_turn_id || pending) return;
       apply(await sessionApi.accept(session.id, session.revision, version.id, version.digest));
+      try {
+        await saveProject();
+      } catch {
+        throw new Error('精修结果已接受并保存在服务端，但编辑工程保存失败。请重试工程保存后再关闭页面。');
+      }
     });
   const cancel = () =>
     perform(async () => {

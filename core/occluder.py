@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from utils.gpu_helper import get_optimal_providers
+from utils.gpu_helper import get_optimal_providers, local_session_options
 
 
 class FaceOccluder:
@@ -16,7 +16,7 @@ class FaceOccluder:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"XSeg model not found at {model_path}")
 
-        session_options = ort.SessionOptions()
+        session_options = local_session_options()
         session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.session = ort.InferenceSession(
             model_path,

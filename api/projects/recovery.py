@@ -12,11 +12,16 @@ from api.portraits.library import resolve_asset_ids, resolve_asset_path, resolve
 from api.refinement.batch import assigned_outcomes
 from api.refinement.contracts import SessionPersonInput
 from api.schemas import ProjectAssetRequest, ProjectSaveRequest
-from core.image_security import decode_image_bytes
+from core.image_security import MAX_IMAGE_BYTES, decode_image_bytes, decode_snapshot_bytes, encode_snapshot_image
 from core.refinement.contracts import MAX_PEOPLE
 
 _SESSION_IMAGE = re.compile(r"^/api/v1/refinement/sessions/([a-f0-9]{32})/artifacts/([a-f0-9]{64})$")
 _PORTRAIT_IMAGE = re.compile(r"^/api/v1/portrait-assets/(as_[a-f0-9]{20})/(thumbnail|content)$")
+
+
+def _decode_project_asset(data):
+    """ProjectStore has already verified ownership and digest of these persisted bytes."""
+    return decode_snapshot_bytes(data) if len(data) > MAX_IMAGE_BYTES else decode_image_bytes(data)
 
 
 def import_assets(store, project_id, request: ProjectAssetRequest, sessions):
@@ -30,6 +35,10 @@ def import_assets(store, project_id, request: ProjectAssetRequest, sessions):
             raise ValueError("Reference asset is unavailable")
         return [store.put_asset(project_id, path.read_bytes()) for path in paths]
     source = request.image
+    owned = re.fullmatch(r"/api/v1/files/projects/([a-f0-9]{32})/([a-f0-9]{64})", source)
+    if owned and owned[1] == project_id:
+        store.asset(project_id, owned[2])  # Verify existence and digest before reusing the reference.
+        return [{"$asset": owned[2]}]
     portrait = _PORTRAIT_IMAGE.fullmatch(source)
     if portrait:
         # Editor previews are required snapshot media too. Resolve their opaque IDs
@@ -39,6 +48,7 @@ def import_assets(store, project_id, request: ProjectAssetRequest, sessions):
         if path is None:
             raise FileNotFoundError("Portrait image is unavailable")
         return [store.put_asset(project_id, path.read_bytes())]
+    owned_snapshot = False
     if source.startswith("data:"):
         header, separator, payload = source.partition(",")
         if not separator or header not in {"data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64"}:
@@ -47,8 +57,9 @@ def import_assets(store, project_id, request: ProjectAssetRequest, sessions):
     else:
         match = _SESSION_IMAGE.fullmatch(source)
         image = sessions.store.image(*match.groups()) if match else load_image_from_source(source)
-        data = base64.b64decode(encode_image_to_base64(image, ".png").split(",", 1)[1])
-    return [store.put_asset(project_id, data)]
+        data = encode_snapshot_image(image)
+        owned_snapshot = True  # The loader already validated input; these PNG bytes were generated here.
+    return [store.put_asset(project_id, data, owned_snapshot=owned_snapshot)]
 
 
 def restore_project(store, project_id, task_manager, sessions):
@@ -72,7 +83,7 @@ def restore_accepted_session_links(store, project, sessions):
     def digest(asset):
         key = asset["$asset"]
         if key not in cache:
-            pixels = decode_image_bytes(store.asset(project["id"], key))
+            pixels = _decode_project_asset(store.asset(project["id"], key))
             encoded = encode_image_to_base64(pixels, ".png").split(",", 1)[1]
             cache[key] = hashlib.sha256(base64.b64decode(encoded)).hexdigest()
         return cache[key]
@@ -328,8 +339,8 @@ def restore_batch_refinement_inputs(store, project, task, request, sessions):
         # Uploaded JPEG/WebP and the task's lossless PNG can encode the same pixels differently.
         # Verify exact decoded pixels; visual similarity or dimensions alone cannot establish provenance.
         return np.array_equal(
-            decode_image_bytes(store.asset(project_id, left["$asset"])),
-            decode_image_bytes(store.asset(project_id, right["$asset"])),
+            _decode_project_asset(store.asset(project_id, left["$asset"])),
+            _decode_project_asset(store.asset(project_id, right["$asset"])),
         )
 
     for target in doc["studio"]["targetImages"]:

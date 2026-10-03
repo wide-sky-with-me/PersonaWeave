@@ -1,9 +1,12 @@
 """Non-production UI audit with fixture images and API interception; no real jobs or model calls.
 
-Run through uv with the existing Playwright environment. Screenshots are written to --output.
+Run through uv with the existing Playwright environment and a Vite development server.
+Project autosave and session deletion use in-memory offline fixtures only; unrecognized
+API writes still fail the audit. Screenshots and the scope report are written to --output.
 """
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -22,6 +25,14 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     fixture = FixtureAPI()
     errors = []
+    project_requests = []
+    project = {"id": "c" * 32, "revision": 0, "title": "离线界面工程", "updated_at": "2026-09-30T00:00:00Z"}
+    project_path = "/api/v1/projects/" + project["id"]
+    project_images = {
+        "/__ui-fixture/original.png": fixture.image,
+        "/__ui-fixture/reference.png": fixture.reference,
+        **{f"/__ui-fixture/version-{index}.png": fixture.image for index in range(1, 4)},
+    }
 
     def route_request(route):
         path = urlsplit(route.request.url).path
@@ -43,6 +54,26 @@ def main():
                     ],
                 }
             )
+        elif path == "/api/v1/projects" and route.request.method == "POST":
+            project_requests.append({"path": path, "method": "POST"})
+            route.fulfill(json={"data": project})
+        elif path == project_path + "/assets" and route.request.method == "POST":
+            # Accept only this audit's known images. Do not blanket-allow project writes
+            # or fetch arbitrary inputs through a running backend.
+            body = route.request.post_data_json
+            assert set(body) == {"image"} and body["image"] in project_images, "Unexpected fixture image upload"
+            digest = hashlib.sha256(project_images[body["image"]]).hexdigest()
+            project_requests.append({"path": path, "method": "POST"})
+            route.fulfill(json={"data": [{"$asset": digest}]})
+        elif path == project_path and route.request.method == "PUT":
+            body = route.request.post_data_json
+            assert body["expected_revision"] == project["revision"], "Unexpected fixture project revision"
+            assert body["document"]["schema"] == 1, "Unexpected fixture project schema"
+            project.update(revision=project["revision"] + 1, title=body["title"])
+            project_requests.append({"path": path, "method": "PUT"})
+            route.fulfill(json={"data": project})
+        elif path == "/api/v1/projects" and route.request.method == "GET":
+            route.fulfill(json={"data": [project] if project["revision"] else []})
         elif path.startswith("/api/") and not (
             path.startswith("/api/v1/refinement/sessions") or path == "/api/v1/ai/models"
         ):
@@ -69,6 +100,8 @@ def main():
                 faces:[{index:1,global_person_id:1,bbox:[photo.naturalWidth*.20,photo.naturalHeight*.53,photo.naturalWidth*.28,photo.naturalHeight*.62]}]})), activeTargetIndex:0,
               personMappings:[{person_index:1,label:'示例人物',target_reference_url:'/__ui-fixture/original.png',target_reference_person_index:1,source_manual_images:['/__ui-fixture/reference.png'],source_asset_ids:[]}]
             });
+            const {saveProject} = await import('/src/features/projects/projectController.ts');
+            await saveProject();
         }""")
         for width, height in [(1440, 900), (1024, 768), (390, 844), (320, 740)]:
             page.set_viewport_size({"width": width, "height": height})
@@ -109,10 +142,59 @@ def main():
         page.screenshot(path=str(args.output / "refinement-mobile.png"))
         page.get_by_role("button", name="问题与意见", exact=True).click()
         page.screenshot(path=str(args.output / "refinement-composer-mobile.png"))
+
+        # Delete a linked accepted fixture through the real UI. Its server URL is not
+        # an independently saved image: the workspace must expose the loss and block export.
+        page.set_viewport_size({"width": 1440, "height": 900})
+        fixture.session["target_id"] = "target1"
+        fixture.session["accepted_version_id"] = "2" * 32
+        fixture.session["accepted_image_url"] = "/__ui-fixture/version-2.png"
+        page.evaluate(
+            """async session => {
+                const {useStudioStore} = await import('/src/stores/useStudioStore.ts');
+                useStudioStore.getState().updateTargetImageById('target1', {
+                    refinementSessionId:session.id, refinedUrl:session.accepted_image_url,
+                    acceptedRefinement:{sessionId:session.id,versionId:session.accepted_version_id,revision:session.revision}
+                });
+            }""",
+            fixture.session,
+        )
+        page.once("dialog", lambda dialog: dialog.accept())
+        page.get_by_role("button", name="删除当前精修会话", exact=True).click()
+        page.wait_for_function("""async () => {
+            const {useStudioStore} = await import('/src/stores/useStudioStore.ts');
+            return useStudioStore.getState().targetImages[0].refinementResultUnavailable === true;
+        }""")
+        assert fixture.deleted
+        page.get_by_role("button", name="准备与换脸", exact=True).click()
+        warning = "已接受的精修结果已不可用；当前显示本地初稿，不能作为最终精修结果导出。"
+        for width in [1440, 390, 320]:
+            page.set_viewport_size({"width": width, "height": 900 if width == 1440 else 844})
+            if args.verify:
+                expect(page.get_by_text(warning, exact=True)).to_be_visible()
+                download = page.get_by_role("button", name="下载当前结果", exact=True)
+                expect(download).to_be_visible()
+                expect(download).to_be_disabled()
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+            page.screenshot(path=str(args.output / f"deleted-result-{width}.png"))
+        page.evaluate("""async () => {
+            const {saveProject} = await import('/src/features/projects/projectController.ts');
+            await saveProject();
+        }""")
         assert not errors, errors
         assert not fixture.forbidden, fixture.forbidden
-        report = {"page_errors": errors, "production_mutations": 0, "screenshots": len(list(args.output.glob("*.png")))}
-        (args.output / "report.json").write_text(json.dumps(report))
+        report = {
+            "passed": True,
+            "scope": "Vite development frontend with intercepted offline APIs; not native Windows or real backend acceptance",
+            "page_errors": errors,
+            "production_mutations": 0,
+            "ai_requests": 0,
+            "fixture_project_mutations": len(project_requests),
+            "fixture_session_deletions": sum(request.get("method") == "DELETE" for request in fixture.requests),
+            "deleted_result_checks": [1440, 390, 320] if args.verify else [],
+            "screenshots": len(list(args.output.glob("*.png"))),
+        }
+        (args.output / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps(report))
         browser.close()
 

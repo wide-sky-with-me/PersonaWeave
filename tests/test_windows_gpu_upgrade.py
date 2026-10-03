@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -147,3 +149,87 @@ def test_unchanged_model_is_not_rehashed_or_rewritten(upgrade, monkeypatch):
 def test_update_paths_cannot_touch_private_or_external_data(tmp_path, name):
     with pytest.raises(ValueError, match="非法路径"):
         owned_path(tmp_path, name)
+
+
+@pytest.fixture
+def upgrade_build(tmp_path):
+    from scripts.build_windows_gpu_upgrade import build
+
+    cpu, gpu = tmp_path / "cpu", tmp_path / "gpu"
+    for root, edition in ((cpu, "cpu"), (gpu, "gpu")):
+        files = write_files(root, {"runtime/engine.dll": edition.encode(), "models/model.onnx": b"unchanged"})
+        (root / "manifest.json").write_text(
+            json.dumps(
+                {"edition": f"windows-x64-{edition}", "files": files, "dependency_fingerprint": edition + "-inputs"}
+            )
+        )
+    return build, cpu, gpu, tmp_path / "upgrade.zip"
+
+
+def test_upgrade_builder_preserves_new_manifest_contract_and_applies(upgrade_build, tmp_path):
+    build, cpu, gpu, output = upgrade_build
+    build(cpu, gpu, output)
+    installation = tmp_path / "installed"
+    shutil.copytree(cpu, installation)
+    with zipfile.ZipFile(output) as archive:
+        assert "gpu-update/files/models/model.onnx" not in archive.namelist()
+        assert json.loads(archive.read("gpu-update/manifest.json"))["dependency_fingerprint"] == "gpu-inputs"
+        archive.extractall(installation)
+    apply_update(installation, installation / "gpu-update")
+    assert (installation / "manifest.json").read_bytes() == (gpu / "manifest.json").read_bytes()
+    assert (installation / "runtime/engine.dll").read_bytes() == b"gpu"
+
+
+@pytest.mark.parametrize("failure", ["zip_write", "source_changed", "checksum_write", "checksum_publish"])
+def test_upgrade_archive_failures_preserve_prior_release(upgrade_build, monkeypatch, failure):
+    build, cpu, gpu, output = upgrade_build
+    build(cpu, gpu, output)
+    checksum = output.with_suffix(".zip.sha256")
+    previous = output.read_bytes(), checksum.read_bytes()
+    if failure in {"zip_write", "source_changed"}:
+        original = zipfile.ZipFile.write
+
+        def write(archive, source, *args, **kwargs):
+            if failure == "zip_write":
+                raise OSError("injected ZIP failure")
+            Path(source).write_bytes(b"changed after the input check")
+            return original(archive, source, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", write)
+    elif failure == "checksum_write":
+        original = Path.write_text
+
+        def write_text(path, *args, **kwargs):
+            if path.name == checksum.name:
+                raise OSError("injected checksum failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", write_text)
+    else:
+        original = Path.replace
+        failed = False
+
+        def replace(path, target):
+            nonlocal failed
+            if Path(target) == checksum and not failed:
+                failed = True
+                raise OSError("injected publication failure")
+            return original(path, target)
+
+        monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises((OSError, ValueError), match=r"injected|checksum mismatch"):
+        build(cpu, gpu, output)
+    assert (output.read_bytes(), checksum.read_bytes()) == previous
+    assert not list(output.parent.glob(".*-build-*"))
+
+
+def test_upgrade_builder_rejects_symlink_escape(upgrade_build, tmp_path):
+    build, cpu, gpu, output = upgrade_build
+    external = tmp_path / "external.dll"
+    external.write_bytes(b"gpu")
+    source = gpu / "runtime/engine.dll"
+    source.unlink()
+    source.symlink_to(external)
+    with pytest.raises(ValueError, match="非法路径"):
+        build(cpu, gpu, output)
+    assert not output.exists()

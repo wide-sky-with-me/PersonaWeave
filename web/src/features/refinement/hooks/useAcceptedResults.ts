@@ -4,6 +4,8 @@ import { useStudioStore } from '@/stores/useStudioStore';
 import { sessionApi } from '../sessionApi';
 import type { SessionDetail } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
+import { forgetSession } from '../sessionCache';
+import { isResourceUnavailable } from '@/utils/apiError';
 
 /** Keep accepted results current even while the preparation workspace is visible after restoration. */
 export function useAcceptedResults() {
@@ -29,8 +31,9 @@ export function useAcceptedResults() {
     })),
   });
   useEffect(() => {
-    queries.forEach((query) => {
+    queries.forEach((query, index) => {
+      if (isResourceUnavailable(query.error)) void forgetSession(client, ids[index]);
       if (query.data && !query.isError) syncAcceptedResult(query.data);
     });
-  }, [queries]);
+  }, [queries, client, ids]);
 }

@@ -31,16 +31,28 @@ def client(tmp_path_factory):
     from api.refinement.service import RefinementSessionService
     from api.refinement.store import RefinementSessionStore
     from api.tasks.batch import TaskManager
+    from core.pipeline import PersonaWeavePipeline
 
     temporary = tmp_path_factory.mktemp("api-state")
     store = RefinementSessionStore(
         temporary / "sessions.sqlite3", temporary / "session-images", temporary / "published"
     )
     with pytest.MonkeyPatch.context() as patch:
+        # API correctness uses real CPU inference; native CUDA smoke is separate so
+        # this suite cannot compete with an already-running desktop GPU pipeline.
+        patch.setattr(
+            lifecycle, "PersonaWeavePipeline", lambda: PersonaWeavePipeline(providers=["CPUExecutionProvider"])
+        )
         patch.setattr(
             lifecycle, "TaskManager", lambda **kwargs: TaskManager(db_path=temporary / "batch.sqlite3", **kwargs)
         )
-        patch.setattr(lifecycle, "RefinementSessionService", lambda ai: RefinementSessionService(ai=ai, store=store))
+        patch.setattr(
+            lifecycle,
+            "RefinementSessionService",
+            lambda ai, inference_limiter: RefinementSessionService(
+                ai=ai, store=store, inference_limiter=inference_limiter
+            ),
+        )
         patch.setattr(
             lifecycle,
             "LegacyRefinementArchive",

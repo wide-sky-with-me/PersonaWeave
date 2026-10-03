@@ -28,7 +28,10 @@ export function HistoryWorkspace() {
   const removeJob = useJobActivityStore((state) => state.removeJob);
 
   const history = useQuery({ queryKey: ['batch-task-history'], queryFn: () => api.listBatchTaskHistory() });
-  const sessions = useQuery({ queryKey: sessionsKey, queryFn: () => sessionApi.list() });
+  const sessions = useQuery({
+    queryKey: [...sessionsKey, 'history', sessionPage],
+    queryFn: () => sessionApi.list(PAGE_SIZE + 1, (sessionPage - 1) * PAGE_SIZE),
+  });
   const open = useWorkbenchStore((state) => state.openSession);
 
   const allTasks = history.data ?? [];
@@ -60,16 +63,11 @@ export function HistoryWorkspace() {
   const allSessions = sessions.data ?? [];
   const sessionDeletion = useSessionDeletion(allSessions);
   const totalSessions = allSessions.length;
-  const totalSessionPages = Math.max(1, Math.ceil(totalSessions / PAGE_SIZE));
-  const validSessionPage = Math.min(sessionPage, totalSessionPages);
-
+  const hasNextSessionPage = totalSessions > PAGE_SIZE;
   useEffect(() => {
-    if (sessionPage > totalSessionPages) {
-      setSessionPage(Math.max(1, totalSessionPages));
-    }
-  }, [sessionPage, totalSessionPages]);
-
-  const currentSessions = allSessions.slice((validSessionPage - 1) * PAGE_SIZE, validSessionPage * PAGE_SIZE);
+    if (sessions.isSuccess && !totalSessions && sessionPage > 1) setSessionPage((p) => p - 1);
+  }, [sessions.isSuccess, totalSessions, sessionPage]);
+  const currentSessions = allSessions.slice(0, PAGE_SIZE);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteBatchTask(id),
@@ -263,14 +261,14 @@ export function HistoryWorkspace() {
           {totalSessions > 0 && (
             <div className="mt-3 flex items-center justify-between text-xs text-zinc-400">
               <span>
-                共 {totalSessions} 个会话 · 第 {validSessionPage} / {totalSessionPages} 页
+                第 {sessionPage} 页 · 本页 {currentSessions.length} 个会话
               </span>
-              {totalSessionPages > 1 && (
+              {(sessionPage > 1 || hasNextSessionPage) && (
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
                     className="btn btn-outline btn-xs"
-                    disabled={validSessionPage <= 1}
+                    disabled={sessionPage <= 1 || sessions.isFetching}
                     onClick={() => setSessionPage((p) => Math.max(1, p - 1))}
                     aria-label="上一页精修会话"
                   >
@@ -279,8 +277,8 @@ export function HistoryWorkspace() {
                   <button
                     type="button"
                     className="btn btn-outline btn-xs"
-                    disabled={validSessionPage >= totalSessionPages}
-                    onClick={() => setSessionPage((p) => Math.min(totalSessionPages, p + 1))}
+                    disabled={!hasNextSessionPage || sessions.isFetching}
+                    onClick={() => setSessionPage((p) => p + 1)}
                     aria-label="下一页精修会话"
                   >
                     下一页
@@ -344,7 +342,7 @@ export function HistoryWorkspace() {
                   checked={allPageTerminalSelected}
                   disabled={terminalTasksOnPage.length === 0 || isMutating}
                   onChange={(e) => handleToggleSelectAll(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-zinc-600 bg-surface-2 text-primary focus:ring-primary/40 cursor-pointer"
+                  className="h-3.5 w-3.5 rounded border-zinc-600 bg-surface-2 text-primary-soft focus:ring-primary/40 cursor-pointer"
                 />
                 <span>全选本页 ({terminalTasksOnPage.length})</span>
               </label>
@@ -398,7 +396,7 @@ export function HistoryWorkspace() {
                         e.stopPropagation();
                         toggleSelect(task.task_id, e.target.checked);
                       }}
-                      className="h-3.5 w-3.5 rounded border-zinc-600 bg-surface-1 text-primary focus:ring-primary/40 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                      className="h-3.5 w-3.5 rounded border-zinc-600 bg-surface-1 text-primary-soft focus:ring-primary/40 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                     />
                     <button
                       type="button"
@@ -413,7 +411,7 @@ export function HistoryWorkspace() {
                           {task.task_id}
                         </span>
                         <span
-                          className={`chip chip-sm ${
+                          className={`chip ${
                             task.status === 'COMPLETED'
                               ? 'chip-ok'
                               : task.status === 'PARTIAL'

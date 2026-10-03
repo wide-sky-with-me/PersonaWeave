@@ -1,0 +1,834 @@
+{
+  "hardware": "Intel i7-12800HX; 16 cores / 24 logical processors; Windows embedded Python 3.13.15; ORT 1.23.2",
+  "scope": "CPU only, one reference, five detected faces, one swapped, three runs per policy; no AI calls",
+  "source_sha256": "4160852cddeb35463498f05b4c0ae167643bbb8f35529aa43ac501147fecbac1",
+  "records": {
+    "default": {
+      "mode": "default",
+      "provider": "cpu",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 4.6518035999979475,
+      "sessions": {
+        "detector": [
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 4.017453799999203,
+          "cpu_seconds": 78.25,
+          "reference_seconds": 0.39002800000162097,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.2894696000003023,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 1.2406057999942277,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.9342452999990201,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.03326300000117044,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.37687060000098427,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.5696219999990717,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 4.295396299999993,
+          "cpu_seconds": 85.234375,
+          "reference_seconds": 0.4709589000012784,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.5244792999983474,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 1.3493889999990643,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.8693185999982234,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.006735099999787053,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.4231136000016704,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.8325336999987485,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 4.603557599999476,
+          "cpu_seconds": 91.734375,
+          "reference_seconds": 0.724541900002805,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.8170429000019794,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 1.4760510999949474,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.9454360999989149,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.0386237999991863,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.22453659999882802,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.5320137000016985,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        }
+      ],
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    },
+    "sleep": {
+      "mode": "sleep",
+      "provider": "cpu",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 2.9758502000004228,
+      "sessions": {
+        "detector": [
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 1.2929416000006313,
+          "cpu_seconds": 12.859375,
+          "reference_seconds": 0.16894069999761996,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.13269479999507894,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.3208407999991323,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.4344743000001472,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.007644299999810755,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.07496629999877769,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.09205550000115181,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 1.180909499998961,
+          "cpu_seconds": 11.5625,
+          "reference_seconds": 0.14899090000108117,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.1296137000026647,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.3438739999983227,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.4248344999978144,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.006453099998907419,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.06191760000001523,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.08213740000064718,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 1.124692599998525,
+          "cpu_seconds": 12.15625,
+          "reference_seconds": 0.13191879999794764,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.11456980000002659,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.3188400000035472,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.41953080000166665,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.005341500000213273,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.05878859999938868,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.08253609999883338,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        }
+      ],
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    },
+    "two": {
+      "mode": "two",
+      "provider": "cpu",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 2.4750026000001526,
+      "sessions": {
+        "detector": [
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 3.5131591000026674,
+          "cpu_seconds": 6.8125,
+          "reference_seconds": 0.331643500001519,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.40152500000112923,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.915780099996482,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 1.5563818999980867,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.005278500000713393,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.15884359999836306,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.2596359000017401,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 3.2834275999994134,
+          "cpu_seconds": 6.4375,
+          "reference_seconds": 0.3039213000010932,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.37805809999554185,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.8942499000004318,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 1.4798585000025923,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.0042445999970368575,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.162885699999606,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.23645029999897815,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 3.3005139000015333,
+          "cpu_seconds": 6.25,
+          "reference_seconds": 0.3030928000007407,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.37855449999915436,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.8933431999976165,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 1.5086406999980682,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.0042265999982191715,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.1514262000018789,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.2339084000013827,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        }
+      ],
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    },
+    "four": {
+      "mode": "four",
+      "provider": "cpu",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 2.2901267999986885,
+      "sessions": {
+        "detector": [
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 1.9707323000002361,
+          "cpu_seconds": 6.765625,
+          "reference_seconds": 0.21301940000194008,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.22872649999771966,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.49675310000384343,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.8042658000013034,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.004063200001837686,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.09018029999788268,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.13455360000079963,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 1.9013191999983974,
+          "cpu_seconds": 6.921875,
+          "reference_seconds": 0.19148990000030608,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.21324580000145943,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.4972336999999243,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.8257946999983687,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.003811800001130905,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.0958823000000848,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.13633539999864297,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        },
+        {
+          "seconds": 1.866235699999379,
+          "cpu_seconds": 6.9375,
+          "reference_seconds": 0.19507069999963278,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.2149552999981097,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.495634600003541,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.8070525000002817,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.003656799999589566,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.08474330000171904,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.1334486999985529,
+              "calls": 1
+            }
+          },
+          "output_sha256": "4c1075c012ef812e66fbda6613c07cfbb398b9ba169ff7520df25a38f9c14172"
+        }
+      ],
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    }
+  },
+  "gpu_scope": "RTX 4070 Laptop 8 GiB, same fixture and 3 runs per policy; CPU and CUDA outputs compared only within each provider.",
+  "gpu_records": {
+    "default": {
+      "mode": "default",
+      "provider": "cuda",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 3.3459719000020414,
+      "sessions": {
+        "detector": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 1.6769053000025451,
+          "cpu_seconds": 9.0625,
+          "reference_seconds": 0.7028357000017422,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.4966884999994363,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.29453210000428953,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.07824379999874509,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.2641613000014331,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.11216769999737153,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.11019190000297385,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        },
+        {
+          "seconds": 0.6983046999994258,
+          "cpu_seconds": 5.109375,
+          "reference_seconds": 0.10804759999882663,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.06477499999891734,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.1120515999973577,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.051039800000580726,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.20358050000140793,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.0323272999994515,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.06354890000147861,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        },
+        {
+          "seconds": 0.6996651999979804,
+          "cpu_seconds": 7.65625,
+          "reference_seconds": 0.11404459999903338,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.05892589999712072,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.12087789999350207,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.04656080000131624,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.21259490000011283,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.03374370000165072,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.0618958000013663,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        }
+      ],
+      "source_code_sha256": {
+        "utils/gpu_helper.py": "81bda4a62a9826b17c5dc8e4322adefda2e52c54e6575b34ca8d348aebea453f",
+        "core/pipeline.py": "160fc5a5964abd5913ad88ade4c9b6eff877464480aaa3069e354f7c37df5bf9"
+      },
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    },
+    "sleep": {
+      "mode": "sleep",
+      "provider": "cuda",
+      "ort": "1.23.2",
+      "cpu_count": 24,
+      "startup_seconds": 1.6294543999974849,
+      "sessions": {
+        "detector": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "recognizer": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "swapper": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "parser": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "occluder": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ],
+        "region_parser": [
+          "CUDAExecutionProvider",
+          "CPUExecutionProvider"
+        ]
+      },
+      "runs": [
+        {
+          "seconds": 1.5032432000007248,
+          "cpu_seconds": 1.625,
+          "reference_seconds": 0.5175133000011556,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.3375549000011233,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.27146900000298047,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.07388670000000275,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.29031599999871105,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.10148330000083661,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.11680410000190022,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        },
+        {
+          "seconds": 0.721250599999621,
+          "cpu_seconds": 0.9375,
+          "reference_seconds": 0.10238560000288999,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.05948979999811854,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.10759370000232593,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.05244029999812483,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.23284009999770205,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.03695690000313334,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.05475080000178423,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        },
+        {
+          "seconds": 0.7052441999985604,
+          "cpu_seconds": 1.390625,
+          "reference_seconds": 0.10252000000036787,
+          "faces_swapped": 1,
+          "stages": {
+            "detect": {
+              "seconds": 0.05898439999509719,
+              "calls": 3
+            },
+            "recognize": {
+              "seconds": 0.1083922000034363,
+              "calls": 7
+            },
+            "swap": {
+              "seconds": 0.04681720000007772,
+              "calls": 1
+            },
+            "landmark": {
+              "seconds": 0.22005319999880157,
+              "calls": 1
+            },
+            "occlusion": {
+              "seconds": 0.0355161000006774,
+              "calls": 1
+            },
+            "region": {
+              "seconds": 0.059104399999341695,
+              "calls": 1
+            }
+          },
+          "output_sha256": "adaddf9088287cea61913bba2941cf75721606b9398a56839e2aac98c1b48547"
+        }
+      ],
+      "source_code_sha256": {
+        "utils/gpu_helper.py": "81bda4a62a9826b17c5dc8e4322adefda2e52c54e6575b34ca8d348aebea453f",
+        "core/pipeline.py": "160fc5a5964abd5913ad88ade4c9b6eff877464480aaa3069e354f7c37df5bf9"
+      },
+      "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+      "shape": [
+        1600,
+        1067,
+        3
+      ]
+    }
+  }
+}

@@ -8,7 +8,7 @@ import numpy as np
 import onnxruntime as ort
 from insightface.model_zoo import get_model
 
-from utils.gpu_helper import get_optimal_providers
+from utils.gpu_helper import get_optimal_providers, local_session_options
 
 
 @dataclass(frozen=True)
@@ -129,7 +129,8 @@ class FaceSwapper:
             raise FileNotFoundError(f"InSwapper model not found at: {model_path}")
         if providers is None:
             providers = get_optimal_providers()
-        self.model = get_model(model_path, providers=providers)
+        self.model = get_model(model_path, providers=providers, sess_options=local_session_options())
+        self.session = self.model.session
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> np.ndarray:
         """Run InSwapper on an already aligned 128px crop without a second alignment."""
@@ -161,7 +162,7 @@ class HyperSwapAdapter:
             raise FileNotFoundError(f"HyperSwap model not found at: {model_path}")
         if providers is None:
             providers = get_optimal_providers()
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.session = ort.InferenceSession(model_path, providers=providers, sess_options=local_session_options())
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Run HyperSwap on an already aligned 256px crop."""
@@ -186,8 +187,8 @@ class GhostSwapAdapter:
             providers = get_optimal_providers()
         if not os.path.exists(model_path) or not os.path.exists(converter_path):
             raise FileNotFoundError("Ghost swapper and crossface converter are both required")
-        self.session = ort.InferenceSession(model_path, providers=providers)
-        self.converter = ort.InferenceSession(converter_path, providers=providers)
+        self.session = ort.InferenceSession(model_path, providers=providers, sess_options=local_session_options())
+        self.converter = ort.InferenceSession(converter_path, providers=providers, sess_options=local_session_options())
 
     def infer_aligned(self, crop: np.ndarray, source_embedding: np.ndarray) -> np.ndarray:
         """Run Ghost on an already aligned 256px crop."""

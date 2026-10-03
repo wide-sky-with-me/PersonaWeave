@@ -285,7 +285,7 @@ def test_private_batch_provenance_uses_server_original_not_reference_payloads():
         original_url="/api/v1/files/batch/original.png",
     )
     batch = SimpleNamespace(task_id="batch", results=[result])
-    archive = SimpleNamespace(tasks={"batch": batch}, _requests={"batch": req})
+    archive = SimpleNamespace(tasks={"batch": batch}, get_request_snapshot=lambda task_id: req)
     evidence = batch_provenance(archive, result.processed_url)
     assert evidence["lineage"] == "batch-local"
     assert evidence["original_url"] == result.original_url

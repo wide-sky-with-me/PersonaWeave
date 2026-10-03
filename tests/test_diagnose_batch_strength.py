@@ -18,10 +18,8 @@ def test_source_board_labels_all_actual_references_and_true_best(monkeypatch):
         return np.zeros((size + 32, size, 3), np.uint8)
 
     monkeypatch.setattr(diagnostic, "tile", fake_tile)
-    refs = [
-        {"image": np.full((8, 8, 3), value, np.uint8), "face": SimpleNamespace(bbox=np.array([0, 0, 8, 8]))}
-        for value in (40, 80)
-    ]
+    monkeypatch.setattr(diagnostic, "load_image_from_source", lambda value: np.full((8, 8, 3), int(value), np.uint8))
+    refs = [{"path": str(value), "face": SimpleNamespace(bbox=np.array([0, 0, 8, 8]))} for value in (40, 80)]
     result = diagnostic.source_reference_board(
         refs,
         {

@@ -7,8 +7,8 @@ export const sessionApi = {
   async delete(id: string, expected_revision: number): Promise<void> {
     await apiClient.delete(sessionPath(id), { params: { expected_revision } });
   },
-  async list(limit = 50): Promise<SessionSummary[]> {
-    return (await apiClient.get(root, { params: { limit } })).data.data;
+  async list(limit = 50, offset = 0): Promise<SessionSummary[]> {
+    return (await apiClient.get(root, { params: { limit, offset } })).data.data;
   },
   async get(id: string): Promise<SessionDetail> {
     return (await apiClient.get(sessionPath(id))).data.data;

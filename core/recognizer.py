@@ -10,7 +10,7 @@ import numpy as np
 from insightface.model_zoo import get_model
 
 from core.detector import DetectedFace
-from utils.gpu_helper import get_optimal_providers
+from utils.gpu_helper import get_optimal_providers, local_session_options
 
 
 class FaceRecognizer:
@@ -30,7 +30,7 @@ class FaceRecognizer:
         if providers is None:
             providers = get_optimal_providers()
 
-        self.model = get_model(model_path, providers=providers)
+        self.model = get_model(model_path, providers=providers, sess_options=local_session_options())
         self.model.prepare(ctx_id=0)
 
     def extract_embedding(self, image: np.ndarray, face: DetectedFace) -> np.ndarray:

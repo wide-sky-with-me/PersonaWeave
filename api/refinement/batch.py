@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 
 from api.refinement.contracts import SessionCreateRequest, TurnCreateRequest
-from core.refinement.image_ops import encode_image
 
 
 def assigned_outcomes(result):
@@ -35,7 +34,7 @@ def batch_session_request(task_id, request, result, source_references, prepared_
                 "person_id": person_id,
                 "face_index": face_index,
                 "person_locator": f"本次原图中从左至右第 {face_index} 位人物；稳定身份编号 P{person_id}，请核验可见定位。",
-                "source_manual_images": [encode_image(item["image"], lossless=True) for item in gallery],
+                "source_manual_images": [item["snapshot_url"] for item in gallery],
             }
         )
     if not people:

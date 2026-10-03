@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
-from core.image_security import decode_image_bytes
+from core.image_security import decode_image_bytes, decode_snapshot_bytes
 
 MAX_DOCUMENT_BYTES = 4 * 1024 * 1024
 
@@ -102,9 +102,9 @@ class ProjectStore:
                 )
             ]
 
-    def put_asset(self, project_id, data):
+    def put_asset(self, project_id, data, *, owned_snapshot=False):
         """Validate image bytes, preserve them exactly and deduplicate within this project."""
-        decode_image_bytes(data)
+        (decode_snapshot_bytes if owned_snapshot else decode_image_bytes)(data)
         digest = hashlib.sha256(data).hexdigest()
         with self.lock:
             self.get(project_id)

@@ -2,6 +2,8 @@
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 
@@ -65,6 +67,56 @@ class SQLiteTaskStore:
             except (TypeError, json.JSONDecodeError):
                 continue
         return loaded
+
+    def iter_states(self, kind: str) -> Iterator[dict]:
+        """Read states one at a time without loading historical image requests.
+
+        Close each cursor before yielding: restart recovery may update the same
+        database, and must not hold a read transaction across those writes.
+        """
+        row_id = 0
+        with closing(self._connect()) as connection:
+            while True:
+                row = connection.execute(
+                    "SELECT rowid, state_json FROM api_tasks WHERE kind = ? AND rowid > ? ORDER BY rowid LIMIT 1",
+                    (kind, row_id),
+                ).fetchone()
+                if row is None:
+                    return
+                row_id, state_json = row
+                try:
+                    state = json.loads(state_json)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                yield state
+
+    def load_request(self, kind: str, task_id: str) -> dict | None:
+        """Read one immutable request for explicit recovery or result provenance."""
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT request_json FROM api_tasks WHERE kind = ? AND task_id = ?", (kind, task_id)
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            value = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def load_state(self, kind: str, task_id: str) -> dict | None:
+        """Read one complete historical state only when its detail is requested."""
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT state_json FROM api_tasks WHERE kind = ? AND task_id = ?", (kind, task_id)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
 
     def delete(self, kind: str, task_id: str) -> bool:
         """Delete one persisted task snapshot and report whether it existed."""

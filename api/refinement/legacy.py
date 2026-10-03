@@ -34,7 +34,6 @@ class LegacyRefinementArchive:
         self._store = SQLiteTaskStore(db_path or default_task_db_path(staging_dir, accepted_dir))
         self.quality = QualityEvaluationStore(self._store, self.staging_dir.parent / "refinement_evidence")
         self.tasks = {}
-        self._requests = {}
         self._locks = {}
         self._restore()
 
@@ -49,10 +48,10 @@ class LegacyRefinementArchive:
         return path
 
     def _persist(self, task):
-        self._store.save("refinement", task.task_id, task.model_dump(mode="json"), self._requests.get(task.task_id))
+        self._store.save("refinement", task.task_id, task.model_dump(mode="json"))
 
     def _restore(self):
-        for state, request_data in self._store.load("refinement"):
+        for state in self._store.iter_states("refinement"):
             try:
                 task = RefinementTaskData.model_validate(state)
                 candidate = self._path(self.staging_dir, task.task_id, "candidate.png")
@@ -60,7 +59,6 @@ class LegacyRefinementArchive:
             except ValueError:
                 continue
             self.tasks[task.task_id] = task
-            self._requests[task.task_id] = request_data
             self._locks[task.task_id] = asyncio.Lock()
             if task.status == RefinementTaskStatus.ACCEPTING:
                 # The old durable ACCEPTING record is already an explicit human approval.
@@ -243,7 +241,6 @@ class LegacyRefinementArchive:
                     ),
                 )
             self.tasks.pop(task_id, None)
-            self._requests.pop(task_id, None)
             self._locks.pop(task_id, None)
             return True
 

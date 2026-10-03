@@ -41,7 +41,7 @@ export function RefinementImageViewport({ imageUrl, imageLabel, beforeUrl, befor
   const dimensions = image?.src === imageUrl ? image : { width: 16, height: 9 };
   const fitted = fitImageWithinViewport(dimensions.width, dimensions.height, bounds.width, bounds.height)!;
   return (
-    <div data-testid="refinement-image-viewport" className="relative min-h-0 flex-1 bg-[#09090b]">
+    <div data-testid="refinement-image-viewport" className="relative min-h-0 flex-1 bg-canvas">
       <div
         ref={scrollRef}
         data-testid="refinement-image-scroll"
@@ -64,7 +64,10 @@ export function RefinementImageViewport({ imageUrl, imageLabel, beforeUrl, befor
             />
           ) : broken === imageUrl ? (
             <p role="alert" className="p-4 text-sm text-amber-200">
-              该版本图片不可用，不以其他图片替代。
+              该版本图片加载失败，可能是暂时内存不足或连接中断。记录不会因此删除。
+              <button className="btn btn-outline btn-sm ml-3" onClick={() => setBroken(null)}>
+                重新加载图片
+              </button>
             </p>
           ) : (
             <img

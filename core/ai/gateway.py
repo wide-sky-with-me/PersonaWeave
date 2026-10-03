@@ -5,12 +5,19 @@ import binascii
 
 import httpx
 import litellm
+import numpy as np
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 from pydantic import BaseModel, ValidationError
 
 from core.ai.configuration import load_gateway_config, resolve_env
 from core.ai.types import ImageEditResult, ModelConfigurationError, ModelRequestError
-from core.image_security import MAX_IMAGE_BYTES, decode_data_uri, decode_image_bytes, download_image_bytes
+from core.image_security import (
+    MAX_IMAGE_BYTES,
+    decode_data_uri,
+    decode_image_bytes,
+    download_image_bytes,
+    encode_snapshot_image,
+)
 
 
 class AIGateway:
@@ -179,11 +186,15 @@ class AIGateway:
     @staticmethod
     def _image_bytes(image) -> bytes:
         """Validate the one in-memory input before LiteLLM can resolve files or URLs."""
+        if isinstance(image, np.ndarray):
+            # Only internal callers supply decoded canvases; external bytes/URIs
+            # still use the strict upload limit below.
+            return encode_snapshot_image(image)
         if isinstance(image, str):
             decode_data_uri(image)
             return base64.b64decode(image.split(",", 1)[1], validate=True)
         if not isinstance(image, bytes):
-            raise TypeError("Image edit input must be encoded bytes or an image data URI")
+            raise TypeError("Image edit input must be a decoded BGR canvas, encoded bytes or an image data URI")
         decode_image_bytes(image)
         return image
 

@@ -9,6 +9,7 @@ from PIL import Image
 from api.projects.recovery import import_assets, recover_record, restore_project
 from api.projects.store import ProjectConflict
 from api.schemas import ProjectAssetRequest, ProjectSaveRequest
+from core.image_security import image_mime_type
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Studio Projects"])
 
@@ -90,7 +91,7 @@ def put_asset(project_id: str, body: ProjectAssetRequest, request: Request):
 def get_asset(project_id: str, digest: str, request: Request):
     data = checked(lambda: request.app.state.projects.asset(project_id, digest))
     with Image.open(BytesIO(data)) as image:
-        mime = Image.MIME.get(image.format, "application/octet-stream")
+        mime = image_mime_type(image.format) or "application/octet-stream"
     return Response(data, media_type=mime, headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 

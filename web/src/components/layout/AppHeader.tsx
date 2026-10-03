@@ -15,6 +15,20 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ onLoadSampleData, children
   const activeJobs = jobs.filter((job) => job.status === 'QUEUED' || job.status === 'PROCESSING').length;
 
   const isReady = serverHealth?.pipeline_ready === true;
+  const modelProviders = Object.values(serverHealth?.model_providers || {});
+  const cudaModels = modelProviders.filter((providers) => providers.includes('CUDAExecutionProvider')).length;
+  const executionLabel = !modelProviders.length
+    ? '本地就绪'
+    : cudaModels === modelProviders.length
+      ? 'CUDA 已加载'
+      : cudaModels
+        ? '部分模型 CPU'
+        : 'CPU 模式';
+  const executionTitle = !modelProviders.length
+    ? '本地流水线就绪状态；不代表 GPU 实际执行能力'
+    : Object.entries(serverHealth?.model_providers || {})
+        .map(([name, providers]) => `${name}: ${providers.join(', ')}`)
+        .join('\n') + '\n模型实际加载的后端；不等同于每个算子都在 GPU 执行。';
 
   return (
     <header className="relative grid shrink-0 grid-cols-[1fr_auto] items-center gap-x-2 gap-y-2 border-b border-white/10 bg-surface-1 px-3 py-2 sm:grid-cols-[auto_1fr_auto] sm:px-4 sm:py-1.5 z-50">
@@ -22,7 +36,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ onLoadSampleData, children
       <div className="flex items-center gap-2.5 min-w-0">
         {/* Logo mark: precision AI Weaver mark with subtle gradient and glow */}
         <div
-          className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-600 to-cyan-500 flex items-center justify-center shrink-0 shadow-[0_0_14px_rgba(91,95,239,0.35)] border border-white/20 relative"
+          className="w-7 h-7 rounded-xl bg-gradient-to-br from-primary via-primary-hover to-accent flex items-center justify-center shrink-0 shadow-glow-primary border border-border-strong relative"
           aria-hidden
         >
           <svg width="15" height="15" viewBox="0 0 14 14" fill="none">
@@ -64,7 +78,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ onLoadSampleData, children
             className="btn btn-outline btn-sm gap-1.5"
             title="一键载入内置合影测试集与人物素材"
           >
-            <RefreshCw className="w-3 h-3 text-primary" />
+            <RefreshCw className="w-3 h-3 text-primary-soft" />
             <span className="hidden sm:inline">载入样例</span>
           </button>
         )}
@@ -78,19 +92,16 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ onLoadSampleData, children
             onClick={() => setOpen(!isOpen)}
             title="查看最近任务"
           >
-            <History className="w-3 h-3 text-primary" />
+            <History className="w-3 h-3 text-primary-soft" />
             <span className="hidden sm:inline">任务</span>
             {activeJobs > 0 && <span className="chip chip-accent">{activeJobs}</span>}
           </button>
         )}
         {/* Available providers do not prove which execution backend a session actually uses. */}
-        <div
-          className={'chip gap-1.5 ' + (isReady ? 'chip-accent' : 'chip-neutral')}
-          title="本地流水线就绪状态；不代表 GPU 实际执行能力"
-        >
+        <div className={'chip gap-1.5 ' + (isReady ? 'chip-accent' : 'chip-neutral')} title={executionTitle}>
           <Cpu className="w-3 h-3" />
           <span className="hidden sm:inline whitespace-nowrap">
-            {!serverHealth ? '服务未知' : isReady ? '本地就绪' : '初始化中'}
+            {!serverHealth ? '服务未知' : isReady ? executionLabel : '初始化中'}
           </span>
           <span className={'w-1.5 h-1.5 rounded-full ' + (isReady ? 'bg-ok' : 'bg-warn')} aria-hidden="true" />
         </div>

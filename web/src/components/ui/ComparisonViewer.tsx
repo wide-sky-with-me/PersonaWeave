@@ -38,6 +38,7 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
   zoom = 1,
 }) => {
   const [position, setPosition] = useState(50);
+  const [reload, setReload] = useState(0);
   const [beforeState, setBeforeState] = useState<ImageState | null>(null);
   const [afterState, setAfterState] = useState<ImageState | null>(null);
 
@@ -177,7 +178,7 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
           }}
         >
           <img
-            key={beforeSrc}
+            key={beforeSrc + reload}
             src={beforeSrc}
             data-testid="comparison-before-layer"
             alt={`${imageLabel}：${beforeLabel}`}
@@ -187,7 +188,7 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
             onError={() => setBeforeState({ src: beforeSrc, width: 0, height: 0, status: 'error' })}
           />
           <img
-            key={afterSrc}
+            key={afterSrc + reload}
             src={afterSrc}
             alt=""
             className="pointer-events-none absolute inset-0 h-full w-full select-none object-fill object-left-top"
@@ -207,6 +208,18 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
               {beforeError || afterError
                 ? `对比图片加载失败：${beforeError ? beforeLabel : afterLabel}`
                 : '正在加载前后对比图片…'}
+              {(beforeError || afterError) && (
+                <button
+                  className="btn btn-outline btn-sm pointer-events-auto ml-3"
+                  onClick={() => {
+                    setBeforeState(null);
+                    setAfterState(null);
+                    setReload((value) => value + 1);
+                  }}
+                >
+                  重新加载对比图片
+                </button>
+              )}
             </div>
           )}
           <span className="pointer-events-none absolute left-3 top-3 z-10 rounded-md border border-border-md bg-black/75 px-2 py-1 text-xs font-medium text-zinc-200 backdrop-blur-sm">
@@ -217,13 +230,13 @@ export const ComparisonViewer: React.FC<ComparisonViewerProps> = ({
           </span>
           <div
             data-testid="comparison-divider"
-            className="pointer-events-none absolute inset-y-0 z-10 w-px -translate-x-1/2 bg-primary shadow-primary"
+            className="pointer-events-none absolute inset-y-0 z-10 w-px -translate-x-1/2 bg-primary shadow-glow-primary"
             style={{ left: `${position}%` }}
             aria-hidden="true"
           />
           <span
             data-testid="comparison-handle"
-            className="pointer-events-none absolute top-1/2 z-10 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-primary-border bg-surface-2 text-sm text-primary shadow-elevated"
+            className="pointer-events-none absolute top-1/2 z-10 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-primary-border bg-surface-2 text-sm text-primary-soft shadow-elevated"
             style={{ left: `clamp(20px, ${position}%, calc(100% - 20px))` }}
             aria-hidden="true"
           >

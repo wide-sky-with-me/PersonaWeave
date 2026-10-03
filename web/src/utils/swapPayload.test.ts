@@ -85,3 +85,44 @@ describe('swap payload identity semantics', () => {
     if (result.ready) expect(result.mappings[0].source_mode).toBe('gallery');
   });
 });
+
+describe('nullable IDs returned by single-image detection', () => {
+  it.each([1, 3])('does not collapse %i unclustered faces into an automatic target', (count) => {
+    const value = context();
+    value.targetImages[0].faces = Array.from({ length: count }, (_, i) => ({
+      index: i + 1,
+      global_person_id: null,
+      bbox: [0, 0, 10, 10] as [number, number, number, number],
+    }));
+    expect(buildQuickSwapPayload(value, value.targetImages[0], parameters).ready).toBe(false);
+    expect(buildBatchSwapPayload(value, parameters).ready).toBe(false);
+  });
+  it('requires confirmation when only some faces have stable identities', () => {
+    const value = context();
+    value.targetImages[0].faces!.push({ index: 2, global_person_id: null, bbox: [0, 0, 10, 10] });
+    expect(resolveExecutionMappings(value).ready).toBe(false);
+  });
+  it('does not treat unanalyzed images as having no people', () => {
+    const value = context();
+    value.targetImages.push({ id: 'new', name: 'new', url: 'new', status: 'IDLE' });
+    expect(resolveExecutionMappings(value).ready).toBe(false);
+  });
+  it.each([null, undefined, NaN, 0, -1, 1.5, '1'])('blocks a restored invalid mapping ID: %s', (id) => {
+    const value = context();
+    const resolved = resolveExecutionMappings(value);
+    if (!resolved.ready) throw new Error();
+    value.personMappings = [{ ...resolved.mappings[0], person_index: id as number }];
+    expect(buildQuickSwapPayload(value, value.targetImages[0], parameters)).toMatchObject({ ready: false });
+    expect(buildBatchSwapPayload(value, parameters)).toMatchObject({ ready: false });
+  });
+  it('accepts an explicitly chosen local face in a three-person single image', () => {
+    const value = context();
+    const resolved = resolveExecutionMappings(value);
+    if (!resolved.ready) throw new Error();
+    value.targetImages[0].faces = [1, 2, 3].map((index) => ({ index, global_person_id: null, bbox: [0, 0, 10, 10] }));
+    value.personMappings = [{ ...resolved.mappings[0], person_index: 2, target_reference_person_index: 2 }];
+    const built = buildQuickSwapPayload(value, value.targetImages[0], parameters);
+    expect(built.ready).toBe(true);
+    if (built.ready) expect(built.payload.person_mappings[0].person_index).toBe(2);
+  });
+});

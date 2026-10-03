@@ -40,7 +40,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
       <button
         type="button"
         onClick={() => onToggleEraser(false)}
-        className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+        className={`min-h-touch px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
           !isEraser
             ? 'bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-sm'
             : 'text-zinc-400 hover:text-zinc-200'
@@ -52,7 +52,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
       <button
         type="button"
         onClick={() => onToggleEraser(true)}
-        className={`min-h-11 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
+        className={`min-h-touch px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all ${
           isEraser
             ? 'bg-amber-500/20 text-amber-300 border border-amber-400/50 shadow-sm'
             : 'text-zinc-400 hover:text-zinc-200'
@@ -79,7 +79,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
         type="button"
         onClick={onUndo}
         disabled={!canUndo}
-        className="min-w-11 min-h-11 p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+        className="min-w-touch min-h-touch p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
         title="撤销遮罩编辑 (Ctrl+Z)"
         aria-label="撤销遮罩编辑"
       >
@@ -89,7 +89,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
         type="button"
         onClick={onRedo}
         disabled={!canRedo}
-        className="min-w-11 min-h-11 p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+        className="min-w-touch min-h-touch p-2 rounded-lg text-zinc-400 hover:text-amber-300 disabled:opacity-30 disabled:pointer-events-none transition-colors"
         title="重做遮罩编辑 (Ctrl+Y 或 Ctrl+Shift+Z)"
         aria-label="重做遮罩编辑"
       >
@@ -99,7 +99,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
         type="button"
         onClick={onClear}
         disabled={!hasMaskData}
-        className="min-h-11 px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 disabled:opacity-30 disabled:pointer-events-none transition-colors flex items-center gap-1"
+        className="min-h-touch px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-rose-400 hover:bg-rose-500/10 disabled:opacity-30 disabled:pointer-events-none transition-colors flex items-center gap-1"
         title="清空当前涂抹遮罩"
       >
         <Trash2 className="w-3.5 h-3.5" />

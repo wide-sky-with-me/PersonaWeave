@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import confetti from 'canvas-confetti';
 import { saveAs } from 'file-saver';
@@ -13,7 +12,8 @@ import type { SessionInput } from '@/features/refinement/sessionTypes';
 import { collectSwapWarnings } from '@/utils/swapWarnings';
 import { buildWorkspaceZip, hasWorkspaceResult } from '@/utils/workspaceExport';
 import type { TaskDetailData } from '@/types';
-import { apiErrorMessage } from '@/utils/apiError';
+import { apiErrorMessage, isResourceUnavailable } from '@/utils/apiError';
+import { useProjectStore } from '@/features/projects/projectStore';
 /** Own batch submission and recovery once at app level, independent of visible sidebars. */
 export function useBatchPipeline() {
   const [taskSummary, setTaskSummary] = useState<{
@@ -51,6 +51,18 @@ export function useBatchPipeline() {
   const completedTaskRef = useRef<string | null>(null);
   const reportedQueryError = useRef<string | null>(null);
   const submittedTargetIdsRef = useRef<string[]>([]);
+  const workspaceRevision = useProjectStore((state) => state.workspaceRevision);
+  useEffect(() => {
+    // A restored/new editor owns different work; the App-level hook itself stays mounted.
+    setTaskSummary(null);
+    setTaskDetail(null);
+    setQueryError(null);
+    refinementSnapshots.current = {};
+    submittedTargetIdsRef.current = [];
+    startedAtRef.current = null;
+    completedTaskRef.current = null;
+    reportedQueryError.current = null;
+  }, [workspaceRevision]);
   // Recover only an explicitly linked client job. Falling back to the newest
   // server task makes an untouched fresh workspace look like it just completed old images.
   useEffect(() => {
@@ -67,7 +79,7 @@ export function useBatchPipeline() {
       setActiveTaskId(linked.taskId);
       setIsProcessing(isActiveJob(linked));
     }
-  }, [activeTaskId, jobs, setActiveTaskId, setIsProcessing, targetImages]);
+  }, [activeTaskId, jobs, setActiveTaskId, setIsProcessing, targetImages, workspaceRevision]);
   const createBatchMutation = useMutation({
     mutationFn: ({ payload }: { payload: Parameters<typeof api.createBatchTask>[0]; targetIds: string[] }) =>
       api.createBatchTask(payload),
@@ -92,8 +104,10 @@ export function useBatchPipeline() {
       variables.targetIds.forEach((id) =>
         updateTargetImageById(id, {
           status: 'PROCESSING',
+          error: undefined,
           refinedUrl: undefined,
           acceptedRefinement: undefined,
+          refinementResultUnavailable: undefined,
           refinementSessionId: undefined,
           refinementInput: undefined,
           pendingRefinement: { taskId, input: refinementSnapshots.current[id] },
@@ -116,7 +130,7 @@ export function useBatchPipeline() {
       const status = query.state.data?.status;
       return status === 'COMPLETED' || status === 'PARTIAL' || status === 'FAILED' ? false : 500;
     },
-    retry: 8,
+    retry: (failureCount, error) => !isResourceUnavailable(error) && failureCount < 8,
     retryDelay: 500,
   });
   useEffect(() => {
@@ -127,7 +141,16 @@ export function useBatchPipeline() {
       reportedQueryError.current = errorKey;
       toast({ title: '批量任务状态读取失败', description: message, kind: 'error' });
     }
-    if (axios.isAxiosError(taskQuery.error) && taskQuery.error.response?.status === 404) {
+    if (isResourceUnavailable(taskQuery.error)) {
+      const associatedIds = new Set(submittedTargetIdsRef.current);
+      for (const target of useStudioStore.getState().targetImages) {
+        if (associatedIds.has(target.id) && target.status === 'PROCESSING')
+          updateTargetImageById(target.id, {
+            status: 'FAILED',
+            error: '原批量任务已不存在，请重新执行换脸。',
+            pendingRefinement: undefined,
+          });
+      }
       setQueryError('原批量任务已不存在，已清除恢复入口。');
       updateJob(activeTaskId, { status: 'UNKNOWN', error: '任务不存在' });
       setActiveTaskId(null);
@@ -138,7 +161,7 @@ export function useBatchPipeline() {
     setQueryError(`无法恢复任务状态：${message}`);
     updateJob(activeTaskId, { status: 'UNKNOWN', error: message });
     setIsProcessing(false);
-  }, [activeTaskId, setActiveTaskId, setIsProcessing, taskQuery.error, updateJob, toast]);
+  }, [activeTaskId, setActiveTaskId, setIsProcessing, taskQuery.error, updateJob, updateTargetImageById, toast]);
 
   useEffect(() => {
     const detail = taskQuery.data;
@@ -163,7 +186,7 @@ export function useBatchPipeline() {
         updateTargetImageById(targetId, {
           processedUrl: result.processed_url,
           ...(current?.processedUrl !== result.processed_url
-            ? { refinedUrl: undefined, acceptedRefinement: undefined }
+            ? { refinedUrl: undefined, acceptedRefinement: undefined, refinementResultUnavailable: undefined }
             : {}),
           refinementSessionId:
             result.refinement_session_id ||

@@ -100,7 +100,7 @@ const Section: React.FC<{
   const [open, setOpen] = useState(defaultOpen);
 
   const accentClasses: Record<string, string> = {
-    primary: 'text-primary',
+    primary: 'text-primary-soft',
     accent: 'text-accent',
     warn: 'text-warn',
   };
@@ -176,7 +176,7 @@ const ParamSlider: React.FC<{
         />
       </div>
       {hints && (
-        <div className="flex justify-between text-2xs text-zinc-500 font-mono">
+        <div className="flex justify-between text-2xs text-zinc-400 font-mono">
           <span>{hints[0]}</span>
           <span>{hints[1]}</span>
           <span>{hints[2]}</span>
@@ -266,8 +266,10 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
     setIsSingleRunning(true);
     updateTargetImageById(submittedTargetId, {
       status: 'PROCESSING',
+      error: undefined,
       refinedUrl: undefined,
       acceptedRefinement: undefined,
+      refinementResultUnavailable: undefined,
       refinementSessionId: undefined,
       refinementInput: undefined,
       pendingRefinement: undefined,
@@ -342,7 +344,7 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
           className="btn btn-ghost btn-sm text-zinc-300 hover:text-white gap-1 text-xs px-2.5 py-1 h-7 rounded-lg"
           title="恢复推荐默认算法参数"
         >
-          <RotateCcw className="w-3.5 h-3.5 text-primary" />
+          <RotateCcw className="w-3.5 h-3.5 text-primary-soft" />
           <span>重置默认</span>
         </button>
       </div>

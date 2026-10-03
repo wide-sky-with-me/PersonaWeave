@@ -15,7 +15,7 @@ export function ProjectControls() {
       >
         <div className="flex min-w-0 items-center gap-2">
           <span className="max-w-60 truncate text-zinc-300">{state.title || '新工程'}</span>
-          <span role="status" className={state.status === 'error' ? 'text-amber-300' : 'text-zinc-500'}>
+          <span role="status" className={state.status === 'error' ? 'text-amber-300' : 'text-zinc-400'}>
             {state.status === 'loading'
               ? '正在恢复工程…'
               : state.status === 'saving'

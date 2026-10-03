@@ -14,7 +14,7 @@ describe('refinement session HTTP contract', () => {
   it('unwraps summary/detail envelopes and never fetches images for the summary list', async () => {
     const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { code: 200, data: [{ id: 'session' }] } });
     expect(await sessionApi.list()).toEqual([{ id: 'session' }]);
-    expect(get).toHaveBeenCalledWith('/api/v1/refinement/sessions', { params: { limit: 50 } });
+    expect(get).toHaveBeenCalledWith('/api/v1/refinement/sessions', { params: { limit: 50, offset: 0 } });
     get.mockResolvedValue({ data: { code: 200, data: { id: 'session' } } });
     expect(await sessionApi.get('session')).toEqual({ id: 'session' });
     expect(get).toHaveBeenLastCalledWith('/api/v1/refinement/sessions/session');

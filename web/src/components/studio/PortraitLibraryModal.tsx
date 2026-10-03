@@ -114,10 +114,10 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
           <header className="flex items-start justify-between gap-3 border-b border-border px-3 py-3.5 sm:items-center sm:px-5">
             <div className="min-w-0">
               <Dialog.Title className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
-                <Library className="h-4 w-4 shrink-0 text-primary" />
+                <Library className="h-4 w-4 shrink-0 text-primary-soft" />
                 本地人物形象素材库
               </Dialog.Title>
-              <Dialog.Description className="mt-0.5 text-2xs text-zinc-500">
+              <Dialog.Description className="mt-0.5 text-2xs text-zinc-400">
                 {catalog
                   ? `${catalog.total_identities} 个身份 · ${catalog.total_assets} 张参考素材`
                   : '本地人物与多角度表情参考素材'}
@@ -137,7 +137,7 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
               {error}
             </div>
           ) : !catalog?.available ? (
-            <div className="flex flex-1 items-center justify-center text-center text-sm text-zinc-500">
+            <div className="flex flex-1 items-center justify-center text-center text-sm text-zinc-400">
               素材目录不可用
             </div>
           ) : (
@@ -197,7 +197,7 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
                       </div>
                       <div className="p-2">
                         <div className="truncate text-xs font-semibold text-zinc-200">{identity.code}</div>
-                        <div className="mt-0.5 text-2xs text-zinc-500">
+                        <div className="mt-0.5 text-2xs text-zinc-400">
                           {identity.age} 岁 · {identity.asset_count} 张
                         </div>
                       </div>
@@ -222,7 +222,7 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
                         />
                         <div className="min-w-0">
                           <div className="text-sm font-semibold text-zinc-100">{selected.display_name}</div>
-                          <div className="mt-1 text-2xs text-zinc-500">
+                          <div className="mt-1 text-2xs text-zinc-400">
                             默认按正脸、左右侧脸和俯仰姿态分层选择；最多 8 张
                           </div>
                         </div>
@@ -262,7 +262,7 @@ export const PortraitLibraryModal: React.FC<{ open: boolean; onClose: () => void
                       })}
                     </div>
                     <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border p-3">
-                      <span className="text-xs text-zinc-500">已选 {selectedAssetIds.size} / 8 张</span>
+                      <span className="text-xs text-zinc-400">已选 {selectedAssetIds.size} / 8 张</span>
                       <button
                         className="btn btn-md btn-primary"
                         disabled={!selectedAssetIds.size}

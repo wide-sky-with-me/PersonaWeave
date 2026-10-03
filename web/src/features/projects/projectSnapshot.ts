@@ -116,13 +116,15 @@ export function blobDataUrl(blob: Blob): Promise<string> {
 /** Hydrate verified media before touching either store; a missing image leaves the current editor intact. */
 export async function hydrateDocument(project: ProjectDetail): Promise<ProjectDocument> {
   const cache = new Map<string, Promise<string>>();
-  async function walk(value: any): Promise<any> {
+  async function walk(value: any, key = ''): Promise<any> {
     if (value && typeof value === 'object' && '$asset' in value) {
       const digest = value.$asset;
       if (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)) throw new Error('工程图片引用无效');
-      if (!cache.has(digest))
+      const inlineMask = ['dataUrl', 'undoStack', 'redoStack', 'manual_mask'].includes(key);
+      const cacheKey = digest + (inlineMask ? ':mask' : ':image');
+      if (!cache.has(cacheKey))
         cache.set(
-          digest,
+          cacheKey,
           (async () => {
             const response = await apiClient.get(`/api/v1/projects/${project.id}/assets/${digest}`, {
               responseType: 'arraybuffer',
@@ -131,19 +133,25 @@ export async function hydrateDocument(project: ProjectDetail): Promise<ProjectDo
               .map((n) => n.toString(16).padStart(2, '0'))
               .join('');
             if (hash !== digest) throw new Error('工程图片校验失败');
+            // Keep photos on disk after verification. Masks retain their existing base64 API contract.
+            if (!inlineMask) return `/api/v1/files/projects/${project.id}/${digest}`;
             return blobDataUrl(
               new Blob([response.data], { type: String(response.headers['content-type'] || 'image/png') }),
             );
           })(),
         );
-      return cache.get(digest);
+      return cache.get(cacheKey);
     }
-    if (Array.isArray(value)) return Promise.all(value.map(walk));
+    if (Array.isArray(value)) {
+      const items = [];
+      for (const item of value) items.push(await walk(item, key));
+      return items;
+    }
     if (value && typeof value === 'object') {
       const result: Record<string, unknown> = {};
       for (const [key, item] of Object.entries(value)) {
         if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('工程字段无效');
-        result[key] = await walk(item);
+        result[key] = await walk(item, key);
       }
       return result;
     }
@@ -161,4 +169,30 @@ export async function hydrateDocument(project: ProjectDetail): Promise<ProjectDo
   )
     throw new Error('工程格式不受支持');
   return document;
+}
+
+/** Replace only saved inline photographs, leaving masks and newer edits untouched by the caller. */
+export function releaseSavedPhotos(original: StudioSnapshot, frozen: any, projectId: string): StudioSnapshot {
+  function walk(value: any, saved: any, key = ''): any {
+    if (
+      typeof value === 'string' &&
+      value.startsWith('data:image/') &&
+      imageKeys.has(key) &&
+      !['dataUrl', 'undoStack', 'redoStack', 'manual_mask'].includes(key) &&
+      typeof saved?.$asset === 'string' &&
+      /^[a-f0-9]{64}$/.test(saved.$asset)
+    ) {
+      return `/api/v1/files/projects/${projectId}/${saved.$asset}`;
+    }
+    if (Array.isArray(value)) {
+      const items = value.map((item, index) => walk(item, saved?.[index], key));
+      return items.every((item, index) => item === value[index]) ? value : items;
+    }
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value).map(([name, item]) => [name, walk(item, saved?.[name], name)] as const);
+      return entries.every(([name, item]) => item === value[name]) ? value : Object.fromEntries(entries);
+    }
+    return value;
+  }
+  return walk(original, frozen);
 }

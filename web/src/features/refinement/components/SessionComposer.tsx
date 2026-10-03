@@ -61,8 +61,7 @@ export function SessionComposer({ controller: c, modelAlias, onModelChange, base
       </p>
       {diagnosis && !clarify && !c.diagnosisConfirmed && (
         <button
-          className="btn btn-md btn-primary w-full"
-          style={{ minHeight: 44 }}
+          className="btn btn-md btn-primary w-full min-h-touch"
           disabled={locked}
           onClick={() => session && workspace.select(session.id, { confirmedDiagnosisTurnId: c.diagnosisTurn!.id })}
         >
@@ -81,7 +80,7 @@ export function SessionComposer({ controller: c, modelAlias, onModelChange, base
         />
       )}
       {diagnosis && c.diagnosisConfirmed && (
-        <div className="flex items-center justify-between gap-2 text-2xs text-zinc-500">
+        <div className="flex items-center justify-between gap-2 text-2xs text-zinc-400">
           <label htmlFor="refinement-model">生成模型</label>
           <select
             id="refinement-model"
@@ -104,16 +103,14 @@ export function SessionComposer({ controller: c, modelAlias, onModelChange, base
         (c.pending ? (
           <button
             disabled={c.busy || running}
-            className="btn btn-md btn-primary w-full"
-            style={{ minHeight: 44 }}
+            className="btn btn-md btn-primary w-full min-h-touch"
             onClick={() => void c.submit(c.pending!.mode)}
           >
             重试同一请求
           </button>
         ) : (
           <button
-            className="btn btn-md btn-primary w-full gap-2"
-            style={{ minHeight: 44 }}
+            className="btn btn-md btn-primary w-full gap-2 min-h-touch"
             disabled={!session || locked || !ready || (clarify ? !hasFeedback : !!diagnosis && !canGenerate)}
             onClick={() =>
               void c.submit(
@@ -134,8 +131,7 @@ export function SessionComposer({ controller: c, modelAlias, onModelChange, base
         ))}
       {diagnosis && !clarify && !c.pending && (
         <button
-          className="btn btn-md btn-ghost w-full text-xs text-zinc-400"
-          style={{ minHeight: 44 }}
+          className="btn btn-md btn-ghost w-full text-xs text-zinc-400 min-h-touch"
           disabled={!session || locked || !ready}
           onClick={() => void c.submit('discuss')}
         >
@@ -143,21 +139,20 @@ export function SessionComposer({ controller: c, modelAlias, onModelChange, base
         </button>
       )}
       {diagnosis && !diagnosis.needs_edit && !hasFeedback && !clarify && (
-        <p className="text-xs leading-relaxed text-emerald-300">
+        <p className="text-xs leading-relaxed text-ok">
           暂未发现需要修改的问题。可以直接定稿，也可以输入新的修改要求。
         </p>
       )}
       {running && (
         <button
-          className="btn btn-outline btn-sm w-full"
-          style={{ minHeight: 44 }}
+          className="btn btn-outline btn-sm w-full min-h-touch"
           disabled={c.busy || active?.status === 'cancel_requested'}
           onClick={() => void c.cancel()}
         >
           取消本轮
         </button>
       )}
-      <p className="flex justify-between gap-2 text-2xs leading-relaxed text-zinc-500">
+      <p className="flex justify-between gap-2 text-2xs leading-relaxed text-zinc-400">
         <span>
           {running
             ? '关闭界面不会中止本轮，取消不撤销已发生费用。'

@@ -17,6 +17,9 @@ import { CanvasResultActionBar } from './CanvasResultActionBar';
 import { CanvasFaceMarkersOverlay } from './CanvasFaceMarkersOverlay';
 import { CanvasBatchFilmstrip } from './CanvasBatchFilmstrip';
 import { CanvasBrushToolbar } from './CanvasBrushToolbar';
+import { fetchWorkspaceResult } from '@/utils/workspaceExport';
+import { apiErrorMessage } from '@/utils/apiError';
+import { saveAs } from 'file-saver';
 export const TargetCanvas: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageStageRef = useRef<HTMLDivElement>(null);
@@ -31,6 +34,7 @@ export const TargetCanvas: React.FC = () => {
   const [isArbitrating, setIsArbitrating] = useState(false);
   const [vlmReasoning, setVlmReasoning] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const workspaceView = useWorkbenchStore((state) => state.view);
   const openRefinement = useWorkbenchStore((state) => state.openTarget);
   const toast = useToast();
@@ -379,17 +383,21 @@ export const TargetCanvas: React.FC = () => {
     }
   };
 
-  const handleDownloadCurrentResult = () => {
-    const url = currentImage?.refinedUrl || currentImage?.processedUrl;
-    if (!url) return;
-    const link = document.createElement('a');
-    link.href = url;
-    const baseName = currentImage.name.replace(/\.[^/.]+$/, '') || 'result';
-    link.download = `${baseName}_swapped.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    toast({ title: '已开始下载高清结果图', kind: 'info' });
+  const handleDownloadCurrentResult = async () => {
+    if (!currentImage || isDownloading) return;
+    setIsDownloading(true);
+    try {
+      const { bytes, extension } = await fetchWorkspaceResult(currentImage);
+      const baseName = currentImage.name.replace(/\.[^/.]+$/, '').replace(/[\\/:*?"<>|]/g, '_') || 'result';
+      saveAs(
+        new Blob([bytes], { type: `image/${extension === 'jpg' ? 'jpeg' : extension}` }),
+        `${baseName}_swapped.${extension}`,
+      );
+    } catch (error) {
+      toast({ title: '结果下载失败', description: apiErrorMessage(error), kind: 'error' });
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   const handleAssignSourcePerson = (targetPersonId: number, faceIndex: number, sourcePersonId: number | null) => {
@@ -430,7 +438,7 @@ export const TargetCanvas: React.FC = () => {
   const detectedFaces = currentImage?.faces || [];
 
   return (
-    <div className="relative flex-1 flex flex-col h-full bg-[#0a0a0d] overflow-hidden select-none">
+    <div className="relative flex-1 flex flex-col h-full bg-canvas overflow-hidden select-none">
       {/* Hidden File Input for Batch / Single Target Uploads */}
       <input ref={fileInputRef} type="file" multiple accept="image/*" onChange={handleFileUpload} className="hidden" />
 
@@ -480,7 +488,7 @@ export const TargetCanvas: React.FC = () => {
       >
         {isDragOver && (
           <div className="absolute inset-4 z-50 rounded-3xl border-2 border-dashed border-cyan-400 bg-cyan-950/80 backdrop-blur-md flex flex-col items-center justify-center gap-3 text-cyan-200 pointer-events-none animate-in fade-in shadow-[0_0_50px_rgba(6,182,212,0.25)]">
-            <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300 shadow-cyan">
+            <div className="w-16 h-16 rounded-2xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300 shadow-glow-accent">
               <Upload className="w-8 h-8 animate-bounce" />
             </div>
             <p className="text-sm font-semibold tracking-tight">释放以添加图片至待处理批次</p>
@@ -493,7 +501,7 @@ export const TargetCanvas: React.FC = () => {
           <div className="flex flex-col items-center justify-center text-center p-8 max-w-md animate-in fade-in zoom-in-95">
             <div className="relative mb-6">
               <div className="w-20 h-20 rounded-3xl bg-surface-2 border border-white/10 flex items-center justify-center text-zinc-400 shadow-elevated relative z-10">
-                <Upload className="w-9 h-9 text-primary animate-pulse" />
+                <Upload className="w-9 h-9 text-primary-soft animate-pulse" />
               </div>
               <div className="absolute -inset-2 rounded-3xl bg-primary/20 blur-xl -z-10" />
             </div>
@@ -504,12 +512,12 @@ export const TargetCanvas: React.FC = () => {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-xs font-semibold shadow-primary active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
+              className="px-5 py-2.5 bg-primary hover:bg-primary-hover text-white rounded-xl text-xs font-semibold shadow-glow-primary active:scale-95 transition-all flex items-center gap-2 cursor-pointer"
             >
               <Upload className="w-4 h-4" />
               <span>选择待换图片</span>
             </button>
-            <div className="mt-8 flex items-center gap-4 text-2xs text-zinc-500 font-mono">
+            <div className="mt-8 flex items-center gap-4 text-2xs text-zinc-400 font-mono">
               <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-primary/60" />
                 自动人脸定位
@@ -659,16 +667,16 @@ export const TargetCanvas: React.FC = () => {
                   }
                 }}
               >
-                <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-indigo-400/40 bg-indigo-600/90 px-2.5 py-1 font-mono text-xs font-medium text-white shadow-lg backdrop-blur-md">
+                <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-primary-border bg-primary/90 px-2.5 py-1 font-mono text-xs font-medium text-white shadow-panel backdrop-blur-md">
                   换脸后
                 </div>
                 <div
-                  className="pointer-events-none absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-indigo-500 shadow-lg shadow-indigo-500/80"
+                  className="pointer-events-none absolute top-0 bottom-0 w-0.5 -translate-x-1/2 bg-primary shadow-glow-primary"
                   style={{ left: `${splitPosition}%` }}
                 >
                   <div
                     aria-hidden="true"
-                    className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-11 h-11 rounded-full bg-indigo-600 border-2 border-white flex items-center justify-center text-white shadow-xl pointer-events-none"
+                    className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-11 h-11 rounded-full bg-primary border-2 border-white flex items-center justify-center text-white shadow-elevated pointer-events-none"
                   >
                     <Columns className="w-4 h-4" />
                   </div>
@@ -747,6 +755,7 @@ export const TargetCanvas: React.FC = () => {
           currentImage={currentImage}
           onOpenRefinement={openRefinement}
           onDownload={handleDownloadCurrentResult}
+          isDownloading={isDownloading}
         />
       )}
 

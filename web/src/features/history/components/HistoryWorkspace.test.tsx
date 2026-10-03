@@ -314,3 +314,27 @@ describe('HistoryWorkspace batch task deletion', () => {
     expect(screen.getByText('task_err_2')).toBeInTheDocument();
   });
 });
+
+it('fetches older refinement pages from the server beyond the former 50-record cutoff', async () => {
+  vi.mocked(api.listBatchTaskHistory).mockResolvedValue([]);
+  const records = Array.from({ length: 61 }, (_, index) => ({
+    id: `older-${index}`,
+    target_id: `t-${index}`,
+    title: `Saved ${index}`,
+    revision: 1,
+    status: 'idle' as const,
+    created_at: '2026-01-01',
+    updated_at: '2026-01-01',
+  }));
+  vi.mocked(sessionApi.list).mockImplementation(async (limit = 50, offset = 0) =>
+    records.slice(offset, offset + limit),
+  );
+  renderComponent();
+  await screen.findByText('Saved 0');
+  for (let page = 1; page <= 5; page++) {
+    fireEvent.click(screen.getByRole('button', { name: '下一页精修会话' }));
+    await screen.findByText(`Saved ${page * 10}`);
+  }
+  expect(sessionApi.list).toHaveBeenCalledWith(11, 50);
+  expect(screen.getByText('Saved 50')).toBeInTheDocument();
+});

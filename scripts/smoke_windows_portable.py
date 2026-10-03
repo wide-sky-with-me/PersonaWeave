@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 
-def verify(root, report_path, gpu=False):
+def verify(root, report_path, gpu=False, startup_timeout=180):
     """Exercise real inference and persisted editor media across a backend restart."""
     if os.name != "nt":
         raise RuntimeError("Run this test with the shipped Windows Python on Windows")
@@ -41,13 +41,15 @@ def verify(root, report_path, gpu=False):
             stdout=log,
             stderr=subprocess.STDOUT,
         )
-        deadline = time.monotonic() + 180
+        started = time.monotonic()
+        deadline = started + startup_timeout
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 raise RuntimeError(f"Portable server exited: {process.returncode}")
             try:
                 url = json.loads(state.read_text(encoding="utf-8"))["url"]
                 if request("/api/v1/health")["pipeline_ready"]:
+                    report.setdefault("startup_seconds", []).append(round(time.monotonic() - started, 2))
                     return
             except (OSError, ValueError):
                 time.sleep(1)
@@ -104,7 +106,10 @@ def verify(root, report_path, gpu=False):
             report_path.with_suffix(".jpg").write_bytes(image)
             print("WINDOWS_SWAP_OK", report["swap"], flush=True)
             if gpu:
+                # Windows PowerShell otherwise emits the active OEM code page into this pipe.
+                # Force UTF-8 so Chinese installation paths survive the DLL-origin audit.
                 command = (
+                    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
                     f"(Get-Process -Id {process.pid}).Modules | "
                     "Where-Object { $_.ModuleName -match 'cudnn|cublas|cufft|cudart|curand|nvrtc|nvJit' } | "
                     "Select-Object ModuleName,FileName | ConvertTo-Json -Compress"
@@ -168,5 +173,6 @@ if __name__ == "__main__":
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--gpu", action="store_true", help="Require CUDA instead of accepting a CPU fallback")
+    parser.add_argument("--startup-timeout", type=int, default=180, help="Seconds allowed for each cold model startup")
     args = parser.parse_args()
-    verify(args.root.resolve(), args.report.resolve(), args.gpu)
+    verify(args.root.resolve(), args.report.resolve(), args.gpu, args.startup_timeout)

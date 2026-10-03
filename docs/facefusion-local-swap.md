@@ -22,6 +22,8 @@ Post-swap restoration is a narrower exception: `core/restorer.py` (`CodeFormerRe
 
 ## Execution providers
 
+All production model constructors use `utils/gpu_helper.py::local_session_options` to disable idle ORT intra/inter-op spinning while retaining automatic thread count and unchanged inference math. The six serially used pools otherwise compete with each other. Health reports actual loaded session providers, not merely package capabilities; kernel placement still requires profiling. CPU timing/pixel evidence and queue diagnostics: [memory scheduling](memory-scheduling.md#排队可观测性与线程竞争).
+
 Windows CPU/GPU portable editions use this same pipeline. `utils/gpu_helper.py` checks the system NVIDIA driver and device count, preloads bundled CUDA/cuDNN DLLs and checks the CUDA provider's static dependency chain before selecting CUDA. Missing drivers/libraries select CPU. Linux retains its existing shared-library preload and driver guard. Actual Windows GPU execution is verified by profiling all six shipped ONNX models, not by `get_available_providers()` alone; see [portable delivery](windows-portable.md) and [native validation](windows-portable-validation.md).
 
 ## BiSeNet model provenance
@@ -61,3 +63,17 @@ Diagnostics contain no image data, embedding, source/model path or raw exception
 The manual real-image comparison is written under `outputs/diagnostics/facefusion-parity/`. Unit coverage for mask softness, pixel-boost round trips, extreme-pose rejection, and mapping outcomes lives in [`tests/test_facefusion_pipeline.py`](../tests/test_facefusion_pipeline.py). Model routing is covered by [`tests/test_swapper_policy.py`](../tests/test_swapper_policy.py), partial-result messages by [`tests/test_task_swap_outcome.py`](../tests/test_task_swap_outcome.py), and the generated M01 pose expansion records checksums plus SCRFD/ArcFace measurements in [`data/portrait_expansions/README.md`](../data/portrait_expansions/README.md).
 
 The production implementation referenced by this document is [`core/pipeline.py`](../core/pipeline.py). Documentation authority and synchronization rules are defined in [documentation-governance.md](./documentation-governance.md).
+
+## Single-image mapping identity boundary
+
+`detect-faces` returns image-local face indices and a nullable `global_person_id`; null does not identify a person. Automatic pairing in `swapPayload.ts` requires all targets analyzed and every face to have a valid positive integer global identity. Unknown IDs cannot be grouped or omitted to infer a unique target. A single photo can instead be explicitly bound using its displayed local face indices. Both quick and batch requests validate positive integer person/reference indices; the mapping dialog excludes malformed saved bindings so the user can replace them without losing images. Regression: `swapPayload.test.ts`, `MultiPersonMatrixModal.test.tsx`.
+
+Source galleries retain face geometry, embeddings and quality/pose metadata after each image is analyzed; decoded source images are released before the next source loads. Optional batch AI evidence is frozen losslessly to disk and passed through controlled artifact URLs. Local identity selection and swap pixels are unchanged; see [memory scheduling](memory-scheduling.md) and `tests/test_reference_disk_lifetime.py`.
+
+### 回贴内存范围
+
+生产回贴使用 `core/compositing.py::warp_face_region` 限定到对齐裁剪在原画布上的投影范围，
+保留双线性插值外缘并裁到画布内，再用同一 float32 融合公式更新该区域；不会缩小整幅图。
+原点平移可能引入 OpenCV 的少量插值取整差异，不能宣称与旧全画布 warp 完全相同。
+画布边缘/旋转/缩放/无交集及诊断均值测试见 `tests/test_compositing_region.py`；
+内存实测与适用限制见 [内存调度](memory-scheduling.md#精修共享队列缩略图与局部回贴)。

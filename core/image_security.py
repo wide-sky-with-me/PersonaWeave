@@ -17,6 +17,9 @@ from core.memory_budget import require_memory
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
+# Server-generated uint8 BGR PNGs can be much larger than their uploaded JPEG.
+# Four bytes per pixel cover RGB plus PNG row filters, with bounded container overhead.
+MAX_SNAPSHOT_BYTES = MAX_IMAGE_PIXELS * 4 + 1024 * 1024
 MAX_REDIRECTS = 4
 _ALLOWED_DATA_MIMES = {"image/jpeg", "image/png", "image/webp"}
 _MANAGED_URL_ROOTS = {
@@ -102,9 +105,45 @@ def resolve_managed_url(source: str) -> Path | None:
     return None
 
 
+def image_mime_type(image_format: str | None) -> str | None:
+    """Describe the primary image; camera MPO files have a JPEG-compatible first image."""
+    # Pillow promotes JPEGs carrying MPF metadata to MPO. OpenCV and browsers read
+    # their primary JPEG; auxiliary frames are not separate workbench targets.
+    return "image/jpeg" if image_format == "MPO" else Image.MIME.get(image_format)
+
+
 def decode_image_bytes(data: bytes, content_type: str | None = None) -> np.ndarray:
     """Validate encoded size, media type, dimensions, and decode an image."""
-    if not data or len(data) > MAX_IMAGE_BYTES:
+    return _decode_image_bytes(data, content_type, MAX_IMAGE_BYTES)
+
+
+def decode_snapshot_bytes(data: bytes) -> np.ndarray:
+    """Decode a bounded, server-owned lossless PNG without applying the upload byte cap."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Snapshot must be a PNG image")
+    return _decode_image_bytes(data, "image/png", MAX_SNAPSHOT_BYTES)
+
+
+def encode_snapshot_image(image: np.ndarray) -> bytes:
+    """Encode one validated full-resolution BGR canvas without losing pixels."""
+    if not isinstance(image, np.ndarray) or image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("Snapshot must be a uint8 BGR image")
+    height, width = image.shape[:2]
+    if not width or not height or width * height > MAX_IMAGE_PIXELS:
+        raise ValueError("Image exceeds the pixel limit")
+    require_memory(width * height * 4)
+    ok, buffer = cv2.imencode(".png", image)
+    if not ok:
+        raise ValueError("Snapshot could not be encoded")
+    data = buffer.tobytes()
+    if len(data) > MAX_SNAPSHOT_BYTES:
+        raise ValueError("Snapshot exceeds the encoded byte limit")
+    return data
+
+
+def _decode_image_bytes(data: bytes, content_type: str | None, max_bytes: int) -> np.ndarray:
+    """Share pixel, format and memory checks across external and owned-image boundaries."""
+    if not data or len(data) > max_bytes:
         raise ValueError("Image exceeds the encoded byte limit")
     if content_type:
         media_type = content_type.split(";", 1)[0].strip().lower()
@@ -113,7 +152,7 @@ def decode_image_bytes(data: bytes, content_type: str | None = None) -> np.ndarr
     try:
         with Image.open(BytesIO(data)) as image:
             width, height = image.size
-            detected_type = Image.MIME.get(image.format)
+            detected_type = image_mime_type(image.format)
             image.verify()
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ValueError("Image data could not be decoded") from exc

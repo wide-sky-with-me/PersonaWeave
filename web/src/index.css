@@ -138,7 +138,7 @@
     @apply w-6 h-6 rounded-lg flex items-center justify-center shrink-0;
   }
   .icon-badge-primary {
-    @apply icon-badge bg-primary-muted text-primary;
+    @apply icon-badge bg-primary-muted text-primary-soft;
   }
   .icon-badge-accent {
     @apply icon-badge bg-accent-muted text-accent;
@@ -161,13 +161,13 @@
     @apply chip bg-warn-muted text-warn border-warn-border;
   }
   .chip-err {
-    @apply chip bg-err-muted text-err border-err-border;
+    @apply chip bg-err-muted text-err-soft border-err-border;
   }
   .chip-info {
     @apply chip bg-info-muted text-info border-info-border;
   }
   .chip-primary {
-    @apply chip bg-primary-muted text-primary border-primary-border;
+    @apply chip bg-primary-muted text-primary-soft border-primary-border;
   }
   .chip-accent {
     @apply chip bg-accent-muted text-accent border-accent-border;
@@ -200,11 +200,10 @@
   }
 
   .btn-primary {
-    @apply btn bg-primary hover:bg-primary-hover text-white shadow-primary;
+    @apply btn bg-primary hover:bg-primary-hover text-white shadow-glow-primary;
   }
-  .btn-accent {
-    @apply btn bg-accent  hover:bg-accent-hover  text-white shadow-cyan;
-  }
+  /* .btn-accent 已删除：白字在 #06b6d4 上仅 2.43:1（AA 双阈值失败），且全项目零使用点。
+     今后若需强调色按钮，用 text-zinc-950 做前景色，或走 .btn-primary + shadow-glow-accent。 */
   .btn-ghost {
     @apply btn text-zinc-400 hover:text-zinc-100 hover:bg-surface-hover border border-transparent hover:border-border;
   }
@@ -221,13 +220,13 @@
   }
   .seg-item {
     @apply flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium
-           text-zinc-500 hover:text-zinc-200 transition-all cursor-pointer;
+           text-zinc-400 hover:text-zinc-200 transition-all cursor-pointer;
   }
   .seg-item-active {
     @apply seg-item bg-surface-hover text-zinc-100 shadow-inset border border-border;
   }
   .seg-item-primary {
-    @apply seg-item-active !bg-primary/15 !text-primary !border-primary-border;
+    @apply seg-item-active !bg-primary/15 !text-primary-soft !border-primary-border;
   }
 
   /* Panel divider */
@@ -240,7 +239,7 @@
     @apply font-mono text-2xs font-semibold px-1.5 py-0.5 rounded bg-surface-3 border border-border text-zinc-300;
   }
   .val-badge-primary {
-    @apply val-badge !bg-primary-muted !text-primary !border-primary-border;
+    @apply val-badge !bg-primary-muted !text-primary-soft !border-primary-border;
   }
   .val-badge-accent {
     @apply val-badge !bg-accent-muted  !text-accent  !border-accent-border;
@@ -302,6 +301,27 @@
       transform: scale(1);
     }
   }
+
+  /* 与 .fade-in / .slide-up 同族：进入时的下滑入位移动效。
+     Tailwind 默认不含 slide-in-from-* 系列（那属于 tailwindcss-animate 插件），
+     调用处已写该类名但插件未启用，此前一直零产物（动效静默不生效），此处手写补齐。 */
+  .slide-in-from-top-2 {
+    animation-name: slideInFromTop2;
+    animation-duration: 200ms;
+    animation-timing-function: ease-out;
+    animation-fill-mode: both;
+  }
+
+  @keyframes slideInFromTop2 {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -316,15 +336,18 @@
   }
 }
 
-/* Dense workbench controls still need real touch targets; scoped to avoid changing legacy layouts. */
-.refinement-workbench button,
-.refinement-workbench a.btn,
-.refinement-workbench select {
+/* 触摸目标兜底。用 :where() 将特异性归零，使任何工具类（min-h-touch 等）都能覆盖兜底值。
+   旧写法 `.refinement-workbench button` 特异性为 (0,1,1)，高过 `.min-h-11` 的 (0,1,0)，
+   会把调用处已经写对的 44px 反向压回 40px。
+   选择器里刻意不写 `a.btn`：Tailwind 会把 `.btn` 的 @apply 链在复合选择器下逐个展开，
+   仅这三行加上 a.btn 就会在产物里膨胀成八条派生规则（a.btn-xs / a.btn-sm / ...）。
+   refinement 区内唯一的 <a class="btn"> 已自带 min-h-touch，无需兜底。 */
+:where(.refinement-workbench) :where(button, select) {
   min-height: 40px;
 }
-.refinement-workbench .btn-icon {
+
+/* 图标按钮只兜底下限，不再用 width/height 硬定尺寸 —— 那会与调用处的 w-9 / h-9 互相压制。 */
+:where(.refinement-workbench) :where(.btn-icon) {
   min-width: 40px;
-  width: 40px;
-  height: 40px;
-  flex-shrink: 0;
+  min-height: 40px;
 }

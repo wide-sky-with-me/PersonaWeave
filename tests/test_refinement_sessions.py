@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI, Request
 from pydantic import ValidationError
 
+from api.inference_limiter import InferenceLimiter
 from api.media import encode_image_to_base64
 from api.refinement.contracts import (
     AcceptRequest,
@@ -31,6 +32,7 @@ from api.refinement.service import RefinementSessionService
 from api.refinement.store import RefinementSessionStore, fingerprint
 from api.routes.refinement_sessions import router, session_events
 from core.refinement.contracts import CandidateReview, Diagnosis
+from core.refinement.evidence import resolve_image
 
 
 def image(value):
@@ -84,6 +86,8 @@ class ModelBoundary:
         self.generation_gate, self.review_gate = None, None
 
     async def analyze(self, original, current, people, references, history, user_message, *, previous_diagnosis=None):
+        original, current = resolve_image(original), resolve_image(current)
+        references = {key: [resolve_image(image) for image in images] for key, images in references.items()}
         self.previous_diagnoses.append(previous_diagnosis)
         self.analysis_calls.append((original.copy(), current.copy(), people, references, history, user_message))
         if self.failure == "analysis":
@@ -130,6 +134,7 @@ class ModelBoundary:
         )
 
     async def generate(self, current, people, diagnosis, user_message, model_alias=None):
+        current = resolve_image(current)
         self.generated_inputs.append(current.copy())
         self.generation_started.set()
         if self.generation_gate:
@@ -154,6 +159,7 @@ class ModelBoundary:
         }
 
     async def review(self, original, before, candidate, people, references, diagnosis, user_message):
+        original, before, candidate = resolve_image(original), resolve_image(before), resolve_image(candidate)
         self.review_calls.append((original.copy(), before.copy(), candidate.copy(), references))
         self.review_started.set()
         if self.review_gate:
@@ -653,7 +659,7 @@ def test_known_batch_rejects_fake_original_before_any_source_loading(store, monk
         )
         app.state.task_manager = SimpleNamespace(
             tasks={task_id: SimpleNamespace(task_id=task_id, results=[result])},
-            _requests={} if missing_request else {task_id: saved_request},
+            get_request_snapshot=lambda task_id: None if missing_request else saved_request,
         )
 
         def forbidden(*args):
@@ -811,6 +817,8 @@ def test_concurrent_create_and_bad_reference_leave_no_private_orphans(store, mon
                 creation(people=[{"person_id": 1, "face_index": 1, "source_manual_images": ["not-an-image"]}])
             )
         assert not list(store.artifact_root.iterdir())
+        # Exercise SQLite idempotency against concurrent writers even though production queues serialize them.
+        service.inference_limiter = InferenceLimiter(2)
         barrier = threading.Barrier(2)
         original_create = store.create
 
@@ -852,7 +860,8 @@ def test_missing_locator_uses_original_binding_without_reordering_ids(store):
 
 
 def test_real_core_service_integrates_with_persistent_worker_without_paid_calls(store):
-    from api.media import load_image_from_source
+    from core.ai.gateway import AIGateway
+    from core.image_security import decode_snapshot_bytes
     from core.refinement.conversation import ConversationRefinementService
 
     async def scenario():
@@ -888,7 +897,7 @@ def test_real_core_service_integrates_with_persistent_worker_without_paid_calls(
 
             async def edit_image(self, images, prompt, *, alias, parameters):
                 assert len(images) == 1
-                np.testing.assert_array_equal(load_image_from_source(images[0]), image(20))
+                np.testing.assert_array_equal(decode_snapshot_bytes(AIGateway._image_bytes(images[0])), image(20))
                 assert alias == "test-edit" and parameters == {"size": "auto"}
                 calls.append(("image", prompt))
                 ok, encoded = cv2.imencode(".png", image(21))
@@ -1114,5 +1123,115 @@ def test_model_request_error_is_persisted_without_provider_body(store):
         assert "HTTP 502" in result["turns"][-1]["error"]
         assert result["turns"][-1]["status"] == "failed"
         assert not ai.generated_inputs
+
+    asyncio.run(scenario())
+
+
+def test_history_image_read_and_accept_do_not_decode_full_canvas_under_memory_pressure(store, monkeypatch):
+    from core.memory_budget import MemoryPressureError
+
+    async def scenario():
+        service = RefinementSessionService(store=store)
+        detail = await service.create_session(creation())
+        version = detail["versions"][0]
+        expected = store.artifact_bytes(detail["id"], version["digest"])
+        app = FastAPI()
+        app.state.refinement_sessions = service
+        app.include_router(router)
+
+        def no_decode(*args, **kwargs):
+            raise MemoryPressureError("simulated low allocation headroom")
+
+        monkeypatch.setattr("core.image_security.require_memory", no_decode)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(version["image_url"])
+            assert response.status_code == 200
+            assert response.content == expected
+        accepted = store.accept(detail["id"], detail["revision"], version["id"], version["digest"])
+        assert accepted["accepted_version_id"] == version["id"]
+        with pytest.raises(MemoryPressureError):
+            store.image(detail["id"], version["digest"])
+        path = store._path(detail["id"], version["digest"])
+        path.write_bytes(b"corrupted")
+        with pytest.raises(ArtifactUnavailable, match="digest"):
+            store.artifact_bytes(detail["id"], version["digest"])
+
+    asyncio.run(scenario())
+
+
+def test_refinement_and_local_work_share_one_memory_slot(store):
+    async def scenario():
+        limiter = InferenceLimiter(1)
+        ai = ModelBoundary()
+        ai.generation_gate = asyncio.Event()
+        service = RefinementSessionService(ai=ai, store=store, inference_limiter=limiter)
+        detail = await service.create_session(creation())
+        await service.submit_turn(detail["id"], turn(detail))
+        await asyncio.wait_for(ai.generation_started.wait(), 5)
+        calls = []
+        local = asyncio.create_task(limiter.run(lambda: calls.append("local")))
+        await asyncio.sleep(0)
+        assert not calls
+        assert limiter.snapshot()["active"][0]["operation"] == "refinement_turn"
+        assert limiter.snapshot()["queued"] == 1
+        # A cached thumbnail needs no high-memory slot, even during provider wait.
+        digest = detail["versions"][0]["digest"]
+        assert await asyncio.wait_for(service.thumbnail_bytes(detail["id"], digest), 2)
+        ai.generation_gate.set()
+        await settle(service, detail["id"])
+        await local
+        assert calls == ["local"] and len(ai.generated_inputs) == 1
+        assert limiter.snapshot() == {"queued": 0, "active": []}
+
+    asyncio.run(scenario())
+
+
+def test_thumbnails_are_small_durable_and_never_hide_missing_or_tampered_originals(store, monkeypatch):
+    async def scenario():
+        service = RefinementSessionService(store=store)
+        large = np.random.default_rng(123).integers(0, 256, (800, 1200, 3), dtype=np.uint8)
+        source = encode_image_to_base64(large, ".png")
+        detail = await service.create_session(creation(original_image_url=source, baseline_image_url=source))
+        sid, version = detail["id"], detail["versions"][0]
+        digest = version["digest"]
+        app = FastAPI()
+        app.state.refinement_sessions = service
+        app.include_router(router)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(version["thumbnail_url"])
+            assert response.status_code == 200
+            decoded = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
+            assert decoded.shape == (256, 384, 3)
+            assert len(response.content) < len(store.artifact_bytes(sid, digest)) / 20
+            preview = store._thumbnail_path(sid, digest)
+            for corruption in (None, b"broken"):
+                if corruption is None:
+                    preview.unlink()
+                else:
+                    preview.write_bytes(corruption)
+                rebuilt = await client.get(version["thumbnail_url"])
+                assert rebuilt.status_code == 200 and rebuilt.content == response.content
+            monkeypatch.setattr(store, "image", lambda *args: pytest.fail("cached preview must not decode original"))
+            assert (await client.get(version["thumbnail_url"])).content == response.content
+            forged = version["thumbnail_url"].replace(sid, uuid4().hex)
+            assert (await client.get(forged)).status_code == 404
+            store._path(sid, digest).write_bytes(b"tampered")
+            assert (await client.get(version["thumbnail_url"])).status_code == 410
+
+    asyncio.run(scenario())
+
+
+def test_turn_inputs_keep_only_deferred_image_descriptors(store, monkeypatch):
+    from core.refinement.evidence import DeferredImage
+
+    async def scenario():
+        service = RefinementSessionService(store=store)
+        detail = await service.create_session(creation())
+        request = turn(detail)
+        tid, _ = store.queue_turn(detail["id"], request, fingerprint(request.model_dump()), "test-edit")
+        monkeypatch.setattr(store, "image", lambda *args: pytest.fail("building metadata must not decode evidence"))
+        _, original, current, _, references, *_ = service._inputs(detail["id"], tid)
+        assert isinstance(original, DeferredImage) and isinstance(current, DeferredImage)
+        assert all(isinstance(value, DeferredImage) for group in references.values() for value in group)
 
     asyncio.run(scenario())

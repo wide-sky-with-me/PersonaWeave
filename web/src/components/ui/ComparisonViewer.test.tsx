@@ -126,3 +126,12 @@ describe('ComparisonViewer', () => {
     expect(screen.getByRole('status')).toHaveTextContent('原图');
   });
 });
+
+it('lets an image-only retry recover after a temporary load failure', () => {
+  render(<ComparisonViewer beforeSrc="/before-retry.png" afterSrc="/after-retry.png" />);
+  const before = document.querySelector('img[src="/before-retry.png"]')!;
+  fireEvent.error(before);
+  fireEvent.click(screen.getByRole('button', { name: '重新加载对比图片' }));
+  expect(document.querySelector('img[src="/before-retry.png"]')).not.toBe(before);
+  expect(screen.queryByRole('button', { name: '重新加载对比图片' })).not.toBeInTheDocument();
+});

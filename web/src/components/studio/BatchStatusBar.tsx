@@ -1,10 +1,12 @@
 import { AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import type { BatchPipeline } from '@/hooks/useBatchPipeline';
 import { useStudioStore } from '@/stores/useStudioStore';
+import { localInferenceStatus } from '@/utils/localInferenceStatus';
 
 /** Display task state only; task actions live in the right sidebar. */
 export function BatchStatusBar({ batch }: { batch: BatchPipeline }) {
   const singleRunning = useStudioStore((state) => state.targetImages.some((target) => target.status === 'PROCESSING'));
+  const engineStatus = localInferenceStatus(useStudioStore((state) => state.serverHealth));
   const {
     queryError,
     isProcessing,
@@ -20,9 +22,11 @@ export function BatchStatusBar({ batch }: { batch: BatchPipeline }) {
   const status = queryError
     ? queryError
     : isProcessing
-      ? batch.waitingReason || (batch.taskStatus === 'QUEUED' ? '已排队，等待前一个批任务完成…' : '逐张换脸中…')
+      ? batch.waitingReason ||
+        engineStatus ||
+        (batch.taskStatus === 'QUEUED' ? '已排队，等待前一个批任务完成…' : '逐张换脸中…')
       : singleRunning
-        ? '单图试换中…'
+        ? engineStatus || '单图试换中…'
         : batch.taskStatus === 'FAILED'
           ? '批量任务失败，请在历史中查看详情'
           : completedCount > 0
@@ -42,7 +46,7 @@ export function BatchStatusBar({ batch }: { batch: BatchPipeline }) {
         ) : running ? (
           <Clock className="h-3.5 w-3.5 shrink-0 text-accent animate-pulse" />
         ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
         )}
         <span title={status} className={`truncate ${queryError ? 'text-err' : 'text-zinc-300'}`}>
           {status}

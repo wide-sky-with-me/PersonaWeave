@@ -60,7 +60,7 @@ export function LegacyQualityHistory() {
       className="mt-8 rounded-xl border border-border p-4"
     >
       <summary className="cursor-pointer text-sm font-medium">旧版精修质量记录</summary>
-      <p className="mt-3 text-xs text-zinc-500">
+      <p className="mt-3 text-xs text-zinc-400">
         回看旧版精修证据与质量评价，也可删除不再需要的档案。删除会清理其候选、已接受文件与评价，不影响新精修会话。
       </p>
       {list.isError && (
@@ -92,7 +92,7 @@ export function LegacyQualityHistory() {
                 onClick={() => setTaskId(item.task_id)}
               >
                 <span className="block truncate font-mono text-xs">{item.task_id}</span>
-                <span className="mt-1 block text-2xs text-zinc-500">
+                <span className="mt-1 block text-2xs text-zinc-400">
                   {item.status} · {item.has_accepted ? '有已接受结果' : item.has_candidate ? '有候选' : '无候选'}
                 </span>
               </button>
@@ -110,7 +110,7 @@ export function LegacyQualityHistory() {
           );
         })}
       </div>
-      {!list.isLoading && !list.data?.length && <p className="mt-3 text-xs text-zinc-500">暂无旧版记录</p>}
+      {!list.isLoading && !list.data?.length && <p className="mt-3 text-xs text-zinc-400">暂无旧版记录</p>}
       <div className="mt-3 flex items-center gap-2">
         <button
           className="btn btn-ghost btn-sm"

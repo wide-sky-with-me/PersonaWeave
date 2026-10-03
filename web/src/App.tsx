@@ -175,7 +175,7 @@ export const App: React.FC = () => {
                     : 'text-zinc-400 hover:text-zinc-200 hover:bg-surface-hover/70')
                 }
               >
-                <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-white' : 'text-zinc-500'}`} />
+                <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-white' : 'text-zinc-400'}`} />
                 <span className="whitespace-nowrap">{label}</span>
                 {badge}
               </button>

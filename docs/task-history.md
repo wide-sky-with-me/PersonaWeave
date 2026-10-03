@@ -6,7 +6,7 @@ This document is the current contract for persisted batch-task history. Task-res
 
 Batch tasks wait behind one batch executor before reference preparation. Detail snapshots expose optional
 `waiting_reason` for memory or the current image's authorized AI turn; queue waiting does not invent progress.
-Immutable request payloads are saved once rather than reserialized on each result. Memory-wait timeout preserves
+Immutable request payloads are saved once rather than reserialized on each result. Queued workers retain only task IDs; requests are loaded at execution and released afterward. Startup reads states incrementally without historical requests. Explicit recovery and provenance load one request on demand. New failures omit inline originals from result metadata, keeping inputs in the durable request. Legacy failed inline originals remain in SQLite and hydrate only for detail/recovery, including old records with no request snapshot. Memory-wait timeout preserves
 completed artifacts and counts only actual attempts. See [memory scheduling](memory-scheduling.md).
 
 - `SQLiteTaskStore` in `api/tasks/persistence.py` owns recoverable batch-task metadata and complete task snapshots.
@@ -123,3 +123,21 @@ Older projects can be missing a session link despite having an accepted result. 
 Unavailable files, absent original requests, missing face boxes, unsaved feedback, original UI names and mask undo/redo history cannot be recovered retroactively. The restored project displays the missing-information list. Missing boxes remain an explicit empty set, not newly inferred geometry; missing parameters use current UI defaults with a warning. Available media can be edited further, and the existing AI session can still be opened. Old legacy single-task archives retain their existing read-only/acceptance boundary and are not converted into new production sessions.
 
 Implementation: [`api/projects/store.py`](../api/projects/store.py), [`api/projects/recovery.py`](../api/projects/recovery.py), [`api/routes/projects.py`](../api/routes/projects.py), [`project controller`](../web/src/features/projects/projectController.ts), [`snapshot media`](../web/src/features/projects/projectSnapshot.ts). API input contracts remain in [`api/schemas.py`](../api/schemas.py). Tests: [`test_projects.py`](../tests/test_projects.py), `projectSnapshot.test.ts`, `projectController.test.ts` and the non-production browser recovery audit `scripts/smoke_project_recovery.py`.
+
+## Recovery and deletion availability
+
+A confirmed missing batch (404/410) marks its associated processing images failed and unlocks retry/editing. New/restored projects clear App-level batch summary/detail/error caches. Successful project saves prune unused image/mask deduplication keys; switching projects clears the cache.
+
+Deleting a refinement session invalidates associated session-backed final URLs and records an explicit unavailable-result flag in the project. The canvas labels its fallback as the local draft and cannot export it as the final refinement. An independently frozen project image remains available. Single-image and ZIP downloads share server acceptance verification; only a confirmed missing session (404/410) permits a frozen copy, never a network/500/ownership failure. Regression coverage: `useBatchPipeline.test.tsx`, `projectController.test.ts`, `sessionCache.test.ts`, `workspaceExport.test.ts`.
+
+### Large owned project snapshots
+
+Project import keeps external uploads subject to the 20 MiB limit. PNGs encoded by the server after controlled image loading use the bounded internal snapshot budget and retain pixel/memory checks. On recovery, assets larger than the upload cap are digest-verified and retained as controlled `/api/v1/files/projects/{project_id}/{digest}` URLs, so autosave does not resubmit them as oversized uploads. These independent project copies remain valid after a refinement session is deleted; session publication URLs alone do not establish an independent copy. Regressions: `tests/test_large_refinement_snapshots.py`, `web/src/features/projects/largeProjectSnapshot.test.ts`.
+
+后台 worker 在读取请求或初始持久化阶段异常退出时，活动批任务转为 FAILED，保留已完成项并释放批队列，不能遗留无执行者的“排队中”。回归：`tests/test_batch_memory_queue.py::test_recipe_load_failure_terminates_dead_queued_task_and_releases_next`。
+
+## Image availability and older session pages
+
+Refinement history requests server pages with `limit/offset`; it no longer paginates only the newest 50 entries in memory. Full versions remain detail-only. A failed image request does not mean its session or accepted result was deleted: use the image reload action, which never reruns AI. The server verifies persisted artifact digests without redundant full-canvas decoding during display.
+
+Accepted workspace results are flushed to the editor project before the acceptance action finishes; project-save failure remains explicit while the session's accepted result remains saved. Restored photographs stay as verified, independently owned project URLs. Brush images keep their inline mask contract. Saved current input is replaced only when no newer edit or local processing can be interrupted. Regressions: `HistoryWorkspace.test.tsx`, `SessionWorkbench.test.tsx`, `projectController.test.ts`, `largeProjectSnapshot.test.ts`.

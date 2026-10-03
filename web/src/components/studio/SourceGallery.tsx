@@ -175,7 +175,7 @@ export const SourceGallery: React.FC = () => {
             type="button"
             onClick={() => setIsLibraryOpen(true)}
             disabled={isProcessing}
-            className="group flex items-center justify-center gap-2 rounded-xl border border-primary-border bg-primary-muted px-2.5 py-2.5 text-xs font-semibold text-primary transition-all hover:-translate-y-0.5 hover:bg-primary/20 hover:shadow-primary disabled:opacity-40"
+            className="group flex items-center justify-center gap-2 rounded-xl border border-primary-border bg-primary-muted px-2.5 py-2.5 text-xs font-semibold text-primary-soft transition-all hover:-translate-y-0.5 hover:bg-primary/20 hover:shadow-glow-primary disabled:opacity-40"
           >
             <Library className="h-4 w-4" />
             素材库选入
@@ -184,7 +184,7 @@ export const SourceGallery: React.FC = () => {
             type="button"
             onClick={() => setIsCreatePersonOpen(true)}
             disabled={isProcessing}
-            className="group flex items-center justify-center gap-2 rounded-xl border border-border bg-surface-2 px-2.5 py-2.5 text-xs font-semibold text-zinc-200 transition-all hover:-translate-y-0.5 hover:border-primary-border hover:bg-primary-muted hover:text-primary disabled:opacity-40"
+            className="group flex items-center justify-center gap-2 rounded-xl border border-border bg-surface-2 px-2.5 py-2.5 text-xs font-semibold text-zinc-200 transition-all hover:-translate-y-0.5 hover:border-primary-border hover:bg-primary-muted hover:text-primary-soft disabled:opacity-40"
           >
             <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
             新建人物
@@ -192,7 +192,7 @@ export const SourceGallery: React.FC = () => {
         </div>
         {sourcePeople.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-border py-8 text-center text-zinc-400">
-            <User className="mb-2 h-8 w-8 text-zinc-500" />
+            <User className="mb-2 h-8 w-8 text-zinc-400" />
             <p className="text-xs font-medium text-zinc-300">先新增人物，再上传此人的参考图</p>
             <p className="mt-1 text-2xs text-zinc-400">支持一人上传多张不同角度的照片</p>
           </div>
@@ -226,21 +226,21 @@ export const SourceGallery: React.FC = () => {
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center">
-                            <User className="h-5 w-5 text-zinc-500" />
+                            <User className="h-5 w-5 text-zinc-400" />
                           </div>
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-xs font-bold text-zinc-100">{person.name}</div>
                         <div className="mt-1 flex items-center gap-1 text-xs text-zinc-400">
-                          <span className="font-mono text-primary font-medium">#{person.id}</span>
+                          <span className="font-mono text-primary-soft font-medium">#{person.id}</span>
                           <span>·</span>
                           <span className="font-medium">{references.length} 张</span>
                         </div>
                       </div>
                     </div>
                     {isActive && (
-                      <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary shadow-primary" />
+                      <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary shadow-glow-primary" />
                     )}
                   </button>
                 );
@@ -249,7 +249,7 @@ export const SourceGallery: React.FC = () => {
             {activePerson && (
               <div className="rounded-xl border border-primary-border bg-primary/5 p-2.5">
                 <div className="flex items-center gap-2">
-                  <span className="shrink-0 font-mono text-xs font-bold text-primary">#{activePerson.id}</span>
+                  <span className="shrink-0 font-mono text-xs font-bold text-primary-soft">#{activePerson.id}</span>
                   <input
                     value={activePerson.name}
                     onChange={(event) => store.renameSourcePerson(activePerson.id, event.target.value)}
@@ -284,8 +284,8 @@ export const SourceGallery: React.FC = () => {
               disabled={isProcessing || !activePerson}
               className="group flex items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 bg-surface-2/50 py-2.5 transition-all hover:border-primary/60 hover:bg-primary-muted disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <Upload className="h-4 w-4 text-zinc-400 transition-colors group-hover:text-primary" />
-              <span className="text-xs font-medium text-zinc-300 group-hover:text-primary">
+              <Upload className="h-4 w-4 text-zinc-400 transition-colors group-hover:text-primary-soft" />
+              <span className="text-xs font-medium text-zinc-300 group-hover:text-primary-soft">
                 为 {activePerson?.name} 上传多张参考照片
               </span>
             </button>
@@ -317,6 +317,7 @@ export const SourceGallery: React.FC = () => {
                         initial={{ opacity: 0, y: 4 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.96 }}
+                        transition={{ type: 'spring', stiffness: 300, damping: 25 }}
                         className="group flex items-center gap-2.5 rounded-xl border border-border bg-surface-2 p-2 transition-all hover:border-border-md hover:bg-surface-hover"
                       >
                         <div
@@ -426,22 +427,22 @@ export const SourceGallery: React.FC = () => {
               <div className="pointer-events-none absolute -right-10 -top-16 h-40 w-40 rounded-full bg-primary/15 blur-3xl" />
               <Dialog.Close
                 disabled={isCreatingPerson}
-                className="absolute right-4 top-4 rounded-lg p-1.5 text-zinc-500 hover:bg-surface-hover hover:text-zinc-200 disabled:opacity-40"
+                className="absolute right-4 top-4 rounded-lg p-1.5 text-zinc-400 hover:bg-surface-hover hover:text-zinc-200 disabled:opacity-40"
                 aria-label="关闭"
               >
                 <X className="h-4 w-4" />
               </Dialog.Close>
               <div className="relative flex items-start gap-3.5">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary-border bg-primary-muted text-primary shadow-primary">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary-border bg-primary-muted text-primary-soft shadow-glow-primary">
                   <User className="h-5 w-5" />
                 </div>
                 <div>
-                  <div className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-primary">
+                  <div className="mb-1 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-primary-soft">
                     <Sparkles className="h-3 w-3" />
                     新建身份
                   </div>
                   <Dialog.Title className="text-base font-semibold text-zinc-100">添加自定义人物</Dialog.Title>
-                  <Dialog.Description className="mt-1 text-xs leading-relaxed text-zinc-500">
+                  <Dialog.Description className="mt-1 text-xs leading-relaxed text-zinc-400">
                     一次完成人物命名与参考素材准备，创建后可直接用于人物映射。
                   </Dialog.Description>
                 </div>
@@ -474,7 +475,7 @@ export const SourceGallery: React.FC = () => {
                   <span className="text-xs font-medium text-zinc-300">
                     参考素材 <span className="text-err">*</span>
                   </span>
-                  <span className="text-2xs text-zinc-500">{newPersonFiles.length}/8 张</span>
+                  <span className="text-2xs text-zinc-400">{newPersonFiles.length}/8 张</span>
                 </div>
                 <input
                   ref={createFileInputRef}
@@ -491,9 +492,9 @@ export const SourceGallery: React.FC = () => {
                     disabled={isCreatingPerson}
                     className="group flex w-full flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface-3/60 px-5 py-8 text-center hover:border-primary/60 hover:bg-primary-muted"
                   >
-                    <ImagePlus className="mb-3 h-5 w-5 text-zinc-500 group-hover:text-primary" />
+                    <ImagePlus className="mb-3 h-5 w-5 text-zinc-400 group-hover:text-primary-soft" />
                     <span className="text-xs font-semibold text-zinc-300">选择人物参考照片</span>
-                    <span className="mt-1.5 text-2xs text-zinc-500">支持 JPG、PNG、WebP，可一次选择多张</span>
+                    <span className="mt-1.5 text-2xs text-zinc-400">支持 JPG、PNG、WebP，可一次选择多张</span>
                   </button>
                 ) : (
                   <div className="space-y-2.5">
@@ -521,7 +522,7 @@ export const SourceGallery: React.FC = () => {
                         type="button"
                         onClick={() => createFileInputRef.current?.click()}
                         disabled={isCreatingPerson}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border py-2.5 text-xs text-zinc-500 hover:text-primary"
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border py-2.5 text-xs text-zinc-400 hover:text-primary-soft"
                       >
                         <Plus className="h-3.5 w-3.5" />
                         继续添加照片
@@ -530,7 +531,7 @@ export const SourceGallery: React.FC = () => {
                   </div>
                 )}
               </div>
-              <div className="rounded-xl border border-border bg-surface-3/70 p-3 text-xs text-zinc-500">
+              <div className="rounded-xl border border-border bg-surface-3/70 p-3 text-xs text-zinc-400">
                 优先选择无遮挡正脸，再补充左右微侧与自然表情。创建时会自动分析每张照片的角度与质量。
               </div>
             </div>

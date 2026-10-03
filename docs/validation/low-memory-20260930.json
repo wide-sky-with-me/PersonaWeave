@@ -1,0 +1,368 @@
+{
+  "scope": "Native Windows CUDA fixture inference and read-only saved-record checks; no paid AI calls",
+  "tests": {
+    "backend": 792,
+    "frontend": 205,
+    "post_shutdown_change_portable_docs_boundaries": 74
+  },
+  "synthetic_pasteback": {
+    "opencv": "5.0.0",
+    "canvas": [
+      4000,
+      3000
+    ],
+    "seed": 20260930,
+    "input_sha256": "9aec9dbe1cef476289ba0dc743fd6e0c336697a1d453fe729226c2401494129c",
+    "full_canvas_warp": {
+      "tracked_peak_bytes": 169188766,
+      "seconds": 0.2447859160020016,
+      "output_sha256": "f2b847e571e0fbc758b449abd9fc590888afbb4efb6f88f2987db564b6699896"
+    },
+    "region_warp": {
+      "tracked_peak_bytes": 46624268,
+      "seconds": 0.01004822899994906,
+      "output_sha256": "a9a5415a9167a087fd7a6bce6263a9c1c8be434d047f0235f405a5762cace1fa"
+    },
+    "max_channel_difference": 1,
+    "changed_channel_fraction": 3.952777777777778e-05
+  },
+  "native_cuda": {
+    "mode": "sleep",
+    "provider": "cuda",
+    "ort": "1.23.2",
+    "cpu_count": 24,
+    "startup_seconds": 2.101098399994953,
+    "sessions": {
+      "detector": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "recognizer": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "swapper": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "occluder": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "region_parser": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ]
+    },
+    "runs": [
+      {
+        "seconds": 1.6138532000040868,
+        "cpu_seconds": 1.5,
+        "reference_seconds": 0.6962185000011232,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.49148569999670144,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.2865663999982644,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.0693401000025915,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.3094169999967562,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.12045400000351947,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.11512959999527084,
+            "calls": 1
+          }
+        },
+        "output_sha256": "cdf49dba7030528b358f2321d55af87757ffee91117ef2b936b201b65fdb2d29"
+      },
+      {
+        "seconds": 0.629380400001537,
+        "cpu_seconds": 1.375,
+        "reference_seconds": 0.10159749999729684,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.06515720000606962,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.11275150001165457,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.051364799997827504,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.22318950000044424,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.03952969999954803,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.06042229999729898,
+            "calls": 1
+          }
+        },
+        "output_sha256": "cdf49dba7030528b358f2321d55af87757ffee91117ef2b936b201b65fdb2d29"
+      },
+      {
+        "seconds": 0.6146654999974999,
+        "cpu_seconds": 0.59375,
+        "reference_seconds": 0.09037979999993695,
+        "faces_swapped": 1,
+        "stages": {
+          "detect": {
+            "seconds": 0.05629989999579266,
+            "calls": 3
+          },
+          "recognize": {
+            "seconds": 0.0994742000111728,
+            "calls": 7
+          },
+          "swap": {
+            "seconds": 0.044074699995690025,
+            "calls": 1
+          },
+          "landmark": {
+            "seconds": 0.24252150000393158,
+            "calls": 1
+          },
+          "occlusion": {
+            "seconds": 0.03704889999789884,
+            "calls": 1
+          },
+          "region": {
+            "seconds": 0.062077700000372715,
+            "calls": 1
+          }
+        },
+        "output_sha256": "cdf49dba7030528b358f2321d55af87757ffee91117ef2b936b201b65fdb2d29"
+      }
+    ],
+    "source_code_sha256": {
+      "utils/gpu_helper.py": "f1cbd836ba04aa29463cb0085eef5c6a28e08f3994cc79bfdb562cb18b505e40",
+      "core/pipeline.py": "9599bd9d555397a592d257eb299b13e4bd97b78ffa6a8c58ab88561314bf7ead"
+    },
+    "input_sha256": "232580732652185db824b4810367996c25a28f8c6a6d121bea87c5284f74abf6",
+    "shape": [
+      1600,
+      1067,
+      3
+    ]
+  },
+  "pixels": {
+    "shape": [
+      1600,
+      1067,
+      3
+    ],
+    "max_channel_difference": 1,
+    "changed_channels": 1,
+    "changed_fraction": 1.9525148391127773e-07,
+    "mean_absolute_difference": 1.9525148391127773e-07,
+    "repeat_outputs_identical": true
+  },
+  "saved_records": {
+    "sessions_preserved": 1,
+    "accepted_preserved": 1,
+    "projects_preserved": 1,
+    "images": [
+      {
+        "bytes": 26410975,
+        "sha256": "054de19eb9fa8836b30628890da4d3521b326d342e85a7b6e1b0f475b9d715df",
+        "http_status": 200
+      },
+      {
+        "bytes": 20792858,
+        "sha256": "23ecf416af374364febb54bbe5217d57fa65beee329bf62cfae0e63bf4606442",
+        "http_status": 200
+      },
+      {
+        "bytes": 20687155,
+        "sha256": "749ca15834513be55ff7b0e2cbb937446f344c6dff864191a74bab823db63c79",
+        "http_status": 200
+      },
+      {
+        "bytes": 26759204,
+        "sha256": "90a22ec72af179909029eb7e7df4cf4bed88d4d22a2c07552c1a7726e4bcd455",
+        "http_status": 200
+      },
+      {
+        "bytes": 146115,
+        "sha256": "cbffc4456c30331866eea5b758ff4707c37fc2c49eda9ffa54cb908cf2921d81",
+        "http_status": 200
+      },
+      {
+        "bytes": 144637,
+        "sha256": "0493bbf514e8e41fde382755af637bdff012cd177069cd425c54a9307bb4cec6",
+        "http_status": 200
+      },
+      {
+        "bytes": 150801,
+        "sha256": "de29efd72e71c26797f8289639ad3ac2099e4779d0ca7ed1429e63c74c6cc4ff",
+        "http_status": 200
+      },
+      {
+        "bytes": 148514,
+        "sha256": "7d368043c5eb19d7c2409da7d1c2146e0674b5737381fd2375f1669879fdebd2",
+        "http_status": 200
+      },
+      {
+        "bytes": 151184,
+        "sha256": "2dba938a3c26d5189aafaaee694a00810ab926e65c01399c5e47656361c48470",
+        "http_status": 200
+      },
+      {
+        "bytes": 145989,
+        "sha256": "dcafc3fa1140e01ed080f6eb1047fc8151ecff86c6d50bec78344702f82d9196",
+        "http_status": 200
+      },
+      {
+        "bytes": 144504,
+        "sha256": "c2b7427854fcafe33be6f8717afc3e99d9a1253234dda76f914bb9fc83423e35",
+        "http_status": 200
+      },
+      {
+        "bytes": 148443,
+        "sha256": "ea4c026dfea2564a3a1011b2c01a180134317360d125bb3e9eaa79a240b64c7f",
+        "http_status": 200
+      },
+      {
+        "bytes": 20687155,
+        "sha256": "749ca15834513be55ff7b0e2cbb937446f344c6dff864191a74bab823db63c79",
+        "http_status": 200
+      }
+    ],
+    "ai_requests": 0
+  },
+  "thumbnails": {
+    "previews": [
+      {
+        "bytes": 31009,
+        "size": [
+          384,
+          256
+        ],
+        "seconds": 1.0780111999993096
+      },
+      {
+        "bytes": 30479,
+        "size": [
+          384,
+          256
+        ],
+        "seconds": 0.0636025999992853
+      },
+      {
+        "bytes": 30305,
+        "size": [
+          384,
+          256
+        ],
+        "seconds": 0.06977740000002086
+      },
+      {
+        "bytes": 14021,
+        "size": [
+          314,
+          314
+        ],
+        "seconds": 0.04369130000122823
+      },
+      {
+        "bytes": 13620,
+        "size": [
+          313,
+          314
+        ],
+        "seconds": 0.03577139999833889
+      },
+      {
+        "bytes": 13613,
+        "size": [
+          314,
+          314
+        ],
+        "seconds": 0.048649300006218255
+      },
+      {
+        "bytes": 13976,
+        "size": [
+          314,
+          313
+        ],
+        "seconds": 0.032235899998340756
+      },
+      {
+        "bytes": 13370,
+        "size": [
+          313,
+          313
+        ],
+        "seconds": 0.02992649999941932
+      },
+      {
+        "bytes": 13908,
+        "size": [
+          314,
+          313
+        ],
+        "seconds": 0.04221490000054473
+      },
+      {
+        "bytes": 13640,
+        "size": [
+          313,
+          313
+        ],
+        "seconds": 0.06211720000283094
+      },
+      {
+        "bytes": 14067,
+        "size": [
+          313,
+          313
+        ],
+        "seconds": 0.042513799999142066
+      }
+    ],
+    "ai_requests": 0
+  },
+  "limitations": [
+    "No minimum 8 GiB RAM / 4 GiB VRAM certification",
+    "Full-frame inference memory gate remains conservative",
+    "Shared memory slot is retained during AI network waits",
+    "AI boundary behavior verified offline, no paid model request in this run"
+  ],
+  "shutdown_with_open_sse": {
+    "exited_with_open_sse": true,
+    "seconds": 11.379240900001605,
+    "ai_requests": 0
+  },
+  "delivery": {
+    "file": "PersonaWeave-20260930-Low-Memory-Fix.zip",
+    "bytes": 11752296,
+    "sha256": "53a64467aeaeb005bf92369802132228e7d4205605a4f744d0d6359fd4d988b6",
+    "program_hotfix": "local-queue-low-memory-20260930"
+  }
+}

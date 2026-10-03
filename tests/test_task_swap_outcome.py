@@ -154,7 +154,7 @@ def test_batch_no_op_preserves_diagnostics_without_publishing(monkeypatch, tmp_p
         task_id=task_id, status=TaskStatus.QUEUED, total_images=2, created_at="2026-09-07T00:00:00+00:00"
     )
     manager._requests[task_id] = request
-    asyncio.run(manager._run_batch_task(task_id, request))
+    asyncio.run(manager._run_batch_task(task_id))
 
     assert len(calls) == 2
     recovered = TaskManager(None, output_base_dir=output_dir, db_path=db_path)

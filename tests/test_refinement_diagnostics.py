@@ -1,7 +1,6 @@
 """Both diagnostic CLIs exercise the real new service with an entirely offline gateway."""
 
 import asyncio
-import base64
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +10,7 @@ import numpy as np
 import pytest
 
 from core.ai.configuration import ImageEditConfig
+from core.ai.gateway import AIGateway
 from core.ai.types import ImageEditResult
 from core.refinement.contracts import Diagnosis
 from core.refinement.conversation import ConversationRefinementService
@@ -105,7 +105,7 @@ def test_diagnostics_generate_single_image_with_new_evidence_contract(offline, e
     assert "PRIVATE" not in json.dumps(generated)
     assert Path(generated["candidate_path"]).exists()
     assert len(gateway.edits) == 1 and len(gateway.edits[0][0]) == 1
-    actual_input = decode_image(base64.b64decode(gateway.edits[0][0][0].split(",", 1)[1]))
+    actual_input = decode_image(AIGateway._image_bytes(gateway.edits[0][0][0]))
     np.testing.assert_array_equal(actual_input, image)
     first_messages = json.dumps(gateway.visions[0][0])
     assert "ORIGINAL" in first_messages and "CURRENT" in first_messages and "REFERENCE_BOARD_PERSON_7" in first_messages
@@ -143,7 +143,7 @@ def test_model_comparison_uses_same_baseline_and_only_explicit_aliases(offline):
     assert [call[2]["alias"] for call in gateway.edits] == args.models
     assert len(result["results"]) == 2
     for call in gateway.edits:
-        np.testing.assert_array_equal(decode_image(base64.b64decode(call[0][0].split(",", 1)[1])), image)
+        np.testing.assert_array_equal(decode_image(AIGateway._image_bytes(call[0][0])), image)
     assert (args.output_dir / "model-02.png").is_file()
     assert result["results"][0]["metrics"]["mean_absolute_channel_difference"] == 36
 

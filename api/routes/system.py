@@ -23,6 +23,8 @@ async def health_check(request: Request):
     provider_names = [p if isinstance(p, str) else p[0] for p in providers]
     pipeline_ready = hasattr(request.app.state, "pipeline") and request.app.state.pipeline is not None
     ai_refinement_ready = getattr(request.app.state, "refinement_service", None) is not None
+    pipeline = getattr(request.app.state, "pipeline", None)
+    limiter = getattr(request.app.state, "inference_limiter", None)
     return HealthResponse(
         status="ok",
         app_name="PersonaWeave",
@@ -31,6 +33,8 @@ async def health_check(request: Request):
         providers=provider_names,
         gpu_available="CUDAExecutionProvider" in provider_names,
         ai_refinement_ready=ai_refinement_ready,
+        model_providers=pipeline.execution_providers() if pipeline is not None else {},
+        local_inference=limiter.snapshot() if limiter is not None else None,
     )
 
 

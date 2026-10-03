@@ -1,6 +1,7 @@
 """SQLite session truth and content-addressed images; publication never regenerates pixels."""
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -9,14 +10,17 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
 import cv2
+from PIL import Image
 
 from api.refinement.contracts import ArtifactUnavailable, SessionConflict, SessionNotFound, SessionTurn
 from api.refinement.deletion import staged_deletion
-from core.image_security import MAX_IMAGE_BYTES, decode_image_bytes
+from core.image_security import MAX_SNAPSHOT_BYTES, decode_snapshot_bytes, encode_snapshot_image
+from core.refinement.evidence import DeferredImage
 
 _ID = re.compile(r"^[a-f0-9]{32}$")
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -140,28 +144,28 @@ class RefinementSessionStore:
     @staticmethod
     def _verified_bytes(path, digest):
         try:
-            if path.stat().st_size > MAX_IMAGE_BYTES:
+            if path.stat().st_size > MAX_SNAPSHOT_BYTES:
                 raise ArtifactUnavailable("Artifact exceeds image size limits")
             data = path.read_bytes()
         except OSError as exc:
             raise ArtifactUnavailable("Artifact is unavailable") from exc
         if hashlib.sha256(data).hexdigest() != digest:
             raise ArtifactUnavailable("Artifact digest verification failed")
-        decode_image_bytes(data)
+        # Stored bytes were decoded/validated before their digest was committed. Reading
+        # or accepting the identical digest must not decode a full canvas again: several
+        # thumbnails can otherwise exhaust RAM and make intact history appear missing.
         return data
 
     def snapshot(self, session_id, image):
         """Encode once, validate and atomically retain content-addressed PNG bytes."""
-        ok, buffer = cv2.imencode(".png", image)
-        if not ok:
-            raise ArtifactUnavailable("Image could not be encoded")
-        data = buffer.tobytes()
-        decode_image_bytes(data)
+        data = encode_snapshot_image(image)
+        decode_snapshot_bytes(data)
         digest = hashlib.sha256(data).hexdigest()
         path = self._path(session_id, digest)
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             self._verified_bytes(path, digest)
+            self._write_thumbnail(session_id, digest, image)
             return digest
         temporary = path.with_name(f".{uuid4().hex}.tmp")
         try:
@@ -176,6 +180,7 @@ class RefinementSessionStore:
                 self._verified_bytes(path, digest)
         finally:
             temporary.unlink(missing_ok=True)
+        self._write_thumbnail(session_id, digest, image)
         return digest
 
     def artifact_bytes(self, session_id, digest):
@@ -188,7 +193,76 @@ class RefinementSessionStore:
         return self._verified_bytes(self._path(session_id, digest), digest)
 
     def image(self, session_id, digest):
-        return decode_image_bytes(self.artifact_bytes(session_id, digest))
+        return decode_snapshot_bytes(self.artifact_bytes(session_id, digest))
+
+    def _thumbnail_path(self, session_id, digest):
+        path = self._path(session_id, digest).with_suffix(".preview")
+        if not path.resolve().is_relative_to(self.artifact_root):
+            raise ArtifactUnavailable("Preview is outside the managed root")
+        return path
+
+    def _write_thumbnail(self, session_id, digest, image):
+        """Cache a derived 384px JPEG; full-resolution evidence/acceptance stays untouched."""
+        scale = min(1.0, 384 / max(image.shape[:2]))
+        small = cv2.resize(
+            image,
+            (max(1, round(image.shape[1] * scale)), max(1, round(image.shape[0] * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        ok, encoded = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise ValueError("Could not encode refinement preview")
+        data = encoded.tobytes()
+        path = self._thumbnail_path(session_id, digest)
+        temporary = path.with_name(f".{uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(hashlib.sha256(data).hexdigest().encode("ascii") + data)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return data
+
+    def cached_thumbnail(self, session_id, digest):
+        """Verify ownership and source integrity in bounded chunks, then read the small cache."""
+        with self._connect() as conn:
+            self._session(conn, session_id)
+            if not conn.execute(
+                "SELECT 1 FROM artifacts WHERE session_id=? AND digest=?", (session_id, digest)
+            ).fetchone():
+                raise SessionNotFound("Artifact not found")
+        path = self._path(session_id, digest)
+        checksum = hashlib.sha256()
+        try:
+            with path.open("rb") as source:
+                if os.fstat(source.fileno()).st_size > MAX_SNAPSHOT_BYTES:
+                    raise ArtifactUnavailable("Artifact exceeds image size limits")
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    checksum.update(chunk)
+        except OSError as exc:
+            raise ArtifactUnavailable("Artifact is unavailable") from exc
+        if checksum.hexdigest() != digest:
+            raise ArtifactUnavailable("Artifact digest verification failed")
+        try:
+            with self._thumbnail_path(session_id, digest).open("rb") as preview:
+                data = preview.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024 or hashlib.sha256(data[64:]).hexdigest().encode("ascii") != data[:64]:
+                return None
+            return data[64:]
+        except FileNotFoundError:
+            return None
+
+    def thumbnail_bytes(self, session_id, digest):
+        """Rebuild a missing old-session/cache preview inside the shared memory queue."""
+        cached = self.cached_thumbnail(session_id, digest)
+        if cached is not None:
+            return cached
+        return self._write_thumbnail(session_id, digest, self.image(session_id, digest))
+
+    def evidence(self, session_id, digest):
+        """Read only a verified PNG header now; decode pixels when a stage needs them."""
+        with Image.open(io.BytesIO(self.artifact_bytes(session_id, digest))) as image:
+            width, height = image.size
+        return DeferredImage((height, width, 3), partial(self.image, session_id, digest))
 
     def find_creation(self, request_id, request_hash):
         with self._connect() as conn:
@@ -266,9 +340,11 @@ class RefinementSessionStore:
             people[-1]["reference_urls"] = [
                 self.artifact_url(session_id, digest) for digest in person["reference_digests"]
             ]
+            people[-1]["reference_thumbnail_urls"] = [url + "/thumbnail" for url in people[-1]["reference_urls"]]
         for version in versions:
             version.pop("session_id")
             version["image_url"] = self.artifact_url(session_id, version["digest"])
+            version["thumbnail_url"] = version["image_url"] + "/thumbnail"
         return {
             "id": row["id"],
             "target_id": row["target_id"],

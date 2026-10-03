@@ -164,3 +164,118 @@ it('keeps a conflicted editor intact and can save it as a separate project', asy
   );
   stop();
 });
+
+it('releases removed/replaced image cache entries after saving while reusing current media', async () => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  const s = await setup();
+  s.project.setState({ id: 'project', revision: 1, title: 'Editor', status: 'idle' });
+  vi.mocked(s.apiClient.post).mockImplementation(async () => ({ data: { data: [{ $asset: 'a'.repeat(64) }] } }) as any);
+  vi.mocked(s.apiClient.put).mockResolvedValue({ data: { data: { revision: 2 } } });
+  const stop = s.controller.startProjectAutosave();
+  const oldImage = 'data:image/png;base64,old-photo';
+  const newImage = 'data:image/png;base64,new-photo';
+  s.studio.getState().addTargetImages([{ id: 't', name: 'Photo', url: oldImage, status: 'IDLE' }]);
+  await s.controller.saveProject();
+  s.studio.getState().updateTargetImageById('t', { name: 'Renamed' });
+  await s.controller.saveProject();
+  expect(s.apiClient.post).toHaveBeenCalledTimes(1);
+  s.studio.getState().updateTargetImageById('t', { url: newImage });
+  await s.controller.saveProject();
+  expect(s.apiClient.post).toHaveBeenCalledTimes(2);
+  s.studio.getState().updateTargetImageById('t', { url: oldImage });
+  await s.controller.saveProject();
+  expect(s.apiClient.post).toHaveBeenCalledTimes(3);
+  s.studio.getState().removeTargetImage(0);
+  await s.controller.saveProject();
+  s.studio.getState().addTargetImages([{ id: 'again', name: 'Photo', url: oldImage, status: 'IDLE' }]);
+  await s.controller.saveProject();
+  expect(s.apiClient.post).toHaveBeenCalledTimes(4);
+  stop();
+});
+
+it('prunes against the final serialized save when the editor changes during an upload', async () => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  const s = await setup();
+  s.project.setState({ id: 'project', revision: 1, title: 'Editor', status: 'idle' });
+  let finishUpload!: (value: any) => void;
+  vi.mocked(s.apiClient.post).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishUpload = resolve;
+      }),
+  );
+  vi.mocked(s.apiClient.post).mockResolvedValue({ data: { data: [{ $asset: 'b'.repeat(64) }] } });
+  vi.mocked(s.apiClient.put).mockResolvedValue({ data: { data: { revision: 2 } } });
+  const stop = s.controller.startProjectAutosave();
+  s.studio.getState().addTargetImages([{ id: 't', name: 'Photo', url: 'data:image/png;base64,old', status: 'IDLE' }]);
+  const saving = s.controller.saveProject();
+  await vi.waitFor(() => expect(s.apiClient.post).toHaveBeenCalledTimes(1));
+  s.studio.getState().updateTargetImageById('t', { url: 'data:image/png;base64,new' });
+  finishUpload({ data: { data: [{ $asset: 'a'.repeat(64) }] } });
+  await saving;
+  expect(s.apiClient.put).toHaveBeenCalledTimes(2);
+  expect(s.apiClient.put).toHaveBeenLastCalledWith(
+    '/api/v1/projects/project',
+    expect.objectContaining({
+      document: expect.objectContaining({
+        studio: expect.objectContaining({
+          targetImages: [expect.objectContaining({ url: { $asset: 'b'.repeat(64) } })],
+        }),
+      }),
+    }),
+  );
+  s.studio.getState().updateTargetImageById('t', { name: 'Rename current photo' });
+  await s.controller.saveProject();
+  expect(s.apiClient.post).toHaveBeenCalledTimes(2);
+  stop();
+});
+
+it('releases saved inline photographs only after the committed project owns them, preserving brush data', async () => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  localStorage.clear();
+  sessionStorage.clear();
+  const s = await setup();
+  const id = 'a'.repeat(32),
+    digest = 'b'.repeat(64);
+  s.project.setState({ id, revision: 1, title: 'Saved', status: 'idle' });
+  vi.mocked(s.apiClient.post).mockResolvedValue({ data: { data: [{ $asset: digest }] } });
+  let commit!: (value: any) => void;
+  vi.mocked(s.apiClient.put).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        commit = resolve;
+      }),
+  );
+  const stop = s.controller.startProjectAutosave();
+  const image = 'data:image/png;base64,photo',
+    mask = 'data:image/png;base64,mask';
+  s.studio.getState().addTargetImages([
+    {
+      id: 't',
+      name: 'Photo',
+      url: image,
+      faces: [],
+      status: 'SUCCESS',
+      refinedUrl: image,
+      manualMask: { dataUrl: mask, undoStack: [], redoStack: [] },
+    },
+  ]);
+  const saving = s.controller.saveProject();
+  await vi.waitFor(() => expect(s.apiClient.put).toHaveBeenCalled());
+  expect(s.studio.getState().targetImages[0].url).toBe(image);
+  commit({ data: { data: { revision: 2 } } });
+  await saving;
+  expect(s.studio.getState().targetImages[0]).toMatchObject({
+    url: `/api/v1/files/projects/${id}/${digest}`,
+    refinedUrl: `/api/v1/files/projects/${id}/${digest}`,
+    manualMask: { dataUrl: mask },
+  });
+  stop();
+});

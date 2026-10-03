@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from utils.gpu_helper import get_optimal_providers
+from utils.gpu_helper import get_optimal_providers, local_session_options
 
 
 class CodeFormerRestorer:
@@ -36,7 +36,7 @@ class CodeFormerRestorer:
             raise FileNotFoundError(f"CodeFormer model not found at: {model_path}")
         if providers is None:
             providers = get_optimal_providers()
-        self.session = ort.InferenceSession(model_path, providers=providers)
+        self.session = ort.InferenceSession(model_path, providers=providers, sess_options=local_session_options())
 
     def restore(self, crop: np.ndarray, fidelity_weight: float = 0.75) -> np.ndarray:
         """Restore a BGR face crop of any size; resampled to CodeFormer's fixed 512px input."""

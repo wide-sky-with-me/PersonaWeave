@@ -1,6 +1,9 @@
 """Bounded in-memory evidence construction; never fetch paths, URLs or change person IDs."""
 
+import asyncio
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
@@ -11,6 +14,61 @@ from core.refinement.contracts import MAX_LOCATOR_CHARS, MAX_PEOPLE
 MAX_REFERENCES = 8
 MAX_HISTORY_MESSAGES = 8
 MAX_HISTORY_CHARS = 12000
+
+
+async def image_work(function, *args):
+    """Keep disk/decode work off the event loop; cancellation drains its native worker.
+
+    The API owns the shared memory lease. Releasing it while a cancelled decode still
+    runs would allow the next image-heavy task to overlap that allocation.
+    """
+    worker = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break  # Consume the failure while preserving the caller's cancellation.
+        if not worker.cancelled():
+            worker.exception()
+        raise
+
+
+@dataclass(frozen=True)
+class DeferredImage:
+    """Internal immutable evidence descriptor; the owning store verifies each read.
+
+    This is not a URL loader. Only trusted application code supplies the callable;
+    dimensions come from the digest-checked PNG header and are checked again on load.
+    """
+
+    shape: tuple[int, int, int]
+    loader: Callable[[], np.ndarray]
+
+    def load(self) -> np.ndarray:
+        image = validate_image(self.loader())
+        if image.shape != self.shape:
+            raise ValueError("Evidence dimensions changed after snapshot validation")
+        return image
+
+
+def resolve_image(image: np.ndarray | DeferredImage) -> np.ndarray:
+    """Decode one deferred snapshot on demand, or validate an already decoded image."""
+    return image.load() if isinstance(image, DeferredImage) else validate_image(image)
+
+
+def validate_evidence(image: np.ndarray | DeferredImage):
+    """Validate descriptors without eagerly decoding all full-resolution references."""
+    if isinstance(image, DeferredImage):
+        h, w, c = image.shape
+        if h <= 0 or w <= 0 or c != 3 or h * w > MAX_IMAGE_PIXELS:
+            raise ValueError("Evidence image dimensions exceed the supported safety bounds")
+    else:
+        validate_image(image)
 
 
 def validate_image(image: np.ndarray) -> np.ndarray:
@@ -83,7 +141,7 @@ def prepare_people(people: list[dict], references: dict[int, list[np.ndarray]]) 
         if not isinstance(refs, list) or len(refs) > MAX_REFERENCES:
             raise ValueError("Each person supports at most eight reference images")
         for reference in refs:
-            validate_image(reference)
+            validate_evidence(reference)
         result.append(
             {
                 "person_id": person_id,
@@ -108,8 +166,9 @@ def build_reference_board(person_id: int, images: list[np.ndarray]) -> np.ndarra
     draw = ImageDraw.Draw(board)
     draw.text((12, 10), f"TARGET IDENTITY: PERSON {person_id}", fill="white")
     for index, image in enumerate(images):
-        validate_image(image)
+        image = resolve_image(image)
         tile = ImageOps.contain(Image.fromarray(image[:, :, ::-1]), (304, 312), Image.Resampling.LANCZOS)
+        del image  # Only the small tile survives while the next reference is decoded.
         left, top = (index % columns) * 320, 32 + (index // columns) * 352
         draw.text((left + 8, top + 6), f"PERSON {person_id} / REFERENCE {index + 1}", fill="white")
         board.paste(tile, (left + (320 - tile.width) // 2, top + 32 + (312 - tile.height) // 2))

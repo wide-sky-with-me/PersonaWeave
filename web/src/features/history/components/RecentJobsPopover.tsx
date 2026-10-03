@@ -64,7 +64,7 @@ export const RecentJobsPopover: React.FC = () => {
           <div className="flex items-start justify-between gap-2">
             <div>
               <h2 className="text-sm font-semibold">任务历史</h2>
-              <p className="mt-0.5 text-2xs text-zinc-500">服务端持久化记录；打开时再读取完整图片结果</p>
+              <p className="mt-0.5 text-2xs text-zinc-400">服务端持久化记录；打开时再读取完整图片结果</p>
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -97,14 +97,14 @@ export const RecentJobsPopover: React.FC = () => {
           )}
           <div className="mt-3 max-h-[28rem] space-y-2 overflow-y-auto">
             {history.length === 0 && !historyQuery.isLoading && (
-              <p className="rounded-lg border border-dashed border-border p-5 text-center text-xs text-zinc-500">
+              <p className="rounded-lg border border-dashed border-border p-5 text-center text-xs text-zinc-400">
                 暂无任务记录
               </p>
             )}
             {historyQuery.isLoading && !history.length && (
               <p
                 role="status"
-                className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-5 text-xs text-zinc-500"
+                className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border p-5 text-xs text-zinc-400"
               >
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 正在读取任务历史…
@@ -144,7 +144,7 @@ export const RecentJobsPopover: React.FC = () => {
                   <div className="mt-2 flex justify-end gap-1">
                     {!active && (
                       <button
-                        className="btn btn-ghost btn-sm text-zinc-500 hover:text-err"
+                        className="btn btn-ghost btn-sm text-zinc-400 hover:text-err"
                         disabled={deleteMutation.isPending}
                         onClick={() => requestDelete(entry.taskId)}
                         aria-label={`删除任务 ${entry.taskId}`}

@@ -7,7 +7,14 @@ import { sessionApi } from '../sessionApi';
 import { useWorkbenchStore } from '../workbenchStore';
 import type { SessionDetail, SessionTurn } from '../sessionTypes';
 import { SessionWorkbench } from './SessionWorkbench';
+import { saveProject } from '@/features/projects/projectController';
 import { HistoryWorkspace } from '@/features/history/components/HistoryWorkspace';
+
+vi.mock('@/features/projects/projectController', () => ({
+  saveProject: vi.fn().mockResolvedValue(undefined),
+  restoreProject: vi.fn(),
+  newProject: vi.fn(),
+}));
 
 const toast = vi.hoisted(() => vi.fn());
 vi.mock('@/components/ui/ToastProvider', () => ({ useToast: () => toast }));
@@ -278,7 +285,9 @@ describe('server-backed conversation workbench', () => {
     for (const button of screen
       .getAllByRole('button')
       .filter((button) => /接受当前|结合分析与意见生成|只讨论/.test(button.textContent ?? '')))
-      expect(button).toHaveStyle({ minHeight: '44px' });
+      // 触摸目标由 min-h-touch 工具类保证（tailwind.config.ts 的 minHeight.touch = 44px），不再用内联样式。
+      // jsdom 不加载 Tailwind 产物，读不到计算后的 44px，因此这里断言类名；实际取值由配置单点保证。
+      expect(button).toHaveClass('min-h-touch');
     expect(screen.getByRole('combobox', { name: '画布对比方式' })).toHaveValue('none');
     expect(screen.getByTestId('refinement-composer')).toHaveClass('overflow-y-auto', 'shrink-0');
     expect(screen.getByTestId('refinement-conversation-scroll')).toHaveClass('overflow-y-auto', 'min-h-0');
@@ -292,6 +301,7 @@ describe('server-backed conversation workbench', () => {
     expect(screen.getByTestId('base-version')).toHaveTextContent('V2');
     fireEvent.click(screen.getByRole('button', { name: '接受当前 V2' }));
     await waitFor(() => expect(sessionApi.accept).toHaveBeenCalledWith('s1', 5, 'v2', 'd2'));
+    await waitFor(() => expect(saveProject).toHaveBeenCalled());
     expect(useStudioStore.getState().targetImages).toEqual([]);
   });
   it('syncs an accepted candidate to its linked workspace result without changing the local baseline', async () => {
@@ -539,4 +549,20 @@ describe('server-backed conversation workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试同一请求' }));
     await waitFor(() => expect(sessionApi.turn).toHaveBeenCalledWith('s1', request));
   });
+});
+
+it('uses small preview URLs while reference links and the current canvas retain full-resolution images', async () => {
+  const detail = fixture();
+  detail.people[0].reference_thumbnail_urls = ['/board/thumbnail'];
+  detail.versions.forEach((version) => {
+    version.thumbnail_url = version.image_url + '/thumbnail';
+  });
+  vi.mocked(sessionApi.get).mockResolvedValue(detail);
+  const { container } = mount();
+  await screen.findByText('合影精修', { selector: 'h1' });
+  const reference = screen.getByAltText('P2 参考板 1');
+  expect(reference).toHaveAttribute('src', '/board/thumbnail');
+  expect(reference.closest('a')).toHaveAttribute('href', '/board');
+  expect(container.querySelectorAll('button img[src$="/thumbnail"]')).toHaveLength(3);
+  expect(container.querySelector('img[src="/baseline"]')).not.toBeNull();
 });

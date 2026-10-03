@@ -5,8 +5,10 @@ and webhook callbacks.
 """
 
 import asyncio
+import hashlib
 import os
 import shutil
+import sqlite3
 import statistics
 import time
 import uuid
@@ -28,6 +30,7 @@ from api.schemas import (
 from api.tasks.persistence import SQLiteTaskStore, default_task_db_path
 from api.tasks.sources import build_source_references, resolve_source_locations
 from core.image_security import (
+    encode_snapshot_image,
     pin_request_to_addresses,
     validate_public_url,
 )
@@ -73,6 +76,7 @@ class TaskManager:
         self.tasks: dict[str, TaskDetailData] = {}
         self._requests: dict[str, BatchTaskCreateRequest] = {}
         self._persisted_requests: set[str] = set()
+        self._inline_failed_originals: set[str] = set()
         self._background_tasks: set[asyncio.Task] = set()
         self._batch_queue = asyncio.Semaphore(1)
         os.makedirs(self.output_base_dir, exist_ok=True)
@@ -88,23 +92,27 @@ class TaskManager:
         self._store.save(
             "batch",
             task_id,
-            self.tasks[task_id].model_dump(mode="json"),
+            self.get_task(task_id).model_dump(mode="json"),
             request.model_dump(mode="json") if request is not None else None,
         )
         if request is not None:
             self._persisted_requests.add(task_id)
 
     def _load_persisted_tasks(self):
-        for state, request_data in self._store.load("batch"):
+        for state in self._store.iter_states("batch"):
             try:
                 task = TaskDetailData.model_validate(state)
-                request = BatchTaskCreateRequest.model_validate(request_data) if request_data else None
             except (TypeError, ValueError):
                 continue
             self.tasks[task.task_id] = task
-            if request is not None:
-                self._requests[task.task_id] = request
-                self._persisted_requests.add(task.task_id)
+            self._persisted_requests.add(task.task_id)
+            # Old failures can have no request snapshot and their only input in
+            # original_url. Keep those bytes in SQLite, hydrating on explicit detail
+            # reads rather than retaining all historical failures in RAM.
+            for result in task.results:
+                if result.status == "FAILED" and result.original_url.startswith("data:"):
+                    result.original_url = ""
+                    self._inline_failed_originals.add(task.task_id)
             if task.status in {TaskStatus.QUEUED, TaskStatus.PROCESSING}:
                 task.status = TaskStatus.FAILED
                 task.waiting_reason = None
@@ -145,9 +153,11 @@ class TaskManager:
         self.tasks[task_id] = task_data
         self._requests[task_id] = req
         self._persist(task_id)
+        self._requests.pop(task_id, None)
 
         # Run task in background asyncio loop
-        t = asyncio.create_task(self._run_batch_task(task_id, req))
+        # Queued jobs keep only an ID; their full image request is already durable.
+        t = asyncio.create_task(self._run_batch_task(task_id))
         self._background_tasks.add(t)
         t.add_done_callback(self._background_tasks.discard)
         return task_id, estimated_seconds
@@ -165,13 +175,30 @@ class TaskManager:
         return round(statistics.median(recent_costs) * total_images / 1000, 2)
 
     def get_request_snapshot(self, task_id: str) -> BatchTaskCreateRequest | None:
-        """Return a detached execution recipe for explicit legacy project recovery only."""
+        """Read a detached recipe on demand without retaining historical images."""
         request = self._requests.get(task_id)
-        return request.model_copy(deep=True) if request else None
+        if request is not None:
+            return request.model_copy(deep=True)
+        if task_id not in self.tasks:
+            return None
+        data = self._store.load_request("batch", task_id)
+        try:
+            return BatchTaskCreateRequest.model_validate(data) if data is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def get_task(self, task_id: str) -> TaskDetailData | None:
-        """Retrieves task state by ID."""
-        return self.tasks.get(task_id)
+        """Return current state, hydrating legacy inline inputs only on detail reads."""
+        task = self.tasks.get(task_id)
+        if task is None or task_id not in self._inline_failed_originals:
+            return task
+        state = self._store.load_state("batch", task_id)
+        snapshot = task.model_copy(deep=True)
+        saved_results = (state or {}).get("results", [])
+        for result, saved in zip(snapshot.results, saved_results, strict=False):
+            if result.status == "FAILED" and not result.original_url:
+                result.original_url = saved.get("original_url", "")
+        return snapshot
 
     def delete_task(self, task_id: str) -> bool:
         """Delete a terminal task and quarantine its artifacts before DB removal.
@@ -209,6 +236,7 @@ class TaskManager:
         self.tasks.pop(task_id, None)
         self._requests.pop(task_id, None)
         self._persisted_requests.discard(task_id)
+        self._inline_failed_originals.discard(task_id)
         if quarantined is not None:
             if quarantined.is_symlink() or quarantined.is_file():
                 quarantined.unlink(missing_ok=True)
@@ -220,11 +248,12 @@ class TaskManager:
         """List complete recent tasks for backward-compatible API consumers."""
         all_tasks = list(self.tasks.values())
         all_tasks.reverse()
-        return all_tasks[:limit]
+        return [self.get_task(task.task_id) for task in all_tasks[:limit]]
 
     def list_task_summaries(self, limit: int = 50) -> list[BatchTaskSummary]:
         """List recent task metadata without returning image URLs or embedded payloads."""
-        all_tasks = self.list_tasks(limit)
+        # Summary reads must never hydrate legacy inline originals.
+        all_tasks = list(reversed(self.tasks.values()))[:limit]
         return [
             BatchTaskSummary(
                 task_id=task.task_id,
@@ -245,10 +274,45 @@ class TaskManager:
             for task in all_tasks
         ]
 
-    async def _run_batch_task(self, task_id: str, req: BatchTaskCreateRequest):
+    async def _run_batch_task(self, task_id: str):
         """Keep later batches queued without preparing their reference images in RAM."""
-        async with self._batch_queue:
-            await self._execute_batch_task(task_id, req)
+        try:
+            async with self._batch_queue:
+                req = self.get_request_snapshot(task_id)
+                if req is None:
+                    task = self.tasks[task_id]
+                    task.status = TaskStatus.FAILED
+                    task.error = "Batch request is unavailable; submit the task again"
+                    task.completed_at = datetime.now(UTC).isoformat()
+                    self._persist(task_id)
+                    return
+                self._requests[task_id] = req
+                try:
+                    await self._execute_batch_task(task_id, req)
+                finally:
+                    # SQLite keeps the immutable recipe for recovery and refinement.
+                    # Retaining it here would keep every completed batch's base64 in RAM.
+                    self._requests.pop(task_id, None)
+        except (Exception, asyncio.CancelledError) as exc:
+            # Loading the saved recipe and initial persistence happen outside the
+            # execution handler. A failure there must not leave a dead QUEUED job.
+            task = self.tasks[task_id]
+            if task.status in {TaskStatus.QUEUED, TaskStatus.PROCESSING}:
+                task.status = TaskStatus.FAILED
+                task.waiting_reason = None
+                task.error = f"批任务执行中断（{type(exc).__name__}），已保留完成结果，请检查后重新提交。"
+                task.completed_at = datetime.now(UTC).isoformat()
+                task.processed_images = len(task.results)
+                task.success_count = sum(item.status in {"SUCCESS", "PARTIAL"} for item in task.results)
+                task.failure_count = sum(item.status == "FAILED" for item in task.results)
+                task.has_partial_failure = bool(task.success_count)
+                try:
+                    self._persist(task_id)
+                except (OSError, sqlite3.Error):
+                    # Keep the live terminal state even if storage itself is unavailable.
+                    print("[PersonaWeave] Could not persist interrupted batch task; check local storage.")
+            if isinstance(exc, asyncio.CancelledError):
+                raise
 
     async def _execute_batch_task(self, task_id: str, req: BatchTaskCreateRequest):
         """Worker executing the batch task asynchronously."""
@@ -265,6 +329,20 @@ class TaskManager:
         task_output_dir = os.path.join(self.output_base_dir, task_id)
         os.makedirs(task_output_dir, exist_ok=True)
 
+        def snapshot_reference(image):
+            # Freeze once per distinct decoded reference, not once per target/AI round.
+            data = encode_snapshot_image(image)
+            digest = hashlib.sha256(data).hexdigest()
+            directory = Path(task_output_dir) / "references"
+            directory.mkdir(exist_ok=True)
+            path = directory / f"{digest}.png"
+            if not path.exists():
+                temporary = path.with_suffix(".tmp")
+                temporary.write_bytes(data)
+                temporary.replace(path)
+            return f"/api/v1/files/{task_id}/references/{digest}.png"
+
+        snapshot = snapshot_reference if req.ai_refinement else None
         try:
             # 1. Load source references and build identity gallery
             # Local model calls are dispatched only after acquiring the shared limiter.
@@ -287,7 +365,7 @@ class TaskManager:
                         m_locations = resolve_source_locations(
                             m_item.source_identity_id, m_item.source_asset_ids, m_item.source_manual_images
                         )
-                        m_refs = build_source_references(self.pipeline, m_locations)
+                        m_refs = build_source_references(self.pipeline, m_locations, snapshot)
                         m_gal = (
                             self.pipeline.recognizer.build_gallery_embedding(
                                 [r["embedding"] for r in m_refs],
@@ -316,7 +394,7 @@ class TaskManager:
                     req.source_identity_id, req.source_asset_ids, req.source_manual_images
                 )
                 if source_locations:
-                    source_refs = build_source_references(self.pipeline, source_locations)
+                    source_refs = build_source_references(self.pipeline, source_locations, snapshot)
                     if source_refs:
                         gallery_emb = self.pipeline.recognizer.build_gallery_embedding(
                             [r["embedding"] for r in source_refs],
@@ -404,9 +482,11 @@ class TaskManager:
                         detail = describe_skipped_people(swap_res.person_outcomes)
                         # A completed no-op still has real detection/matching diagnostics. Keep
                         # them on the failed result without publishing an unchanged canvas.
+                        # Inline originals remain in the immutable SQLite request for explicit
+                        # project recovery; failed-result metadata must not retain another copy.
                         img_res = ImageSwapResult(
                             client_target_id=batch_image.client_target_id,
-                            original_url=img_url,
+                            original_url="" if img_url.startswith("data:") else img_url,
                             status="FAILED",
                             faces_detected=swap_res.faces_detected,
                             faces_swapped=swap_res.faces_swapped,
@@ -448,7 +528,7 @@ class TaskManager:
                     cost_ms = round((time.time() - t_start) * 1000, 2)
                     img_res = ImageSwapResult(
                         client_target_id=batch_image.client_target_id,
-                        original_url=img_url,
+                        original_url="" if img_url.startswith("data:") else img_url,
                         status="FAILED",
                         cost_ms=cost_ms,
                         error=str(e),

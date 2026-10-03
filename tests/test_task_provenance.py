@@ -22,7 +22,7 @@ def result(status="SUCCESS", **changes):
 
 def manager(*results):
     batch = SimpleNamespace(task_id="batch", results=list(results))
-    return SimpleNamespace(tasks={"batch": batch}, _requests={})
+    return SimpleNamespace(tasks={"batch": batch}, get_request_snapshot=lambda task_id: None)
 
 
 @pytest.mark.parametrize("status", ["SUCCESS", "PARTIAL"])

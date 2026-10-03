@@ -35,20 +35,32 @@ export interface SwapIdentityContext {
   targetImages: TargetImageItem[];
   personMappings: PersonMappingItem[];
 }
+function isPersonIndex(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+/** Validate restored/runtime data as well as typed callers; never coerce null into an identity. */
+export function hasValidPersonIndices(mapping: PersonMappingItem) {
+  return isPersonIndex(mapping.person_index) && isPersonIndex(mapping.target_reference_person_index);
+}
 function listTargetPeople(targetImages: TargetImageItem[]) {
   const people = new Map<
     TargetPersonId,
     { targetPersonId: TargetPersonId; targetReferenceUrl: string; targetReferencePersonIndex: number }
   >();
-  for (const image of targetImages)
-    for (const face of image.faces ?? []) {
-      if (face.global_person_id === undefined || people.has(face.global_person_id)) continue;
+  for (const image of targetImages) {
+    if (!image.faces) return [];
+    for (const face of image.faces) {
+      // detect-faces explicitly returns null. Grouping those nulls collapses a
+      // multi-person photo into a false one-person automatic mapping.
+      if (!isPersonIndex(face.global_person_id) || !isPersonIndex(face.index)) return [];
+      if (people.has(face.global_person_id)) continue;
       people.set(face.global_person_id, {
         targetPersonId: face.global_person_id,
         targetReferenceUrl: image.base64Data || image.url,
         targetReferencePersonIndex: face.index,
       });
     }
+  }
   return [...people.values()].sort((a, b) => a.targetPersonId - b.targetPersonId);
 }
 function mappingSource(person: SourcePerson, references: SourceReference[]) {
@@ -87,6 +99,8 @@ export function resolveExecutionMappings(
 ): MappingPrerequisite {
   const applyMode = (mappings: PersonMappingItem[]) =>
     mappings.map((mapping) => ({ ...mapping, source_mode: sourceMode }));
+  if (context.personMappings.some((mapping) => !hasValidPersonIndices(mapping)))
+    return { ready: false, message: '人物映射编号无效，请重新绑定目标人物' };
   if (context.personMappings.length > 0)
     return { ready: true, mappings: applyMode(context.personMappings), autoCreated: false };
   const automatic = singlePair(context, sourceMode);

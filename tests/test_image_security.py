@@ -12,7 +12,31 @@ import pytest
 from api.media import TrustedImagePath, decode_manual_mask, load_image_from_source
 from api.schemas import BatchTaskCreateRequest, ImageSwapResult, TaskDetailData, TaskStatus
 from api.tasks.batch import TaskManager
-from core.image_security import decode_data_uri, resolve_managed_url, validate_public_url
+from core.image_security import decode_data_uri, decode_image_bytes, resolve_managed_url, validate_public_url
+
+
+def test_camera_mpo_jpeg_decodes_only_the_primary_image(camera_mpo_bytes):
+    source = "data:image/jpeg;base64," + base64.b64encode(camera_mpo_bytes).decode()
+    image = decode_data_uri(source)
+    assert image.shape == (32, 48, 3)
+    assert image[16, 24, 2] > 240 and image[16, 24, 0] < 10
+    np.testing.assert_array_equal(image, cv2.imdecode(np.frombuffer(camera_mpo_bytes, np.uint8), cv2.IMREAD_COLOR))
+
+
+def test_camera_mpo_does_not_bypass_image_limits(camera_mpo_bytes, monkeypatch):
+    monkeypatch.setattr("core.image_security.MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(ValueError, match="pixel limit"):
+        decode_image_bytes(camera_mpo_bytes)
+    monkeypatch.setattr("core.image_security.MAX_IMAGE_BYTES", 10)
+    with pytest.raises(ValueError, match="byte limit"):
+        decode_image_bytes(camera_mpo_bytes)
+
+
+def test_other_image_formats_are_still_rejected():
+    ok, image = cv2.imencode(".bmp", np.zeros((2, 3, 3), dtype=np.uint8))
+    assert ok
+    with pytest.raises(ValueError, match="format is not allowed"):
+        decode_image_bytes(image.tobytes())
 
 
 def _png_data_uri() -> str:

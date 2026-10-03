@@ -6,6 +6,7 @@ import { useProjectStore } from './projectStore';
 import {
   freezeDocument,
   hydrateDocument,
+  releaseSavedPhotos,
   sameStudio,
   studioKeys,
   studioSnapshot,
@@ -92,8 +93,12 @@ export async function saveProject(): Promise<void> {
         const snapshot = capture();
         const title = state.title || snapshot.studio.targetImages[0]?.name || '人物编辑工程';
         const id = state.id!;
+        const usedAssets = new Set<string>();
         const upload: Upload = (source) => {
+          const owned = source.image?.match(/^\/api\/v1\/files\/projects\/([a-f0-9]{32})\/([a-f0-9]{64})$/);
+          if (owned && owned[1] === id) return Promise.resolve([{ $asset: owned[2] }]);
           const key = id + JSON.stringify(source);
+          usedAssets.add(key);
           if (!assets.has(key))
             assets.set(
               key,
@@ -107,7 +112,7 @@ export async function saveProject(): Promise<void> {
             );
           return assets.get(key)!;
         };
-        const document = await freezeDocument(snapshot, upload);
+        const document = (await freezeDocument(snapshot, upload)) as ProjectDocument;
         const taskId = useStudioStore.getState().activeTaskId;
         const { data } = await apiClient.put(`/api/v1/projects/${id}`, {
           expected_revision: state.revision,
@@ -119,6 +124,28 @@ export async function saveProject(): Promise<void> {
           ),
         });
         useProjectStore.setState({ revision: data.data.revision, title });
+        const currentStudio = useStudioStore.getState();
+        if (
+          !currentStudio.isProcessing &&
+          currentStudio.targetImages.every((t) => t.faces !== undefined) &&
+          studioKeys.every((key) => snapshot.studio[key] === currentStudio[key])
+        ) {
+          // Commit succeeded; swap inline photo copies for our immutable disk-backed URLs.
+          // Never replace input edited during the upload, or recursively schedule autosave.
+          const wasSuspended = suspended;
+          suspended = true;
+          try {
+            const compact = releaseSavedPhotos(snapshot.studio, document.studio, id);
+            if (compact !== snapshot.studio) useStudioStore.setState(compact);
+          } finally {
+            suspended = wasSuspended;
+          }
+          assets.clear();
+        }
+
+        // Keys can contain full data URIs. Keep deduplication for this saved editor,
+        // but release removed photos and superseded mask frames after a successful save.
+        for (const key of assets.keys()) if (!usedAssets.has(key)) assets.delete(key);
       }
       useProjectStore.setState({ status: 'idle' });
     } catch (error) {
@@ -180,6 +207,7 @@ async function apply(project: ProjectDetail) {
     warnings: document.warnings,
     status: 'idle',
     error: null,
+    workspaceRevision: useProjectStore.getState().workspaceRevision + 1,
   });
   localStorage.setItem(POINTER, project.id);
   assets.clear();
@@ -221,7 +249,15 @@ export async function newProject() {
     useStudioStore.setState(Object.fromEntries(studioKeys.map((key) => [key, useStudioStore.getInitialState()[key]])));
     useStudioStore.setState({ activeTaskId: null, isProcessing: false, batchProgress: 0 });
     useWorkbenchStore.setState({ view: 'prepare', sessionId: null, targetId: null });
-    useProjectStore.setState({ id: null, revision: 0, title: '', warnings: [], status: 'idle', error: null });
+    useProjectStore.setState({
+      id: null,
+      revision: 0,
+      title: '',
+      warnings: [],
+      status: 'idle',
+      error: null,
+      workspaceRevision: useProjectStore.getState().workspaceRevision + 1,
+    });
     localStorage.removeItem(POINTER);
     assets.clear();
     dirty = false;

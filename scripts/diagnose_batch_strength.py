@@ -55,7 +55,7 @@ def source_reference_board(references: list[dict], selection: dict) -> np.ndarra
         raise ValueError("Source gallery diagnostic weights do not match the reference count")
     panels = []
     for index, ref in enumerate(references, 1):
-        image, face = ref["image"], ref["face"]
+        image, face = load_image_from_source(ref["path"]), ref["face"]
         h, w = image.shape[:2]
         x1, y1 = np.floor(face.bbox[:2]).astype(int)
         x2, y2 = np.ceil(face.bbox[2:]).astype(int)

@@ -95,7 +95,7 @@ export function SessionWorkbench() {
           <h1 className="truncate text-sm font-semibold text-zinc-100">
             {session?.title || target?.name || 'AI 精修工作台'}
           </h1>
-          <p className="mt-1 text-2xs text-zinc-500">AI 精修 · 先看清问题，再决定怎么改</p>
+          <p className="mt-1 text-2xs text-zinc-400">AI 精修 · 先看清问题，再决定怎么改</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {session && (
@@ -148,7 +148,7 @@ export function SessionWorkbench() {
                   ? 'border-cyan-500/30 text-cyan-300'
                   : step === index + 1
                     ? 'border-indigo-400/40 bg-indigo-500 text-white'
-                    : 'border-white/10 text-zinc-500')
+                    : 'border-white/10 text-zinc-400')
               }
             >
               {step > index + 1 ? <Check className="h-3 w-3" /> : index + 1}
@@ -177,8 +177,8 @@ export function SessionWorkbench() {
             aria-pressed={pane === id}
             onClick={() => setPane(id)}
             className={
-              'min-h-11 flex-1 px-2 text-xs ' +
-              (pane === id ? 'border-b-2 border-indigo-400 text-indigo-300' : 'text-zinc-400')
+              'min-h-touch flex-1 px-2 text-xs ' +
+              (pane === id ? 'border-b-2 border-primary text-primary-soft' : 'text-zinc-400')
             }
           >
             {title}
@@ -261,13 +261,13 @@ export function SessionWorkbench() {
                 }}
               >
                 <span className="block truncate">{item.title}</span>
-                <span className="mt-1 block text-2xs text-zinc-500">
+                <span className="mt-1 block text-2xs text-zinc-400">
                   {item.status === 'running' ? '后台处理中' : item.accepted_version_id ? '已接受' : '待确认'}
                 </span>
               </button>
             ))}
             {!c.sessions.isLoading && !c.sessions.isError && !c.sessions.data?.length && (
-              <p className="p-2 text-xs text-zinc-500">暂无会话，完成本地换脸后进入。</p>
+              <p className="p-2 text-xs text-zinc-400">暂无会话，完成本地换脸后进入。</p>
             )}
           </div>
           {session && (
@@ -280,7 +280,7 @@ export function SessionWorkbench() {
                     <summary className="cursor-pointer hover:text-zinc-200">查看原图定位</summary>
                     <p className="mt-2 break-words leading-relaxed">{person.person_locator}</p>
                   </details>
-                  <p className="mt-1 text-2xs text-zinc-500">
+                  <p className="mt-1 text-2xs text-zinc-400">
                     {person.reference_status === 'missing'
                       ? '参考缺失：未验证身份一致性'
                       : '参考已固定，不随素材库变更'}
@@ -289,7 +289,9 @@ export function SessionWorkbench() {
                     {person.reference_urls.map((url, i) => (
                       <a key={url} href={url} target="_blank" rel="noreferrer">
                         <img
-                          src={url}
+                          loading="lazy"
+                          decoding="async"
+                          src={person.reference_thumbnail_urls?.[i] || url}
                           alt={'P' + person.person_id + ' 参考板 ' + (i + 1)}
                           className="h-16 w-16 rounded border border-border object-contain"
                         />
@@ -311,7 +313,7 @@ export function SessionWorkbench() {
               <p className="text-base text-zinc-200">
                 {c.detail.isLoading ? '正在恢复精修会话…' : target ? '从本地初稿开始' : '选择一张图片，开始精修'}
               </p>
-              <p className="max-w-sm text-sm leading-relaxed text-zinc-500">
+              <p className="max-w-sm text-sm leading-relaxed text-zinc-400">
                 先检查融合、身份与光影问题，再结合你的意见生成精修结果。每个版本都可以回看和比较。
               </p>
               {!target && !c.detail.isLoading && (
@@ -328,8 +330,7 @@ export function SessionWorkbench() {
               )}
               {target && (
                 <button
-                  className="btn btn-md btn-primary"
-                  style={{ minHeight: 44 }}
+                  className="btn btn-md btn-primary min-h-touch"
                   disabled={c.busy || !target.refinementInput || c.sessions.isLoading}
                   onClick={() => void c.create()}
                 >
@@ -390,12 +391,11 @@ export function SessionWorkbench() {
                   zoom={zoom}
                 />
               ) : (
-                <p className="min-h-0 flex-1 p-4 text-sm text-zinc-500">所选版本已不可用，请选择其他版本。</p>
+                <p className="min-h-0 flex-1 p-4 text-sm text-zinc-400">所选版本已不可用，请选择其他版本。</p>
               )}
               <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2">
                 <button
-                  className="btn btn-outline btn-sm"
-                  style={{ minHeight: 44 }}
+                  className="btn btn-outline btn-sm min-h-touch"
                   disabled={locked || !viewed || c.baseVersionId === viewed.id}
                   onClick={() =>
                     viewed &&
@@ -410,18 +410,12 @@ export function SessionWorkbench() {
                 </button>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
                   {session.accepted_image_url && (
-                    <a
-                      className="btn btn-outline btn-sm"
-                      style={{ minHeight: 44 }}
-                      href={session.accepted_image_url}
-                      download
-                    >
+                    <a className="btn btn-outline btn-sm min-h-touch" href={session.accepted_image_url} download>
                       导出已接受版本
                     </a>
                   )}
                   <button
-                    className="btn btn-md btn-primary gap-2"
-                    style={{ minHeight: 44 }}
+                    className="btn btn-md btn-primary gap-2 min-h-touch"
                     disabled={!viewed || locked || session.accepted_version_id === viewed.id}
                     onClick={() => void c.accept()}
                   >
@@ -429,7 +423,7 @@ export function SessionWorkbench() {
                     接受当前 {label(c.viewVersionId)}
                   </button>
                 </div>
-                <p data-testid="accepted-version" className="w-full text-2xs text-zinc-500">
+                <p data-testid="accepted-version" className="w-full text-2xs text-zinc-400">
                   已接受：{label(session.accepted_version_id)} · 查看版本与修改基图独立；AI 复评供定稿参考。
                 </p>
               </div>
@@ -450,7 +444,13 @@ export function SessionWorkbench() {
                         : 'border-border text-zinc-300')
                     }
                   >
-                    <img src={version.image_url} alt="" className="h-12 w-full rounded object-cover" />
+                    <img
+                      loading="lazy"
+                      decoding="async"
+                      src={version.thumbnail_url || version.image_url}
+                      alt=""
+                      className="h-12 w-full rounded object-cover"
+                    />
                     <span>
                       {label(version.id)}
                       {session.accepted_version_id === version.id ? ' · 已接受' : ''}
@@ -481,7 +481,7 @@ export function SessionWorkbench() {
                 onView={selectView}
               />
             ) : (
-              <p className="p-5 text-sm text-zinc-500">选择或创建会话后，在这里提出意见。</p>
+              <p className="p-5 text-sm text-zinc-400">选择或创建会话后，在这里提出意见。</p>
             )}
           </div>
           <SessionComposer

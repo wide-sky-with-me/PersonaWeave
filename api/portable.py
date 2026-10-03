@@ -7,12 +7,24 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import threading
 import urllib.request
 import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def check_writable_directories(root):
+    """Check actual write access before opening persistent state; do not rely on permission bits."""
+    for directory in (root / "data", root / "outputs"):
+        try:
+            directory.mkdir(exist_ok=True)
+            with tempfile.TemporaryFile(dir=directory):
+                pass
+        except OSError as exc:
+            raise OSError("程序目录无法写入，请把整个文件夹移到本地可写目录（例如 D:\\PW），再启动。") from exc
 
 
 def configure(root):
@@ -100,6 +112,7 @@ def main():
     if args.configure:
         configure(ROOT)
         return 0
+    check_writable_directories(ROOT)
     with instance_lock(ROOT) as acquired:
         if not acquired:
             state = ROOT / "data/portable-runtime.json"
@@ -128,13 +141,20 @@ def main():
             label = "NVIDIA GPU" if edition == "windows-x64-gpu" else "CPU"
             print(f"PersonaWeave Windows {label} 便携版\n正在加载模型，工作台地址：{url}", flush=True)
             print("关闭程序请在此窗口按 Ctrl+C。AI 服务首次使用请运行 Configure-AI.cmd。", flush=True)
+            print("首次加载可能较慢，请保留窗口；模型就绪后自动打开浏览器。故障可运行 Check-Install.cmd。", flush=True)
             stopped = threading.Event()
             if not args.no_browser:
                 threading.Thread(target=open_when_ready, args=(url, stopped), daemon=True).start()
             try:
                 import uvicorn
 
-                server = uvicorn.Server(uvicorn.Config("api.app:app", host="127.0.0.1", port=port, use_colors=False))
+                # Browser SSE subscriptions can otherwise keep shutdown waiting forever.
+                # After the HTTP grace period, lifespan still drains native/AI workers.
+                server = uvicorn.Server(
+                    uvicorn.Config(
+                        "api.app:app", host="127.0.0.1", port=port, use_colors=False, timeout_graceful_shutdown=10
+                    )
+                )
                 server.run(sockets=[listener])
             finally:
                 stopped.set()

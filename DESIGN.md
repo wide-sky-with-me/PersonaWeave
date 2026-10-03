@@ -26,6 +26,10 @@ web/src → HTTP API → api → core → provider / ONNX runtime
 
 本地图片读写统一使用 `utils/image_io.py`：Python 负责 Unicode 路径文件访问，OpenCV 负责内存编解码；API 仍须先完成受控路径鉴权与像素限制。素材引用、CLI 和批任务结果不直接调用 OpenCV 路径读写接口，边界由 `tests/test_package_boundaries.py` 约束。
 
+受控图片解码将 Pillow 检出的 MPO 视为 JPEG 兼容主图，统一通过 `core/image_security.py::image_mime_type` 分类；
+工程媒体回看复用相同 MIME 规则并保留原始字节。辅助帧不进入检测/聚类，既有编码体积、主图像素与内存保护不变；
+相机文件兼容契约与回归见 [Windows 使用说明](docs/windows-portable.md)。
+
 准备工作区的任务操作集中在右侧“换脸控制”，窄屏由抽屉承载；顶部准备标签及底部状态栏仅负责展示。`App` 唯一挂载 `useBatchPipeline` 管理批任务提交、轮询与导出，侧栏通过显式属性调用，关闭抽屉或切换工作区不影响任务恢复。见 [工程架构](docs/engineering-architecture.md)。
 
 ## 两条图像处理流程
@@ -68,6 +72,8 @@ VLM 和图像模型访问均经过 `AIGateway`，分别调用 LiteLLM `Router.ac
 
 默认网关请求等待 300 秒，精修分析/复评阶段上限为 330 秒，为证据编码与响应校验预留时间；不改变自动重试策略。图像编辑的独立等待限制见 [精修契约](docs/ai-refinement.md)。
 
+内部无损 PNG 快照与外部上传分别校验大小，保留 4000 万像素及内存预算；生图网关对内部当前画布原分辨率无损编码。超过上传字节限制的工程快照经摘要验证后恢复为受控图片 URL，避免再次自动保存时被当作外部上传拒绝。见 [精修契约](docs/ai-refinement.md) 与 `tests/test_large_refinement_snapshots.py`。
+
 **完整编辑工程**：`api/projects/` 管理独立 SQLite 文档与图片快照，`features/projects/` 管理图片归档、串行自动保存和显式恢复。任务/会话历史只读入口不写准备区；“恢复工程”在校验所有图片后原子还原编辑输入及精修草稿。服务端任务状态和接受指针不由工程文档覆盖，旧记录的缺失状态不推断。权威契约见 [工程恢复](docs/task-history.md#complete-studio-projects-and-explicit-recovery)。
 
 接受结果通过明确 session/target 关联同步到工作台最终图片；本地初稿和精修修改基图保持独立。全局会话观察覆盖准备区与刷新恢复，ZIP 从当前工程收集完成图片并核对服务端接受版，不再依赖活动批任务中的本地结果数组。已接受文件失败不会静默降级成本地初稿；任务历史仍保留原执行记录。
@@ -84,4 +90,18 @@ Windows 便携包的 VC++ 五组件清单已补齐 ONNX Runtime 所需 `msvcp140
 失败展示统一复用 `ToastProvider` 的确认弹窗；HTTP 错误优先读取服务端 `detail`，单图失败立即通知，
 批任务终态按图片汇总通知且同任务只通知一次，精修失败和候选复评失败保留原状态语义。
 
+本地执行队列向健康接口提供不含输入的占用快照（等待数、操作类别、阶段及持续时间），模型后端读取已加载 ONNX 会话，不能将包的 CUDA 能力当作实际执行证据。读取批请求或启动 worker 异常必须记录终态，取消的原生运算结束前仍占槽。串行模型的闲置线程关闭空转，不改变默认线程数与数学精度。见 [排队契约](docs/memory-scheduling.md)。
+
 多图内存边界覆盖上传、解码、跨图分析、本地批任务及批量自动精修。共享槽位覆盖完整单图生命周期，取消 HTTP 不提前放行原生线程；内存不足等待恢复，批次间不预加载参考图。融合分块保持同一公式，详见 [内存与排队](docs/memory-scheduling.md)。
+
+Windows 完整包构建会重新构建前端、携带自检工具并逐项核验 ZIP 摘要；启动前检查数据目录可写性。个人授权配置与短目录交付约定见 [Windows 完整包重建](docs/windows-portable.md#2026-09-29-完整包重建与防漂移)。
+
+批任务等待与历史不再常驻完整请求图片：请求在执行/明确恢复时按需读取，旧失败内联原图仍可恢复。删除精修后失效最终图明确标记，下载只在确认会话缺失时使用独立副本；切换工程清理任务展示状态。见 [内存生命周期](docs/memory-scheduling.md)、[历史与工程契约](docs/task-history.md)。Windows 构建通过依赖指纹/完整文件校验后才能复用运行时，全流程暂存发布并保留自检故障证据，见 [便携构建](docs/windows-portable.md)。
+
+单图检测的空跨图人物编号不参与自动配对；未知人物与未完成分析不能推断为一人。已保存的无效映射会阻止提交，可在人物映射中重新明确绑定，原图和素材保留。见 [单图人物映射边界](docs/facefusion-local-swap.md#single-image-mapping-identity-boundary)。
+
+参考素材在逐张特征提取后释放像素，授权的批量精修证据无损落盘；工程提交完成后可用磁盘引用替换照片内联字节，恢复按张验证。精修查看/接受只校验已验证快照的摘要，不重复完整解码；接受后立即保存关联工程，失败单独提示。详情见 [内存调度](docs/memory-scheduling.md)、[精修](docs/ai-refinement.md) 和 [历史](docs/task-history.md)。
+
+精修与本地换脸共用高内存任务队列；证据分阶段读盘，版本/参考列表使用独立 384px 缩略图。
+本地回贴限定到人脸投影区域以减少临时数组，原分辨率保留；少量 OpenCV 插值取整差异和
+测试证据见 [内存调度](docs/memory-scheduling.md)。最低硬件容量尚未通过受限环境验收。

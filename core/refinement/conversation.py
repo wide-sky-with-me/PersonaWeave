@@ -9,8 +9,10 @@ from core.refinement.evidence import (
     build_reference_board,
     checked_text,
     data_block,
+    image_work,
     prepare_people,
-    validate_image,
+    resolve_image,
+    validate_evidence,
 )
 from core.refinement.image_ops import decode_image, encode_image, generation_parameters, normalize_candidate
 from core.refinement.prompts import ANALYZE_SYSTEM, GENERATION_INSTRUCTIONS, PROMPT_VERSION, REVIEW_SYSTEM
@@ -31,7 +33,7 @@ class ConversationRefinementService:
         if image is None:
             content.append({"type": "text", "text": "UNAVAILABLE: no image supplied for this role."})
         else:
-            validate_image(image)
+            image = resolve_image(image)
             # A 1600px overview lost small-face details in live tests. Bound the larger
             # overview instead of sending arbitrarily large photo payloads to providers.
             content.append({"type": "image_url", "image_url": {"url": encode_image(image, max_dim=VISION_MAX_SIDE)}})
@@ -74,8 +76,9 @@ class ConversationRefinementService:
         The server supplies the last completed diagnosis of this exact base, separately
         from bounded conversation history. Invalid or mismatched assessments are rejected.
         """
-        validate_image(current)
-        manifest, content = self._evidence(
+        validate_evidence(current)
+        manifest, content = await image_work(
+            self._evidence,
             [("ORIGINAL: scene/pose/count, NOT desired identity", original), ("CURRENT: image to assess", current)],
             people,
             references,
@@ -109,7 +112,7 @@ class ConversationRefinementService:
 
     async def generate(self, current, people, diagnosis, user_message, model_alias=None) -> tuple[np.ndarray, dict]:
         """Generate exactly one candidate from the selected full-resolution canvas, never publish it."""
-        validate_image(current)
+        current = await image_work(resolve_image, current)
         diagnosis = Diagnosis.model_validate(diagnosis)
         manifest = prepare_people(people, {})
         if {person["person_id"] for person in manifest} != {person.person_id for person in diagnosis.people}:
@@ -135,8 +138,7 @@ class ConversationRefinementService:
             )
         )
         # Lossless encoding keeps the explicitly selected canvas intact; reference boards have their own bounded layout.
-        encoded = encode_image(current, max_dim=max(current.shape[:2]), lossless=True)
-        result = await self.gateway.edit_image([encoded], prompt, alias=model_alias, parameters=parameters)
+        result = await self.gateway.edit_image([current], prompt, alias=model_alias, parameters=parameters)
         candidate, normalization = normalize_candidate(decode_image(result.image_bytes), current.shape)
         alias = model_alias or self.gateway.default_image_alias
         return candidate, {
@@ -156,10 +158,11 @@ class ConversationRefinementService:
 
     async def review(self, original, before, candidate, people, references, diagnosis, user_message) -> CandidateReview:
         """Review once; propagate review failures so callers retain the already generated candidate."""
-        validate_image(before)
-        validate_image(candidate)
+        validate_evidence(before)
+        validate_evidence(candidate)
         diagnosis = Diagnosis.model_validate(diagnosis)
-        manifest, content = self._evidence(
+        manifest, content = await image_work(
+            self._evidence,
             [
                 ("ORIGINAL: scene/pose/count, NOT desired identity", original),
                 ("BEFORE: explicitly selected base for this turn", before),

@@ -3,12 +3,10 @@
 import asyncio
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from api.refinement.batch import batch_session_request, create_batch_refinement_hook
 from api.schemas import BatchTaskCreateRequest, ImageSwapResult
-from core.image_security import decode_data_uri
 
 
 def result():
@@ -21,16 +19,15 @@ def result():
 
 
 def test_batch_uses_assigned_face_index_not_stable_identity_number():
-    image = np.full((32, 40, 3), 77, dtype=np.uint8)
+    frozen = "/api/v1/files/pw_task_test/references/" + "a" * 64 + ".png"
     payload = batch_session_request(
-        "task", None, result(), [], [{"target_index": 7, "source_references": [{"image": image}]}]
+        "task", None, result(), [], [{"target_index": 7, "source_references": [{"snapshot_url": frozen}]}]
     )
     person = payload.people[0]
     assert person.person_id == 7
     assert person.face_index == 2
-    assert np.array_equal(decode_data_uri(person.source_manual_images[0]), image)
-    image[:] = 0
-    assert np.all(decode_data_uri(person.source_manual_images[0]) == 77)
+    assert person.source_manual_images == [frozen]
+    assert "data:image" not in payload.model_dump_json()
 
 
 def test_missing_assignment_never_guesses_person_location():

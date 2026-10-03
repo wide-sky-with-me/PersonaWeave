@@ -20,7 +20,7 @@ warnings.filterwarnings(
 
 from insightface.model_zoo import get_model  # noqa: E402
 
-from utils.gpu_helper import get_optimal_providers  # noqa: E402
+from utils.gpu_helper import get_optimal_providers, local_session_options  # noqa: E402
 
 
 @dataclass
@@ -78,7 +78,7 @@ class FaceDetector:
         self.input_size = input_size
 
         # Load SCRFD model
-        self.model = get_model(model_path, providers=providers)
+        self.model = get_model(model_path, providers=providers, sess_options=local_session_options())
         self.model.prepare(ctx_id=0, input_size=self.input_size, det_thresh=self.confidence_threshold)
 
     def detect_faces(

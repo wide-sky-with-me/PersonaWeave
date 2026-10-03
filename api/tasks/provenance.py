@@ -32,7 +32,7 @@ def batch_provenance(manager, swapped_url):
     if selected is None:
         return None
     task, result = selected
-    request = manager._requests.get(task.task_id)
+    request = manager.get_request_snapshot(task.task_id)
     mappings = (request.person_mappings or [request]) if request is not None else []
     sources = [
         {

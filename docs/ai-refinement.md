@@ -119,6 +119,8 @@ Acceptance verifies session ownership, `expected_revision`, `version_id`, `candi
 
 Unaccepted versions remain available for comparisons and branching after acceptance; publication does not erase session history. Publication uses a temporary private file and atomic rename, with database rollback cleanup and restart cleanup of uncommitted owned publication files. Private and accepted roots must support the same-filesystem atomic operation. Browser snapshots cannot override this server truth. Missing/corrupt bytes produce an availability error, never a reconstructed replacement. New-session artifacts are independent of original batch folders once snapshotted.
 
+Server-owned lossless PNG snapshots use a bounded internal byte budget (`MAX_SNAPSHOT_BYTES` in `core/image_security.py`), not the external 20 MiB upload limit: a valid JPEG may expand beyond that limit when encoded losslessly. The 40-million-pixel per-image limit, memory checks, cumulative evidence budget, artifact ownership and SHA-256 checks still apply. Generation receives exactly one original-resolution decoded canvas, encoded losslessly at the gateway; external bytes/data URIs and provider responses retain the 20 MiB cap. Known creation input errors return specific safe messages, while unknown exceptions remain sanitized. Regression: `tests/test_large_refinement_snapshots.py`.
+
 One application process owns startup recovery; this is not a distributed worker lease system. Each session permits at most 200 turns. Shared current-input limits are 24 people, 300 locator characters and 4000 message characters; references are limited to 8 per person and 64 total. `MAX_EVIDENCE_PIXELS` in `core/refinement/contracts.py` limits original, baseline and all reference occurrences to 120 million decoded pixels per creation, including repeated references even when snapshot bytes deduplicate. Each image is counted after decoding and before its snapshot is written; exceeding the cumulative budget rejects creation and removes only that attempt's unregistered snapshots, without consuming its request ID. Turn execution rechecks the same budget for original, selected base and references, including sessions without references. Oversized identity galleries require explicit selection, not silent truncation. An omitted locator is frozen from the original face index, never a new candidate detection order. A generated response enters a short cancellation-drained snapshot/register phase so graceful shutdown retains the candidate; failed or duplicate session creations remove only their own unregistered private directory.
 
 ## Legacy archive boundary
@@ -154,3 +156,29 @@ Complete Studio projects preserve the preparation workspace together with per-se
 Server-confirmed acceptance is projected to the associated editor target's `refinedUrl`; the original and `processedUrl` local baseline remain intact. The preparation canvas, comparison, filmstrip and current-image download use that final result. A global observer refreshes explicitly linked sessions even outside the refinement view, so previously accepted results also appear after project restoration. Session ID and target ID must both match, reprocessing targets are excluded, and older revisions cannot replace newer acceptance. Viewing a candidate or unrelated history never changes the editor result. The saved project keeps an independent image copy and a version/revision projection; this metadata does not authorize server acceptance. Implementation and regressions: `acceptedResults.ts`, `useAcceptedResults.ts`, `SessionWorkbench.test.tsx` and `acceptedResults.test.ts` under `web/src/features/refinement/`.
 
 Batch session creation uses only actual per-image assignments. A skipped batch role with no assigned face is not bound to a guessed location and does not prevent other confirmed people from entering refinement; an inconsistent successful outcome without a face assignment still fails. Every project restore entry can reconstruct a missing creation recipe from retained explicit references and assignment outcomes after verifying both canvases (equal digests or exact decoded pixels), without rerunning local swap. Running batch input is additionally saved with its task ID so a refreshed, explicitly associated workspace can finish the same recipe when results arrive. See `api/refinement/batch.py`, `api/projects/recovery.py`, `web/src/hooks/useBatchPipeline.ts` and their regression tests.
+
+### Availability after deletion and export verification
+
+Confirmed deletion clears matching session-backed accepted URLs and metadata and persists an unavailable-result flag. The canvas explicitly identifies the remaining local draft; it cannot be downloaded as the accepted final. Independent project-frozen data URI copies survive deletion. Single-image and ZIP exports verify the associated session and use its current accepted publication; only a confirmed 404/410 permits a frozen image fallback. Network errors, server failures and session/target mismatches fail visibly instead of silently exporting stale acceptance. Implementation: `sessionCache.ts`, `acceptedResults.ts`, `workspaceExport.ts`; regressions: `sessionCache.test.ts`, `workspaceExport.test.ts`, `useSingleSwap.test.tsx`.
+
+## Read-only image display and saved acceptance
+
+Snapshot creation validates full image pixels before committing the digest. Reading or accepting that exact persisted digest verifies ownership, byte size and SHA-256 without decoding the full image again. Actual model evidence loading still decodes with the pixel/memory limits. Thus opening multiple version thumbnails does not require server-side RGB allocations per thumbnail, and low decode headroom cannot by itself hide an intact saved image. Tampered/missing artifacts remain errors; there is no replacement image or acceptance bypass. Regression: `test_history_image_read_and_accept_do_not_decode_full_canvas_under_memory_pressure` in `tests/test_refinement_sessions.py`.
+
+The workbench lazy-loads reference/version thumbnails and offers explicit image-only reload after temporary failures. Reload never creates a turn. After explicit acceptance, the linked editor waits for project save; a failure says that server acceptance succeeded but the project still needs saving. Acceptance in the session remains authoritative.
+
+### 分阶段证据与磁盘缩略图
+
+精修轮次及建会话的图片冻结共享本地推理内存槽位；整个 AI 轮次持槽，上游等待时本地任务也等待，
+不会重试付费请求。`DeferredImage` 仅是内部可信加载描述符，绑定摘要校验过的图片尺寸，实际
+读取仍核对摘要及尺寸。分析/复评逐张加载证据；每人参考板只同时解码一张参考。生成仍只读取明确
+选定的当前整图，原分辨率传入 `AIGateway`，候选落盘后释放数组再复评。实现与排队边界见
+[内存调度](memory-scheduling.md)，取消读取线程结束前不会释放槽位。
+
+会话版本返回 `thumbnail_url`，人物返回 `reference_thumbnail_urls`；对应受控
+`GET /api/v1/refinement/sessions/{session_id}/artifacts/{digest}/thumbnail` 为最长边 384px JPEG。
+缩略图在快照写入时生成，旧会话缺缓存时经共享队列补建；缓存有独立摘要，源图按流校验摘要和
+会话归属，源图失效不得用缩略图掩盖。`.preview` 为可重建磁盘缓存，随会话目录删除，不进入
+模型、接受发布或下载。完整图继续走原始 `image_url`。前端仅在连接未返回缩略图字段的旧后端时
+回退原图 URL；新后端始终提供字段，缓存缺失由服务端重建。回归在 `tests/test_refinement_sessions.py`、
+`tests/test_deferred_evidence.py` 与 `SessionWorkbench.test.tsx`。

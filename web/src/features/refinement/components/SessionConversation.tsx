@@ -20,9 +20,9 @@ function Section({ title, count, children }: { title: string; count?: number; ch
       <summary className="flex cursor-pointer items-center justify-between gap-3 px-3 py-3 text-xs font-medium text-zinc-200">
         <span>
           {title}
-          {count !== undefined && <span className="ml-2 text-zinc-500">{count} 项</span>}
+          {count !== undefined && <span className="ml-2 text-zinc-400">{count} 项</span>}
         </span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-500 group-open:rotate-180" />
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-zinc-400 group-open:rotate-180" />
       </summary>
       <div className="space-y-3 border-t border-white/5 p-3 text-xs leading-relaxed text-zinc-400">{children}</div>
     </details>
@@ -47,13 +47,13 @@ function Issues({ items }: { items: SessionIssue[] }) {
             <div className="flex flex-wrap items-center gap-2">
               {issue.person_id != null && <span className="text-indigo-300">P{issue.person_id}</span>}
               <strong className="text-zinc-200">{issue.region}</strong>
-              <span className={issue.severity === 'high' ? 'text-rose-300' : 'text-zinc-500'}>
+              <span className={issue.severity === 'high' ? 'text-rose-300' : 'text-zinc-400'}>
                 {{ high: '明显', medium: '注意', low: '轻微' }[issue.severity]}
               </span>
             </div>
             <p className="text-zinc-300">{issue.description}</p>
             <p>
-              <span className="text-zinc-500">观察依据 · </span>
+              <span className="text-zinc-400">观察依据 · </span>
               {issue.evidence}
             </p>
             <p>
@@ -186,7 +186,7 @@ export function SessionConversation({
     const enlarged = nativeSize && canvasSize && (nativeSize[0] < canvasSize[0] || nativeSize[1] < canvasSize[1]);
     return (
       <article key={turn.id} className="space-y-3 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 text-2xs text-zinc-500">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-2xs text-zinc-400">
           <span>
             {generated ? '修改' : '分析'} · 基于 {versionLabel(turn.base_version_id)} · 第 {turns.indexOf(turn) + 1}{' '}
             次请求
@@ -250,7 +250,7 @@ export function SessionConversation({
           </div>
         )}
         {turn.candidate_version_id && (
-          <p className="text-xs leading-relaxed text-zinc-500">
+          <p className="text-xs leading-relaxed text-zinc-400">
             查看候选后，点击“以此版继续”可开始下一轮分析；当前修改基图与定稿不会自动改变。
           </p>
         )}
