@@ -20,6 +20,7 @@ import numpy as np
 
 from scripts.compare_source_strategies import prepare_strategies, resolved_parameters
 from scripts.swap_benchmark_utils import cosine, file_sha256, match_face_boxes, write_json
+from scripts.swap_eval_adapters import EVAL_MODELS, register
 
 FAR_LEVELS = (0.01, 0.001)
 
@@ -31,6 +32,12 @@ def parse_args(argv=None):
     parser.add_argument("--identities-per-face", type=int, default=3)
     parser.add_argument("--min-face-px", type=int, default=200, help="Skip faces whose short side is smaller")
     parser.add_argument("--seed", type=int, default=20261003)
+    parser.add_argument("--eval-models-dir", type=Path, default=Path("models/eval"))
+    parser.add_argument(
+        "--alphaface-scale",
+        type=float,
+        help="AlphaFace expects a raw ArcFace embedding; default: median raw norm of the library references",
+    )
     parser.add_argument(
         "--arms",
         nargs="+",
@@ -194,6 +201,22 @@ def load_library(pipeline):
     return library
 
 
+def median_raw_embedding_norm(pipeline, library):
+    """Raw (pre-normalization) ArcFace norm of one reference per identity, via the same alignment."""
+    from utils.image_io import read_image
+
+    class AlignedFace:
+        def __init__(self, face):
+            self.kps, self.bbox = face.kps, face.bbox
+
+    norms = []
+    for value in library.values():
+        reference = value["refs"][0]
+        raw = pipeline.recognizer.model.get(read_image(str(reference["path"])), AlignedFace(reference["face"]))
+        norms.append(float(np.linalg.norm(raw)))
+    return float(np.median(norms))
+
+
 def target_gender(attribute_model, image, face):
     """InsightFace genderage output: 1 male, 0 female; used only to pair sources, never as a score."""
     gender, _age = attribute_model.get(image, face)
@@ -336,6 +359,11 @@ def main():
     attribute_model = get_model("models/buffalo_l/genderage.onnx", providers=list(pipeline.providers))
     attribute_model.prepare(ctx_id=0)
     library = load_library(pipeline)
+    eval_names = [name for name in (parse_arm(arm)[0] for arm in args.arms) if name in EVAL_MODELS]
+    scale = None
+    if eval_names:
+        scale = args.alphaface_scale or median_raw_embedding_norm(pipeline, library)
+        register(pipeline, str(args.eval_models_dir), eval_names, scale)
     refs = {name: [(r["embedding"], r["quality_score"]) for r in value["refs"]] for name, value in library.items()}
     genders = {name: value["gender"] for name, value in library.items()}
     centroids, genuine, impostor, impostor_same = calibration(
@@ -401,6 +429,7 @@ def main():
             },
         },
         "arms": args.arms,
+        "alphaface_embedding_scale": scale,
         "parameters": resolved_parameters(pipeline, None)[0],
         "providers": [str(p) for p in pipeline.providers],
         "runs": runs,

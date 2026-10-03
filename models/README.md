@@ -71,3 +71,15 @@ GFPGAN has no equivalent fidelity control, so it was not brought back; do not wi
 - Update `scripts/download_models.py` when a runtime model name or upstream source changes.
 - For reproducible releases, publish a versioned model bundle outside the source repository and add verified SHA-256 checksums before production deployment.
 - Review and comply with each upstream model's license and usage restrictions before redistribution or commercial use.
+
+## Evaluation-only weights (`models/eval/`, git-ignored)
+
+Used only by `scripts/swap_eval_adapters.py` for offline audits; the API, CLI and portable packages never load them. All come from FaceFusion's Hugging Face model releases (`facefusion/models-<release>`), CRC32 matches the published `.hash`; SHA-256 values are our own pin. Review each licence before any redistribution or commercial use.
+
+| File | Release | Licence (FaceFusion metadata) | SHA-256 |
+| --- | --- | --- | --- |
+| `hyperswap_1a_256.onnx` | models-3.3.0 | ResearchRAIL | `c0e98a8a03a238f461ed3d2570e426b49f46745ee400854a60dceeb70c246add` |
+| `hyperswap_1b_256.onnx` | models-3.3.0 | ResearchRAIL | `5124031789c42f71b9558fb71954ef7aedb6da7ed9fac79293e23c61a792a73e` |
+| `alphaface_256.onnx` | models-3.9.0 | Non-Commercial | `efcca3ffa1c28b75a007f689b39f7d4716c02810e7fa72d892e175f0b058a2e2` |
+| `ghost_2_256.onnx` | models-3.0.0 | Apache-2.0 | `27ae9d0b174b22c0426393e8239ca8d75e6ff47ec5dc596b002b182832a9454e` |
+| `ghost_3_256.onnx` | models-3.0.0 | Apache-2.0 | `308d87f565e881b8872a5cbe711f97faeda6643e5d2b95ef757cc92a58662abd` |

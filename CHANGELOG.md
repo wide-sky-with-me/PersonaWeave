@@ -2,6 +2,7 @@
 
 ## 2026-10-03
 
+- 新增非生产评估适配器 `scripts/swap_eval_adapters.py`（HyperSwap 1a/1b、AlphaFace、Ghost 2/3）及 FaceFusion 模型许可核对；8 个模型身份相似度对比见 `docs/facefusion-local-swap.md`。生产默认与路由不变，权重仅本地评估。
 - 身份相似度脚本的 `--strengths` 改为 `--arms MODEL[:强度]`，可对比换脸模型并记录耗时；回退到别的模型的结果不计入该臂。新增 InSwapper/HyperSwap/Ghost 身份相似度对比记录，不改默认模型或路由。见 `docs/facefusion-local-swap.md`。
 - 身份相似度脚本支持 `--strengths` 扫描并增加像素差/检测分代理指标；记录 6 张被跳过脸的原因和 0.72–0.95 强度扫描（默认 0.9 不变）。见 `docs/facefusion-local-swap.md`。
 - 新增非生产脚本 `scripts/evaluate_identity_similarity.py` 并记录真实照片 × 素材库的身份相似度实测（105 次，部分迁移、非完全身份迁移）；见 `docs/facefusion-local-swap.md`。

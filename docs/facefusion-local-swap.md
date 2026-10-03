@@ -154,3 +154,41 @@ Ghost 绝对相似度最低、像素改动最大，且多处出现嘴唇过红�
 面部结构不稳定”一致。像素差与检测分只是代理指标，**这不是自然度验收**，也没有使用视觉大模型评审。
 结论限制：一台机器、一次、3 个随机人物，WSL 的 onnxruntime-gpu 1.20.2；HyperSwap 在本评测中身份迁移更强，
 但因许可限制不能直接并入便携包；`auto` 路由默认仍只用 InSwapper，本评测不修改任何默认值或路由。
+
+### 更多 FaceFusion 模型与许可对照（2026-10-03）
+
+**许可（取自 FaceFusion master 的 `face_swapper/core.py` 的 `__metadata__.license`，2026-10-03 核对）。**
+inswapper_128 / inswapper_128_fp16、alphaface_256、simswap_256、simswap_unofficial_512、blendswap_256 为 Non-Commercial；
+hyperswap_1a/1b/1c_256 为 ResearchRAIL；ghost_1/2/3_256（ai-forever）为 Apache-2.0；uniface_256、hififace_unofficial_256 为 Unknown。
+FaceFusion 3.9.1（2026-09-30）默认模型是 `hyperswap_1a_256`。**本项目默认的 InSwapper 本身是非商用许可**，
+商用须另行取得授权；FaceFusion 目录中许可明确宽松的只有 Ghost 系列。
+
+**扩展对比。** 评估适配器 [`scripts/swap_eval_adapters.py`](../scripts/swap_eval_adapters.py)（非生产，只注入评测管线实例，
+API/CLI/便携包不会加载）接入 HyperSwap 1a/1b、AlphaFace 和 Ghost 2/3；权重放在 `models/eval/`（已 gitignore）。
+来源与摘要见 `models/README.md`；张量接口用 onnxruntime 核对（HyperSwap 1a/1b 与 1c 相同，Ghost 2/3 与 Ghost 1 相同，
+AlphaFace 输入 `target`/`source`、输出无掩码）。同一 35 张真实人脸与身份分配（种子 20261003）、默认参数，8 个模型各 105 次尝试，
+报告 SHA-256 `275c1021153c99c9161b05a11b65f26243f98bb4fac9a0f2f9c7dab99e8884bd`；InSwapper 臂与之前的结果逐位一致。
+
+| 模型（许可） | 已评分 | 质心相似度 | 排第 1 | Top5 | 与原脸相似度 | 达 1% 误识阈值 | 脸框平均像素差 | 跳过 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| InSwapper 128（非商用，默认） | 87 | 0.523 | 58.1% | 79.0% | 0.398 | 6.7% | 4.58 | 18 |
+| HyperSwap 1a（ResearchRAIL，FaceFusion 默认） | 85 | 0.556 | 65.7% | 80.0% | 0.301 | 7.6% | 4.36 | 20 |
+| HyperSwap 1b（ResearchRAIL） | 89 | 0.573 | 70.5% | 82.9% | 0.289 | 9.5% | 4.58 | 14 |
+| HyperSwap 1c（ResearchRAIL） | 92 | 0.562 | 75.2% | 85.7% | 0.270 | 13.3% | 5.44 | 11 |
+| AlphaFace 256（非商用） | 98 | 0.469 | 63.8% | 87.6% | 0.311 | 1.0% | 6.34 | 7 |
+| Ghost 1（Apache-2.0） | 100 | 0.433 | 63.8% | 81.9% | 0.234 | 0% | 7.73 | 3 |
+| Ghost 2（Apache-2.0） | 102 | 0.423 | 67.6% | 86.7% | 0.240 | 1.0% | 7.43 | 3 |
+| Ghost 3（Apache-2.0） | 101 | 0.415 | 51.4% | 85.7% | 0.245 | 0% | 7.41 | 3 |
+
+在 8 个模型都评分的 78 张脸上配对（相对 InSwapper 的平均相似度变化）：HyperSwap 1a +0.034（57/78 更高）、1b +0.053（68/78）、
+1c +0.051（69/78）；AlphaFace −0.015（26/78）；Ghost 1/2/3 分别 −0.062、−0.069、−0.082。
+
+- **HyperSwap 三个版本都高于 InSwapper**，1b/1c 最强；FaceFusion 当前默认的 1a 在其中最弱，但仍高于 InSwapper。
+- **AlphaFace** 平均相似度略低于 InSwapper，但跳过最少（7 对 18）、Top5 最高（87.6%），对侧脸覆盖更好；
+  源向量缩放系数取 1/8/15.5/30 结果完全相同，说明模型内部会归一化，标定系数不影响结论。
+- **Ghost（唯一宽松许可）三个版本都不如 InSwapper**：绝对相似度低 0.06–0.08，几乎无结果达到误识阈值；
+  Ghost 2 相对最好（排第 1 为 67.6%），Ghost 3 最差。拼图中 Ghost 系列嘴唇/口型改变和结构不稳定更常见。
+  因此**没有“许可干净且更好”的现成选择**。
+- Ghost 3 的总耗时为 967 s（其他模型 36–60 s），原因未查明且可能与本机内存压力有关，不作为速度结论。
+- 局限同前：一台机器、一次、3 个随机人物、WSL 的 onnxruntime-gpu 1.20.2；像素差与检测分只是自然度代理，
+  拼图为人工查看，不是自然度验收；研究/非商用权重仅用于本地评估，未分发、不进入便携包，默认模型与路由不变。
