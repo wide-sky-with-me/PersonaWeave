@@ -11,6 +11,7 @@ from scripts.evaluate_identity_similarity import (
     identify,
     mean_ref_calibration,
     mean_ref_scores,
+    parse_arm,
     summarize,
 )
 
@@ -107,3 +108,8 @@ def test_aggregate_summarizes_naturalness_proxies_from_scored_rows_only():
     }
     result = aggregate([scored, {"status": "swap_skipped"}], {})
     assert result["face_mae"]["mean"] == pytest.approx(6.0) and result["result_det_score"]["n"] == 1
+
+
+def test_arm_syntax_defaults_to_production_strength():
+    assert parse_arm("hyperswap_1c_256") == ("hyperswap_1c_256", 0.9)
+    assert parse_arm("inswapper_128:0.72") == ("inswapper_128", 0.72)

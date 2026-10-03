@@ -32,11 +32,11 @@ def parse_args(argv=None):
     parser.add_argument("--min-face-px", type=int, default=200, help="Skip faces whose short side is smaller")
     parser.add_argument("--seed", type=int, default=20261003)
     parser.add_argument(
-        "--strengths",
-        type=float,
+        "--arms",
         nargs="+",
-        default=[0.9],
-        help="identity_blend_strength values; every value reuses the same faces and identity assignment",
+        default=["inswapper_128:0.9"],
+        help="MODEL[:identity_blend_strength] arms; every arm reuses the same faces and identity assignment. "
+        "Research-licensed models (hyperswap_1c_256) are enabled only when named here.",
     )
     return parser.parse_args(argv)
 
@@ -208,8 +208,23 @@ def crop(image, bbox, size=160, margin=0.35):
     return cv2.resize(image[box[1] : box[3], box[0] : box[2]], (size, size), interpolation=cv2.INTER_AREA)
 
 
-def run(pipeline, attribute_model, targets, library, centroids, units, args, strength):
-    parameters, _threshold = resolved_parameters(pipeline, {"identity_blend_strength": strength})
+def parse_arm(arm):
+    """``model[:strength]`` -> (model, strength); strength only applies to InSwapper."""
+    model, _, strength = arm.partition(":")
+    return model, float(strength) if strength else 0.9
+
+
+def run(pipeline, attribute_model, targets, library, centroids, units, args, arm):
+    model, strength = parse_arm(arm)
+    parameters, _threshold = resolved_parameters(
+        pipeline,
+        {
+            "identity_blend_strength": strength,
+            "swapper_model": model,
+            "allow_research_models": model == "hyperswap_1c_256",
+        },
+    )
+    seconds = 0.0
     rng = random.Random(args.seed)
     by_gender = {g: sorted(n for n, v in library.items() if v["gender"] == g) for g in ("male", "female")}
     rows, tiles = [], {}
@@ -240,6 +255,7 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args, str
             if not mappings:
                 continue
             result = pipeline.process_image_multi_mapping(image=image.copy(), mappings=mappings, **parameters)
+            seconds += result.elapsed_time_sec
             outcomes = {item["person_index"]: item for item in result.person_outcomes}
             result_faces = pipeline.detector.detect_faces(result.output_image)
             matches = match_face_boxes([f.bbox for f in faces], [f.bbox for f in result_faces], 0.3)
@@ -256,8 +272,13 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args, str
                     "outcome": outcomes.get(index, {}).get("status"),
                     "reason": outcomes.get(index, {}).get("reason"),
                 }
+                used = outcomes.get(index, {}).get("model")
+                row["model_used"] = used
                 if row["outcome"] != "SWAPPED":
                     row["status"] = "swap_" + str(row["outcome"]).lower()
+                elif used != model:
+                    # The router silently falls back when an asset is missing; never score it as this arm.
+                    row["status"] = "model_fallback"
                 elif index - 1 not in matches:
                     row["status"] = "result_face_missing"
                 else:
@@ -287,7 +308,7 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args, str
                         "reference": crop(read_image(str(reference["path"])), reference["face"].bbox),
                     }
                 rows.append(row)
-    return rows, tiles
+    return rows, tiles, seconds
 
 
 def face_mean_abs_diff(before, after, bbox):
@@ -333,25 +354,26 @@ def main():
         for far in FAR_LEVELS
     }
     runs, all_tiles = {}, {}
-    for strength in args.strengths:
-        rows, tiles = run(pipeline, attribute_model, targets, library, centroids, units, args, strength)
-        runs[str(strength)] = {
+    for arm in args.arms:
+        rows, tiles, seconds = run(pipeline, attribute_model, targets, library, centroids, units, args, arm)
+        runs[arm] = {
             "overall": aggregate(rows, thresholds),
             "strata": stratify(rows, thresholds),
+            "swap_seconds_total": seconds,
             "rows": rows,
         }
-        all_tiles[strength] = tiles
+        all_tiles[arm] = tiles
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    # Faces scored at every strength, evenly spread: the first rows would otherwise all come from the first photos.
+    # Faces scored in every arm, evenly spread: the first rows would otherwise all come from the first photos.
     common = sorted(set.intersection(*(set(tiles) for tiles in all_tiles.values())))
     if common:
         chosen = common[:: max(1, len(common) // 16)][:16]
-        first = all_tiles[args.strengths[0]]
+        first = all_tiles[args.arms[0]]
         sheet = [
             np.concatenate(
                 [
                     first[key]["original"],
-                    *(all_tiles[s][key]["result"] for s in args.strengths),
+                    *(all_tiles[arm][key]["result"] for arm in args.arms),
                     first[key]["reference"],
                 ],
                 axis=1,
@@ -378,7 +400,7 @@ def main():
                 for name, value in thresholds.items()
             },
         },
-        "strengths": args.strengths,
+        "arms": args.arms,
         "parameters": resolved_parameters(pipeline, None)[0],
         "providers": [str(p) for p in pipeline.providers],
         "runs": runs,
