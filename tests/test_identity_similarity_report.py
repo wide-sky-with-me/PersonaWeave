@@ -6,6 +6,7 @@ import pytest
 from scripts.evaluate_identity_similarity import (
     aggregate,
     calibration,
+    face_mean_abs_diff,
     far_threshold,
     identify,
     mean_ref_calibration,
@@ -82,3 +83,27 @@ def test_mean_reference_score_and_calibration_use_individual_references():
     assert genuine.mean() > impostor.mean() + 0.3
     scores = mean_ref_scores(refs["a"][0][0], units)
     assert max(scores, key=scores.get) == "a"
+
+
+def test_face_proxy_counts_only_pixels_inside_the_box_and_clips_negative_origin():
+    before = np.zeros((20, 20, 3), np.uint8)
+    after = before.copy()
+    after[5:10, 5:10] = 10
+    after[15:, 15:] = 200  # outside the measured face box
+    assert face_mean_abs_diff(before, after, np.array([5.0, 5.0, 10.0, 10.0])) == pytest.approx(10.0)
+    assert face_mean_abs_diff(before, after, np.array([-3.0, -3.0, 10.0, 10.0])) == pytest.approx(10.0 * 25 / 100)
+
+
+def test_aggregate_summarizes_naturalness_proxies_from_scored_rows_only():
+    scored = {
+        "status": "scored",
+        "rank": 1,
+        "margin": 0.1,
+        "sim_result_intended": 0.8,
+        "sim_original_intended": 0.1,
+        "sim_result_original": 0.2,
+        "face_mae": 6.0,
+        "result_det_score": 0.9,
+    }
+    result = aggregate([scored, {"status": "swap_skipped"}], {})
+    assert result["face_mae"]["mean"] == pytest.approx(6.0) and result["result_det_score"]["n"] == 1

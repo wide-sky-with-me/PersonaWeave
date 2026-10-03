@@ -31,6 +31,13 @@ def parse_args(argv=None):
     parser.add_argument("--identities-per-face", type=int, default=3)
     parser.add_argument("--min-face-px", type=int, default=200, help="Skip faces whose short side is smaller")
     parser.add_argument("--seed", type=int, default=20261003)
+    parser.add_argument(
+        "--strengths",
+        type=float,
+        nargs="+",
+        default=[0.9],
+        help="identity_blend_strength values; every value reuses the same faces and identity assignment",
+    )
     return parser.parse_args(argv)
 
 
@@ -139,6 +146,8 @@ def aggregate(rows, thresholds):
             lambda row: row["sim_result_original"] > row["sim_result_intended"]
         ),
         "margin_vs_best_other": summarize([row["margin"] for row in scored]),
+        "face_mae": summarize([row["face_mae"] for row in scored if "face_mae" in row]),
+        "result_det_score": summarize([row["result_det_score"] for row in scored if "result_det_score" in row]),
         "mean_ref_result_vs_intended": summarize([row["sim_mean_ref"] for row in scored if "sim_mean_ref" in row]),
         "mean_ref_rank1_rate": rate(lambda row: row.get("rank_mean_ref") == 1),
         "mean_ref_top5_rate": rate(lambda row: row.get("rank_mean_ref", 99) <= 5),
@@ -199,11 +208,11 @@ def crop(image, bbox, size=160, margin=0.35):
     return cv2.resize(image[box[1] : box[3], box[0] : box[2]], (size, size), interpolation=cv2.INTER_AREA)
 
 
-def run(pipeline, attribute_model, targets, library, centroids, units, args):
-    parameters, _threshold = resolved_parameters(pipeline, None)
+def run(pipeline, attribute_model, targets, library, centroids, units, args, strength):
+    parameters, _threshold = resolved_parameters(pipeline, {"identity_blend_strength": strength})
     rng = random.Random(args.seed)
     by_gender = {g: sorted(n for n, v in library.items() if v["gender"] == g) for g in ("male", "female")}
-    rows, sheet = [], []
+    rows, tiles = [], {}
     from utils.image_io import read_image
 
     for path in targets:
@@ -266,20 +275,25 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args):
                         rank_mean_ref=rank_mean_ref,
                         sim_original_intended=float(unit(face.embedding) @ centroids[identity]),
                         sim_result_original=cosine(embedding, face.embedding),
+                        # Naturalness proxies only: how many pixels moved inside the face box and how
+                        # confidently the detector still sees a face. Neither is a quality judgement.
+                        face_mae=face_mean_abs_diff(image, result.output_image, face.bbox),
+                        result_det_score=float(result_face.det_score),
                     )
                     reference = library[identity]["refs"][0]
-                    sheet.append(
-                        np.concatenate(
-                            [
-                                crop(image, face.bbox),
-                                crop(result.output_image, result_face.bbox),
-                                crop(read_image(str(reference["path"])), reference["face"].bbox),
-                            ],
-                            axis=1,
-                        )
-                    )
+                    tiles[(path.name, index, identity)] = {
+                        "original": crop(image, face.bbox),
+                        "result": crop(result.output_image, result_face.bbox),
+                        "reference": crop(read_image(str(reference["path"])), reference["face"].bbox),
+                    }
                 rows.append(row)
-    return rows, sheet
+    return rows, tiles
+
+
+def face_mean_abs_diff(before, after, bbox):
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    x1, y1 = max(0, x1), max(0, y1)
+    return float(np.abs(before[y1:y2, x1:x2].astype(np.int16) - after[y1:y2, x1:x2].astype(np.int16)).mean())
 
 
 def pipeline_yaw(face):
@@ -318,14 +332,35 @@ def main():
         )
         for far in FAR_LEVELS
     }
-    rows, sheet = run(pipeline, attribute_model, targets, library, centroids, units, args)
+    runs, all_tiles = {}, {}
+    for strength in args.strengths:
+        rows, tiles = run(pipeline, attribute_model, targets, library, centroids, units, args, strength)
+        runs[str(strength)] = {
+            "overall": aggregate(rows, thresholds),
+            "strata": stratify(rows, thresholds),
+            "rows": rows,
+        }
+        all_tiles[strength] = tiles
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    if sheet:
-        # Even spread over all scored faces: the first rows would otherwise all come from the first photos.
-        chosen = sheet[:: max(1, len(sheet) // 16)][:16]
-        cv2.imwrite(str(args.output_dir / "contact_sheet.png"), np.concatenate(chosen, axis=0))
+    # Faces scored at every strength, evenly spread: the first rows would otherwise all come from the first photos.
+    common = sorted(set.intersection(*(set(tiles) for tiles in all_tiles.values())))
+    if common:
+        chosen = common[:: max(1, len(common) // 16)][:16]
+        first = all_tiles[args.strengths[0]]
+        sheet = [
+            np.concatenate(
+                [
+                    first[key]["original"],
+                    *(all_tiles[s][key]["result"] for s in args.strengths),
+                    first[key]["reference"],
+                ],
+                axis=1,
+            )
+            for key in chosen
+        ]
+        cv2.imwrite(str(args.output_dir / "contact_sheet.png"), np.concatenate(sheet, axis=0))
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "identity-transfer-audit",
         "seed": args.seed,
         "identities": len(library),
@@ -343,15 +378,14 @@ def main():
                 for name, value in thresholds.items()
             },
         },
+        "strengths": args.strengths,
         "parameters": resolved_parameters(pipeline, None)[0],
         "providers": [str(p) for p in pipeline.providers],
-        "overall": aggregate(rows, thresholds),
-        "strata": stratify(rows, thresholds),
-        "rows": rows,
+        "runs": runs,
         "note": "Identity similarity only; calibrated on library references, not on independent real-person pairs.",
     }
     write_json(args.output_dir / "report.json", report)
-    print(f"Wrote {args.output_dir / 'report.json'}: {len(rows)} attempted swaps")
+    print(f"Wrote {args.output_dir / 'report.json'}: {sum(len(run['rows']) for run in runs.values())} attempted swaps")
 
 
 if __name__ == "__main__":
