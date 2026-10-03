@@ -12,7 +12,7 @@ interface Props {
 /** Reserve space for result actions so they never obscure the image or overflow on phones. */
 export function CanvasResultActionBar({ currentImage, onOpenRefinement, onDownload, isDownloading }: Props) {
   return (
-    <div data-testid="target-result-action-bar" className="shrink-0 border-t border-white/10 bg-surface-1 px-3 py-2.5">
+    <div data-testid="target-result-action-bar" className="shrink-0 border-t border-border bg-surface-1/95 px-3 py-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-1.5 text-xs text-zinc-400">
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
@@ -31,7 +31,7 @@ export function CanvasResultActionBar({ currentImage, onOpenRefinement, onDownlo
             onClick={() => onOpenRefinement(currentImage.id, currentImage.refinementSessionId)}
             className="btn btn-sm btn-outline min-h-9 whitespace-nowrap"
           >
-            <BrainCircuit className="h-3.5 w-3.5 text-cyan-300" />
+            <BrainCircuit className="h-3.5 w-3.5 text-primary-soft" />
             AI 精修
           </button>
           <button

@@ -28,7 +28,7 @@ const modes = [
 
 /** Keep image tools together; result actions have one persistent entry below the canvas. */
 export const CanvasTopToolbar: React.FC<CanvasTopToolbarProps> = (props) => (
-  <div className="shrink-0 space-y-2 border-b border-white/10 bg-surface-1/90 px-3 py-2.5">
+  <div className="shrink-0 space-y-2 border-b border-border bg-surface-1/90 px-3 py-2.5">
     <div className="flex min-w-0 items-center justify-between gap-2">
       <span title={props.currentImageName || undefined} className="min-w-0 truncate text-xs font-medium text-zinc-200">
         {props.currentImageName || '2. 目标画布'}
@@ -54,7 +54,7 @@ export const CanvasTopToolbar: React.FC<CanvasTopToolbarProps> = (props) => (
       <div
         role="group"
         aria-label="画布工具"
-        className="flex shrink-0 items-center gap-0.5 rounded-xl border border-white/10 bg-surface-2 p-1"
+        className="flex shrink-0 items-center gap-0.5 rounded-xl border border-border bg-surface-2 p-1"
       >
         {modes.map(({ id, label, icon: Icon }, index) => (
           <button
@@ -70,7 +70,7 @@ export const CanvasTopToolbar: React.FC<CanvasTopToolbarProps> = (props) => (
               <motion.span
                 layoutId="canvas-tool"
                 transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-                className="absolute inset-0 rounded-lg border border-indigo-400/25 bg-indigo-500/15"
+                className="absolute inset-0 rounded-lg border border-primary-border bg-primary-muted"
               />
             )}
             <Icon className="relative h-3.5 w-3.5 shrink-0" />
@@ -86,7 +86,7 @@ export const CanvasTopToolbar: React.FC<CanvasTopToolbarProps> = (props) => (
             aria-pressed={props.showFaceMarkers}
             aria-label="显示人脸定位框"
             title="显示或隐藏人脸定位框"
-            className={`btn btn-icon ${props.showFaceMarkers ? 'bg-cyan-500/10 text-cyan-300' : 'btn-ghost'}`}
+            className={`btn btn-icon ${props.showFaceMarkers ? 'bg-primary-muted text-primary-soft border border-primary-border' : 'btn-ghost'}`}
           >
             {props.showFaceMarkers ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
           </button>

@@ -7,21 +7,21 @@ export default {
     extend: {
       colors: {
         /* ── Surface Hierarchy ── */
-        background: '#0c0c0f', // deepest canvas
-        surface: '#111115', // primary panel
-        'surface-1': '#141418', // slightly elevated card/strip
-        'surface-2': '#17171c', // elevated panel/dialog
-        'surface-3': '#1e1e24', // card / input
-        'surface-hover': '#25252c', // interactive hover
-        'surface-active': '#2d2d36', // pressed / selected
+        background: '#09090c', // deepest canvas
+        surface: '#0f0f13', // primary panel
+        'surface-1': '#131317', // slightly elevated card/strip
+        'surface-2': '#17171d', // elevated panel/dialog
+        'surface-3': '#1f1f26', // card / input
+        'surface-hover': '#272731', // interactive hover
+        'surface-active': '#2f2f3c', // pressed / selected
 
         /* 画布最深处 —— 图片/画布类视图专用，比 background 再暗一档以突出画面本体 */
-        canvas: '#0a0a0d',
+        canvas: '#07070a',
 
         /* ── One-pixel Borders ── */
-        border: 'rgba(255,255,255,0.07)',
-        'border-md': 'rgba(255,255,255,0.12)',
-        'border-strong': 'rgba(255,255,255,0.20)',
+        border: 'rgba(255,255,255,0.06)',
+        'border-md': 'rgba(255,255,255,0.10)',
+        'border-strong': 'rgba(255,255,255,0.16)',
 
         /* ── Accent – Indigo (primary action) ── */
         primary: '#5b5fef',
@@ -109,8 +109,8 @@ export default {
            后输出的那条把 --tw-shadow 重写为 var(--tw-shadow-colored)，从而劫持这里定义的
            几何与透明度。（历史 bug：键名为 primary/cyan 时，.shadow-primary 实际渲染成
            100% 不透明的 #5b5fef，而非下面的 0.35 rgba。） */
-        'glow-primary': '0 2px 16px rgba(91,95,239,0.35)',
-        'glow-accent': '0 2px 16px rgba(6,182,212,0.30)',
+        'glow-primary': '0 2px 14px rgba(91,95,239,0.22)',
+        'glow-accent': '0 2px 14px rgba(6,182,212,0.18)',
         inset: 'inset 0 1px 2px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(255,255,255,0.04)',
       },
 

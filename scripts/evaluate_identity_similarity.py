@@ -39,6 +39,12 @@ def parse_args(argv=None):
         help='JSON {image file name: {"1-based face index": identity id}}; replaces the random identity choice '
         "(use with --identities-per-face 1) so other tools can be scored on the same pairs",
     )
+    parser.add_argument(
+        "--single-reference",
+        action="store_true",
+        help="Swap with only each identity's first (frontal) reference, like tools that accept one source image; "
+        "scoring still uses the whole library",
+    )
     parser.add_argument("--eval-models-dir", type=Path, default=Path("models/eval"))
     parser.add_argument(
         "--alphaface-scale",
@@ -281,7 +287,7 @@ def run(pipeline, attribute_model, targets, library, centroids, units, args, arm
             mappings, meta = [], {}
             for index, face in eligible:
                 identity = plan[index][round_index]
-                refs = library[identity]["refs"]
+                refs = library[identity]["refs"][: 1 if args.single_reference else None]
                 plans, _selection = prepare_strategies(pipeline, face, refs)
                 mapping = dict(next(p for p in plans if p["strategy"] == "production_blend")["mapping"])
                 mapping.update(target_index=index, target_embedding=face.embedding.copy())

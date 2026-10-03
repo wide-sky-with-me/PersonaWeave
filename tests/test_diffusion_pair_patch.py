@@ -28,3 +28,13 @@ def test_each_replacement_applies_exactly_once_and_installs_the_safe_loader_firs
 def test_changed_upstream_is_rejected_instead_of_silently_half_patched():
     with pytest.raises(ValueError):
         apply(upstream_like().replace("for i in range(len(other_pred_x_0)):", "for j in range(3):"))
+
+
+def test_detection_padding_keeps_the_crop_centred_and_adds_half_a_side_each_way():
+    import numpy as np
+
+    from scripts.evaluate_diffusion_swaps import pad_for_detection
+
+    crop = np.arange(8 * 8 * 3, dtype=np.uint8).reshape(8, 8, 3)
+    padded = pad_for_detection(crop)
+    assert padded.shape == (16, 16, 3) and (padded[4:12, 4:12] == crop).all()

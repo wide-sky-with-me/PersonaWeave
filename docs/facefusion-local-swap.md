@@ -192,3 +192,54 @@ AlphaFace 输入 `target`/`source`、输出无掩码）。同一 35 张真实人
 - Ghost 3 的总耗时为 967 s（其他模型 36–60 s），原因未查明且可能与本机内存压力有关，不作为速度结论。
 - 局限同前：一台机器、一次、3 个随机人物、WSL 的 onnxruntime-gpu 1.20.2；像素差与检测分只是自然度代理，
   拼图为人工查看，不是自然度验收；研究/非商用权重仅用于本地评估，未分发、不进入便携包，默认模型与路由不变。
+
+### 扩散换脸方案评估：REFace 与 DiffSwap++（2026-10-03）
+
+评估两个可本地运行的开源扩散换脸模型（均基于 Stable Diffusion 1.4、50 步 DDIM，GitHub：
+`Sanoojan/REFace` 提交 `f73bd8d`，`WestonBond/DiffSwapPP` 提交 `4b8f788`，代码 MIT；REFace 权重 CC-BY-NC 4.0）。
+**仅本机研究评估，未进入便携包或生产路径。**
+
+**安全与复现。** 检查点是 PyTorch pickle，加载前用 `pickletools` 静态扫描（不执行），只引用张量重建类、
+`OrderedDict`，DiffSwap++ 另有 numpy 标量和 Lightning `ModelCheckpoint`；运行时用白名单 `torch.load` 替换，其他类一律拒绝，
+并用内存映射加载。权重 SHA-256：REFace `last.ckpt` `194081de532a6bab92c5e135e6d950f859aafd4720e0a491152a3469f0762d10`，
+DiffSwap++ `last.ckpt`（12.9 GB）`90088755d2c727d7688042740be02c80f3262a8dcaf299c5d2471e2c5efd6a86`。
+隔离环境：Python 3.10、torch 2.2.2+cu121，OpenAI CLIP 固定到提交 `dcba3cb2`；上游仅为 `import` 而需要的训练专用包
+`taming`、`wandb` 用本地占位模块代替（使用即报错）。成对运行器由
+[`scripts/diffusion_pair_patch.py`](../scripts/diffusion_pair_patch.py) 从上游脚本精确替换生成，
+目标/源准备见 [`scripts/diffusion_swap_prepare.py`](../scripts/diffusion_swap_prepare.py)，
+打分见 [`scripts/evaluate_diffusion_swaps.py`](../scripts/evaluate_diffusion_swaps.py)。
+
+**覆盖率。** 两个模型都依赖 dlib 正脸检测做对齐。在 35 个目标脸中，dlib 只检出 18 个（51%），17 个（多为侧脸、低头）
+无法进入流程；源人像（正面）全部可检出。以下比较只针对这 18 个可对齐的脸，且都在扩散模型自己的 FFHQ 式对齐裁剪（外扩
+边缘复制以便检测）上进行，用同一身份分配和同一套 ArcFace 指标，报告 SHA-256：基线
+`d61c78241495ec621d3080839bc82d0749e5fdba897d3570224425690b894c13`、单参考对照
+`3ee7e0d58d9499c3a619841062780781ac5bade2e03c9c322054bfba833e8e13`、REFace
+`df999ec7fda97da97ecea9948ba90bfac51cc96b2660c316ab92a816f82c8a6d`、DiffSwap++
+`cae3b8dca5e24247203f87774ab150a8596a8a591453ae8433487baa6c38f01a`。
+
+扩散工具只接受**一张**源图，因此以单张正面参考为对照（生产管线只给正面参考时，对极端侧脸会按
+`extreme_pose_without_matching_reference` 守卫拒绝，18 个里 6 个）。在所有臂都能评分的 12 个脸上：
+
+| 模型（源图） | 质心相似度 | 逐参考均值 | 排第 1 | 与原脸相似度 |
+| --- | ---: | ---: | ---: | ---: |
+| InSwapper 128（单张正面参考） | 0.530 | 0.424 | 75% | 0.344 |
+| HyperSwap 1b / 1c（单张正面参考） | 0.531 / 0.540 | 0.425 / 0.432 | 67% / 75% | 0.288 / 0.271 |
+| AlphaFace（单张正面参考） | 0.504 | 0.404 | 83% | 0.280 |
+| **REFace**（单张正面参考） | **0.313** | 0.252 | 42% | 0.237 |
+| **DiffSwap++**（单张正面参考，仅 4 个可比脸） | **0.337** | 0.272 | 50% | 0.237 |
+
+18 个可对齐脸上，画廊（16 张）臂：InSwapper 0.585、HyperSwap 1c 0.625、AlphaFace 0.570、Ghost 2/3 0.493/0.489；
+REFace 0.302、DiffSwap++（前 6 个脸）0.325，**没有一个扩散结果达到 1% 误识阈值**。
+扩散模型在 6 个被单参考守卫拒绝的极端侧脸上都能出图，但身份迁移同样低（REFace 约 0.28）。
+
+人工查看拼图（目标｜REFace｜DiffSwap++｜源）：两者结果几乎相同，保持姿态、发型和眼镜，面部被明显改动，
+但嘴唇偏粉紫、肤色斑块等伪影较常见，不如 ONNX 换脸模型稳定。
+
+**成本。** 单对约 5.5 分钟（GPU 无其他占用），内存/显存紧张时达 7–16 分钟，显存占用 7.7–7.9 GB（总 8 GB）；
+ONNX 换脸为秒级。DiffSwap++ 因此只跑了 18 对中的前 6 对。
+
+**重要限制。** DiffSwap++ 论文模型依赖 3D 潜变量条件，但其发布的 `inference_swap_selected.py` 与 REFace 的相同、
+不传入 3D 特征文件名，3D 分支（仅在传入特征名时执行）没有被使用；所以这里测的是“按发布推理脚本运行的 DiffSwap++ 检查点”，
+不等于论文完整配置，**结论不能外推到论文报告的指标**。其余限制同前：一台机器、一次、3 个随机人物中的 18 个脸，
+样本小；不是自然度验收。结论：在本项目的设置下，这两个扩散方案的身份迁移明显弱于 InSwapper/HyperSwap，
+且慢三个数量级、覆盖率低，**不值得替换当前 ONNX 流程**。

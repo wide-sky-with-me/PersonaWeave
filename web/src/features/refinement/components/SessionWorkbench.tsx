@@ -1,4 +1,4 @@
-import { Check, CheckCheck, Minus, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { Check, CheckCheck, Layers, Minus, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useEffect, useRef } from 'react';
 import { useToast } from '@/components/ui/ToastProvider';
@@ -14,6 +14,7 @@ import { useSessionDeletion } from '../hooks/useSessionDeletion';
 export function SessionWorkbench() {
   const targets = useStudioStore((state) => state.targetImages);
   const targetId = useWorkbenchStore((state) => state.targetId);
+  const navigate = useWorkbenchStore((state) => state.navigate);
   const target = targets.find((item) => item.id === targetId);
   const c = useSessionWorkbench(target);
   const { session, workspace } = c;
@@ -91,11 +92,23 @@ export function SessionWorkbench() {
       className="refinement-workbench flex min-h-0 flex-1 flex-col bg-background"
     >
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-sm font-semibold text-zinc-100">
-            {session?.title || target?.name || 'AI 精修工作台'}
-          </h1>
-          <p className="mt-1 text-2xs text-zinc-400">AI 精修 · 先看清问题，再决定怎么改</p>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <button
+            type="button"
+            aria-label="返回换脸画布"
+            onClick={() => navigate('prepare')}
+            className="btn btn-sm btn-outline gap-1.5 text-xs text-zinc-300 hover:text-white shrink-0 -ml-1 border-border hover:border-primary-border/60 transition-all cursor-pointer"
+            title="返回主工作台准备与换脸画布"
+          >
+            <Layers className="h-3.5 w-3.5 text-primary-soft" />
+            <span className="hidden sm:inline font-medium">返回画布</span>
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-sm font-semibold text-zinc-100">
+              {session?.title || target?.name || 'AI 精修工作台'}
+            </h1>
+            <p className="mt-0.5 text-2xs text-zinc-400">AI 精修 · 先看清问题，再决定怎么改</p>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {session && (
