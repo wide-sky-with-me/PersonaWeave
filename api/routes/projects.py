@@ -10,6 +10,7 @@ from api.projects.recovery import import_assets, recover_record, restore_project
 from api.projects.store import ProjectConflict
 from api.schemas import ProjectAssetRequest, ProjectSaveRequest
 from core.image_security import image_mime_type
+from core.memory_budget import MemoryPressureError
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Studio Projects"])
 
@@ -20,6 +21,10 @@ def checked(action):
         return action()
     except LookupError as exc:
         raise HTTPException(404, "Project or history record is unavailable") from exc
+    except MemoryPressureError as exc:
+        # Image validation withholds decoding when host headroom is short; this is a
+        # temporary condition the user can fix, not a server fault or invalid project.
+        raise HTTPException(503, str(exc)) from exc
     except ProjectConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except FileNotFoundError as exc:

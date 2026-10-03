@@ -14,6 +14,7 @@ from api.projects.recovery import recover_record
 from api.projects.store import ProjectConflict, ProjectStore
 from api.routes.projects import router
 from api.schemas import BatchTaskCreateRequest, ProjectSaveRequest, TaskDetailData
+from core.memory_budget import MemorySnapshot
 
 
 def png(color="red"):
@@ -123,6 +124,22 @@ def test_http_contract_safe_media_and_stale_save(store):
         assert client.post(f"/api/v1/projects/{project['id']}/assets", json={"image": "/etc/passwd"}).status_code == 422
         assert client.get("/api/v1/projects/not-an-id").status_code == 422
         assert client.post(f"/api/v1/projects/{project['id']}/assets", json={"image": "data:"}).status_code == 422
+
+
+def test_low_host_memory_reports_actionable_503_for_project_media(store, monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    app.state.projects = store
+    app.state.refinement_sessions = None
+    monkeypatch.setattr(
+        "core.memory_budget.memory_snapshot", lambda: MemorySnapshot(total=8 * 1024**3, available=256 * 1024**2)
+    )
+    with TestClient(app) as client:
+        project = client.post("/api/v1/projects").json()["data"]
+        source = "data:image/png;base64," + base64.b64encode(png()).decode()
+        response = client.post(f"/api/v1/projects/{project['id']}/assets", json={"image": source})
+    assert response.status_code == 503
+    assert "等待可用内存" in response.json()["detail"]
 
 
 def test_camera_mpo_survives_project_save_restore_and_serves_as_jpeg(store, camera_mpo_bytes):

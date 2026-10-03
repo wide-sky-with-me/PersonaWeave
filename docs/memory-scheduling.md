@@ -102,3 +102,9 @@ Windows 便携版与 API 使用同一套本地队列。上传 9 张图片不会�
 这些容量列为保证可用的最低配置；16 GiB 机器仍须关注可用提交额度和系统分页文件。
 
 便携启动器给 HTTP 连接设置 10 秒优雅关闭等待，避免浏览器 SSE 订阅长期阻止退出；随后取消剩余 HTTP 等待并执行应用关闭，原生运算仍需完成收尾。这不是推理超时，也不重发 AI 请求。
+
+工程素材导入/保存在图片校验前同样做内存预算。可用内存或 Windows 提交额度不足时，
+`/api/v1/projects/*` 返回 HTTP 503 和“等待可用内存”说明，而不是无说明的 500；稍后或释放内存后可重试，
+不表示工程数据无效（此前该路径未捕获 `MemoryPressureError`，在 2026-10-03 原生 GPU 冒烟中暴露：
+测试机可用量 493 MiB、需约 519 MiB）。实现 `api/routes/projects.py::checked`，回归
+`tests/test_projects.py::test_low_host_memory_reports_actionable_503_for_project_media`。
