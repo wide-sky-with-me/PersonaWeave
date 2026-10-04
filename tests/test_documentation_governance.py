@@ -9,13 +9,11 @@ NOTES = ROOT / ".agents/notes"
 DEFAULT_CAP = 12_000
 # Legacy over-limit files keep a ratchet: the cap may be lowered, never raised. Split or compress instead.
 CAPS = {
-    "AGENTS.md": 10_000,
-    "README.md": 8_000,
-    "DESIGN.md": 8_000,
-    "docs/ai-refinement.md": 32_000,
-    "docs/task-history.md": 25_500,
-    "docs/facefusion-local-swap.md": 16_000,
-    "docs/refinement-prompts.md": 13_000,
+    "AGENTS.md": 9_000,
+    "README.md": 6_500,
+    "DESIGN.md": 6_000,
+    "docs/ai-refinement.md": 13_000,
+    "docs/refinement-prompts.md": 12_500,
 }
 NOTE_CAP = 6_000
 HISTORY_WORDS = ("此前", "以前", "原先", "曾经", "现已", "如今", "不再", "previously", "formerly", "no longer")
@@ -101,3 +99,28 @@ def test_agent_rules_point_to_every_documentation_layer():
     rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     for link in ("docs/documentation-governance.md", ".agents/notes/README.md", "CHANGELOG.md"):
         assert link in rules
+
+
+def all_markdown_outside_notes():
+    top_level = [ROOT / name for name in ("AGENTS.md", "README.md", "DESIGN.md", "CHANGELOG.md", "models/README.md")]
+    return [*top_level, *sorted((ROOT / "docs").glob("*.md")), ROOT / "tests/fixtures/README.md"]
+
+
+def test_every_document_is_reachable_from_another_document():
+    """No orphan documents: each docs/*.md must be linked from some other Markdown file."""
+    texts = {path: path.read_text(encoding="utf-8") for path in all_markdown_outside_notes()}
+    orphans = [
+        relative(doc)
+        for doc in (ROOT / "docs").glob("*.md")
+        if not any(doc.name in text for path, text in texts.items() if path != doc)
+    ]
+    assert not orphans, f"Link these from README.md, DESIGN.md, AGENTS.md or a related document: {orphans}"
+
+
+def test_every_decision_note_is_discoverable_without_an_index():
+    """Notes have no global index, so a document, the rules or another note must link each one."""
+    texts = {path: path.read_text(encoding="utf-8") for path in [*all_markdown_outside_notes(), *notes()]}
+    unlinked = [
+        relative(note) for note in notes() if not any(note.name in text for path, text in texts.items() if path != note)
+    ]
+    assert not unlinked, f"Link each note from the document it explains: {unlinked}"

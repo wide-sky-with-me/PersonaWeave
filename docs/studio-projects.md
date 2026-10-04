@@ -1,0 +1,53 @@
+# Studio projects and explicit recovery
+
+Task results are a read-only execution record ([task-history.md](task-history.md)). A separate **editor project** saves the mutable Studio context in `data/projects.sqlite3`, with independent content-addressed image files under `outputs/api_results/projects/{project_id}/`. A project is the latest saved editing state shared by its explicitly linked task/session records, not a rewrite of an execution recipe. Several task/session rows may link to one project; the first owning link is kept and later saves never reassign another project's records.
+
+## Saving
+
+The workbench autosaves after editing pauses and shows dirty/saving/saved/error. It saves target images and results, source people/references, stable original face topology and mappings, all editable parameters, per-image protection mask with undo/redo frames, active target, brush/view settings, refinement session associations, viewed/base version choices, analysis confirmation, model/comparison/zoom/pane choices and unsubmitted feedback. Managed portrait originals remain the processing references; display thumbnails are archived separately, byte for byte, through SQLite opaque-ID resolution with managed-root containment checks, so a restore does not need the original library (`api/projects/recovery.py`, `tests/test_projects.py`). Execution references become frozen manual references while person IDs and labels stay stable.
+
+Every required picture must upload before a document commits; a failed save leaves the previous revision intact with a visible error and never claims unsaved edits are durable. Images are referenced by digest inside the JSON document. Uploads validate the existing byte/pixel limits, deduplicate within a project and keep encoded bytes. Documents are limited to 4 MiB excluding picture bytes and reject unsupported schema versions, transient blob/data images, prototype keys and excessive nesting. Saving uses optimistic revision checks and serializes media uploads: a stale editor gets a conflict instead of overwriting another tab, and “另存为新工程” keeps a conflicted editor as a separate project. Closing or reloading while a save is pending uses the browser's unsaved-change protection; no browser crash can preserve changes that never reached the server. Successful saves prune unused image/mask deduplication keys, and switching projects clears the cache.
+
+Large server-encoded PNG snapshots use the bounded internal budget (external uploads keep the 20 MiB limit) and keep pixel/memory checks. During recovery, assets above the upload cap are digest-verified and kept as controlled `/api/v1/files/projects/{project_id}/{digest}` URLs, so autosave never resubmits them as oversized uploads; these independent copies stay valid after a session is deleted (session publication URLs alone do not make an independent copy). Regression: `tests/test_large_refinement_snapshots.py`, `web/src/features/projects/largeProjectSnapshot.test.ts`.
+
+## Restoring
+
+“查看” or opening a session only views history. **“恢复工程”** saves the current editor first, restores the complete saved project and returns to editing; local execution in progress blocks switching projects. Restore fetches and SHA-256-verifies all referenced images before atomically updating either editor store; a missing or corrupt image leaves the editor unchanged. The only browser-local project metadata is the current opaque project ID: refresh loads that project, and another browser can choose it from history. Lightweight refinement selections and pending commands also survive a same-tab refresh in `sessionStorage`; pending commands are not replayed by restore.
+
+Runtime flags, active task IDs, callbacks, server progress and accepted-version pointers are not hydrated from project data; the task/session services stay the authority for progress and acceptance. Recovery never starts a swap, sends an AI turn, accepts a candidate or re-detects/reorders saved faces. An interrupted `PROCESSING` preview restores as idle. Active task reconnection still needs an exact existing browser-to-target association. “新工程” saves the current editor before clearing inputs.
+
+A confirmed missing batch (404/410) marks its associated processing images failed and unlocks retry/editing; new or restored projects clear App-level batch summary/detail/error caches. Regression: `useBatchPipeline.test.tsx`, `projectController.test.ts`.
+
+## Endpoints
+
+- `GET /api/v1/projects?limit=`: bounded summaries (`id/title/revision/updated_at`), no document or pictures.
+- `POST /api/v1/projects`: create an upload destination; empty unsaved rows are excluded from history.
+- `GET /api/v1/projects/{id}`: one complete saved editor document.
+- `POST /api/v1/projects/{id}/restore`: open a saved editor and repair missing refinement inputs from its linked batch records; list restore and page refresh use it, plain GET stays read-only.
+- `PUT /api/v1/projects/{id}`: revision-checked document save and explicit task/session associations.
+- `POST /api/v1/projects/{id}/assets`: freeze an image or original portrait asset/identity selection; never invokes a model.
+- `GET /api/v1/projects/{id}/assets/{digest}`: owned, digest-verified image bytes.
+- `POST /api/v1/projects/recover/{batch|session}/{record_id}`: open the owning project, or explicitly migrate the available old record into a new partial project.
+- `DELETE /api/v1/projects/{id}?expected_revision=`: remove this project's document, links and own copies only. Task results, refinement versions and the portrait library stay; removing task/session history does not remove independently saved project images, though a deleted session's turns and acceptance cannot be recreated from the editor snapshot.
+
+When host memory is short, project media import answers `503` with the “等待可用内存” guidance instead of a bare 500 ([memory-scheduling.md](memory-scheduling.md)).
+
+## Records without an editor snapshot
+
+Old batch requests can retain parameters, mappings, references and final masks; recovery reuses those actual fields, durable originals/results and any existing refinement link. Old refinement sessions retain original/baseline and individual reference images and can populate a partial workspace with the exact stored person/face-index binding. Reference-board composites never substitute for original portrait references. No missing face index is guessed, and no detector or paid request runs during migration.
+
+For batch results without a session, recovery rebuilds missing refinement input from the saved request's content-addressed references and each result's actual `person_outcomes` face assignments. Unassigned skipped roles from other images are excluded and do not block the confirmed people of this image. Original and local result must match the editor's images: equal asset digests pass directly, different encodings need exact decoded-pixel equality. Every restore entry (project list, batch/session history, page refresh) repairs projects restored earlier, preserving existing recipes, edits and drafts. Single-source requests without a requested face index use actual outcome assignments, not inferred numbers; missing assignments/references or identity membership that was never frozen stay unavailable, and current library selections never stand in for execution evidence. Deleted batch records do not block an independent project. Regression: `tests/test_projects.py`, `tests/test_batch_refinement.py`.
+
+For new running batch tasks the editor saves `pendingRefinement` (task ID plus frozen reference input) before results arrive. On an explicitly associated active-task reconnect only the matching task may complete that recipe with its immutable original/result URLs; it never substitutes current selections or starts a model request, and cannot reconnect or execute a task by itself. Switching refinement targets with no session yet is also autosaved. Pending input must reach the server before a crash or refresh for the saved-state guarantee to apply. Regression: `BatchControls.test.tsx`, `projectController.test.ts`, `projectSnapshot.test.ts`.
+
+An older project can lack a session link despite an accepted result. Explicit restore repairs it only when exactly one accepted session matches the target ID, the normalized original/local canvas digests and every identity-reference binding (person ID, face index, reference digests); unreferenced bystanders add no binding. Existing links are not reassigned, changed canvases or references are rejected, and several matching sessions stay unresolved. This path never accepts a version or creates a turn (`matching_accepted_sessions` in `api/refinement/store.py`, `restore_accepted_session_links` in `api/projects/recovery.py`).
+
+Unavailable files, absent original requests, missing face boxes, unsaved feedback, original UI names and mask undo/redo history cannot be recovered after the fact; the restored project lists what is missing. Missing boxes stay an explicit empty set, missing parameters use current UI defaults with a warning, available media stays editable and the AI session can still be opened. Legacy single-task archives keep their read-only/acceptance boundary ([delivery-quality.md](delivery-quality.md)).
+
+## Final results and export
+
+How accepted session results appear in the workspace, how single-image and ZIP export verify them and what deletion does to them is in [refinement-workbench.md](refinement-workbench.md). ZIP entries preserve downloaded bytes, use the detected PNG/JPEG/WebP extension and unique filenames; the export collects completed targets from the current editor, so it works without an active batch. The task-history detail stays the immutable local execution record, separate from current-editor final export (`web/src/utils/workspaceExport.ts`).
+
+## Evidence
+
+[`api/projects/store.py`](../api/projects/store.py), [`api/projects/recovery.py`](../api/projects/recovery.py), [`api/routes/projects.py`](../api/routes/projects.py), [`projectController.ts`](../web/src/features/projects/projectController.ts), [`projectSnapshot.ts`](../web/src/features/projects/projectSnapshot.ts); input contracts in [`api/schemas.py`](../api/schemas.py). Tests: [`test_projects.py`](../tests/test_projects.py), `projectSnapshot.test.ts`, `projectController.test.ts`, and the non-production browser audit `scripts/smoke_project_recovery.py`.

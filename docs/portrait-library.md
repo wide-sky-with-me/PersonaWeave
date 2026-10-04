@@ -40,8 +40,11 @@ uv run personaweave-import-portraits --source data/portrait_refresh_20260923 --a
 - 左右大侧脸分别核实五点 yaw 的符号和覆盖范围；标签里的角度表示生成目标，不是精确姿态测量。
 - 不完整或低一致性图板不进入导入清单，须人工审阅并补做。
 
-这些检查不保证所有复杂遮挡都能成功换脸。生产中的极端侧脸保护继续生效，默认选图仍优先覆盖左右
-侧脸与低头角度，最多选择 8 张；详见 [本地换脸契约](facefusion-local-swap.md)。
+这些检查不保证所有复杂遮挡都能成功换脸。生产中的极端侧脸保护继续生效（见 [本地换脸契约](facefusion-local-swap.md)）。
+
+## 默认选图
+
+素材库界面确定性地预选最多 8 张非拼图素材：优先正脸、左右最强侧脸、左右低头侧脸和接近 30° 的左右视角，再补满剩余名额，不随机取图。策略的可执行实现是 `web/src/utils/portraitAssetSelection.ts` 的 `selectDiversePortraitAssets()`，回归 `portraitAssetSelection.test.ts`。
 
 上一批素材的制作、检测数量和限制见 [旧素材实测记录](portrait-refresh-validation.md)，
 当前中国人物版本见 [当前素材实测记录](portrait-chinese-validation.md)。

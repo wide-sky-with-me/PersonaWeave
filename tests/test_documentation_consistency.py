@@ -288,7 +288,7 @@ def test_source_recipe_and_diagnostic_unknowns_are_documented():
 def test_documented_evidence_pixel_budget_matches_shared_contract():
     from core.refinement.contracts import MAX_EVIDENCE_PIXELS
 
-    refinement = _read("docs/ai-refinement.md")
+    refinement = _read("docs/refinement-session-api.md")
     assert "`MAX_EVIDENCE_PIXELS`" in refinement
     assert f"{MAX_EVIDENCE_PIXELS // 1_000_000} million decoded pixels per creation" in refinement
     assert MAX_EVIDENCE_PIXELS % 1_000_000 == 0

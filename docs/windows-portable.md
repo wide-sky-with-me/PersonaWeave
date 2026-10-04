@@ -46,7 +46,7 @@ uv run python scripts/build_windows_gpu_upgrade.py
 
 ## 升级、修复与自检
 
-- **CPU 升级到 GPU**：关闭工作台，把 `PersonaWeave-Windows-GPU-Upgrade.zip` 解压到 CPU 目录（与 `Start.cmd` 同层），双击 `Upgrade-GPU.cmd`，之后仍用 `Start.cmd`。升级器核对已交付 CPU manifest、现有程序和全部升级文件摘要，运行中拒绝替换；只移除旧 CPU 包文件，保留 `.env`、工程、历史、素材与结果；中断后重新执行可继续，版本不匹配或程序文件被改动时拒绝覆盖，应改用完整 GPU 包。差分包必须用用户已拿到的 CPU manifest 构建。
+- **CPU 升级到 GPU**：关闭工作台，把 `PersonaWeave-Windows-GPU-Upgrade.zip` 解压到 CPU 目录（与 `Start.cmd` 同层），双击 `Upgrade-GPU.cmd`，之后仍用 `Start.cmd`。升级器核对已交付 CPU manifest、现有程序和全部升级文件摘要，运行中拒绝替换；只移除旧 CPU 包文件，保留 `.env`、工程、历史、素材与结果；中断后重新执行可继续，版本不匹配或程序文件被改动时拒绝覆盖，应改用完整 GPU 包。差分包必须用用户已拿到的 CPU manifest 构建。实测记录见 [windows-gpu-upgrade-validation.md](windows-gpu-upgrade-validation.md)。
 - **源码修复包**：`scripts/build_windows_fix.py` 为已有原始 CPU/GPU 清单生成只含差异源码的修复包，复用 `scripts/upgrade_windows_gpu.py::apply_update` 的版本/摘要/运行锁校验，不改模型和用户数据；已单独打过补丁的版本可能不匹配，必须停止而不是强行覆盖。
 - **`Repair-Runtime.cmd`**：用 Windows 自带 PowerShell 更新程序目录的 VC++ DLL（避免用程序自身 Python 更新其已加载的库），备份原文件和 manifest 到 `data/support_backups/`，不改系统库；运行中、载荷损坏或 DLL 被改动时拒绝更新。
 - **`Check-Install.cmd`**：运行 `scripts/check_windows_portable.py`，核对文件、补丁标记、素材库引用和临时图片归档，输出不含 Key 和图片内容的 `install-check.json`；缺失/不可读文件、清单错误或配置加载故障时保留已收集的诊断，报告无法写入时返回失败并在控制台显示。它不执行模型，不能据 `missing_files: []` 判定 GPU 或队列正常。
@@ -57,4 +57,4 @@ uv run python scripts/build_windows_gpu_upgrade.py
 
 HTTP 422 表示请求被接口校验或归档逻辑拒绝，不能单凭状态码认定缺驱动或缺模型；需结合具体 POST/PUT 路由区分缺失缩略图、过期程序、无法访问的素材或无效工程字段。缺 VC 运行库通常使启动或导入失败，不能把所有 422 都归因于它。原始干净包只含四张示例图，不含个人素材库和工程；不能用干净包的示例目录覆盖已配置目录。未签名程序的 Windows 信任提示由系统控制，打包不能保证消除，也不会关闭系统防护；包内 Python 启动前的解压错误无法由程序兜底。
 
-本地 AI Router 初始化失败（如无法识别模型协议）会单独显示为“AI 路由配置错误”，不报成上游 HTTP 400，修复配置后须重启（见 [model-catalog.md](model-catalog.md)）。便携版各项处理方式的原因与被否定的方案见 [Windows 决策笔记](../.agents/notes/windows/)。
+本地 AI Router 初始化失败（如无法识别模型协议）会单独显示为“AI 路由配置错误”，不报成上游 HTTP 400，修复配置后须重启（见 [model-catalog.md](model-catalog.md)）。便携版各项处理方式的原因与被否定的方案见决策笔记：[五个 VC++ 组件](../.agents/notes/windows/20260923-vc-runtime-five-components.md)、[中文路径与相机 JPEG](../.agents/notes/windows/20260929-unicode-paths-and-camera-jpeg.md)、[只发布校验过的构建](../.agents/notes/windows/20260930-publish-only-verified-builds.md)。

@@ -12,7 +12,7 @@
 | 历史 | [CHANGELOG.md](../CHANGELOG.md) | 什么时候改了什么 | 按日期追加，不作为当前能力依据 |
 | 实测记录 | `docs/*-validation.md`、`docs/refinement-live-test-*.md`、`docs/validation/` | 某次验证的输入、指标和校验和 | 带日期，说明适用范围，不外推 |
 
-事实层与决策层不能混写：事实文档里放历史取舍、踩坑过程和被舍弃的方案，会让人找一个功能点的描述都要翻很久；决策笔记里放当前接口细节则会很快过期。
+这套分层的取舍与被否定的方案见 [决策笔记](../.agents/notes/platform/20261004-three-layer-documentation.md)。事实层与决策层不能混写：事实文档里放历史取舍、踩坑过程和被舍弃的方案，会让人找一个功能点的描述都要翻很久；决策笔记里放当前接口细节则会很快过期。
 
 ## 权威层级
 
@@ -20,7 +20,7 @@
 
 | Topic | Canonical current document | Executable fact source | Regression evidence |
 | --- | --- | --- | --- |
-| Conversational whole-image refinement | [ai-refinement.md](./ai-refinement.md) | [`api/refinement/service.py`](../api/refinement/service.py), [`api/refinement/store.py`](../api/refinement/store.py), [`api/refinement/contracts.py`](../api/refinement/contracts.py), [`core/refinement/conversation.py`](../core/refinement/conversation.py) | `tests/test_refinement_sessions.py`, `tests/test_refinement_conversation.py`, `tests/test_batch_refinement.py`, `tests/test_legacy_refinement.py` |
+| Conversational whole-image refinement | [ai-refinement.md](./ai-refinement.md); routes and storage in [refinement-session-api.md](./refinement-session-api.md); UI flow in [refinement-workbench.md](./refinement-workbench.md) | [`api/refinement/service.py`](../api/refinement/service.py), [`api/refinement/store.py`](../api/refinement/store.py), [`api/refinement/contracts.py`](../api/refinement/contracts.py), [`core/refinement/conversation.py`](../core/refinement/conversation.py) | `tests/test_refinement_sessions.py`, `tests/test_refinement_conversation.py`, `tests/test_batch_refinement.py`, `tests/test_legacy_refinement.py` |
 | Refinement evidence and prompt contracts | [refinement-prompts.md](./refinement-prompts.md), subordinate to the refinement architecture | [`core/refinement/contracts.py`](../core/refinement/contracts.py), [`core/refinement/prompts.py`](../core/refinement/prompts.py), [`core/refinement/evidence.py`](../core/refinement/evidence.py) | `tests/test_refinement_conversation.py`; official sources and retrieval limitations are recorded in the prompt document |
 | VLM and image-edit routing | [model-catalog.md](./model-catalog.md) | [`config/ai_gateway.yaml`](../config/ai_gateway.yaml), [`core/ai/configuration.py`](../core/ai/configuration.py), [`core/ai/gateway.py`](../core/ai/gateway.py), `GET /api/v1/ai/models` | `tests/test_api.py`, `tests/test_ai_gateway_config.py`, `tests/test_ai_readiness.py`, `tests/test_litellm_gateway.py`, `tests/test_documentation_consistency.py` |
 | Production local face swap | [facefusion-local-swap.md](./facefusion-local-swap.md) | [`core/pipeline.py`](../core/pipeline.py), [`core/model_router.py`](../core/model_router.py), [`core/occluder.py`](../core/occluder.py), [`core/region_parser.py`](../core/region_parser.py) | `tests/test_facefusion_pipeline.py`, `tests/test_swapper_policy.py`, `tests/test_task_swap_outcome.py` |
@@ -29,6 +29,8 @@
 | Multi-row person labels | README summary plus this policy | [`web/src/utils/faceTopology.ts`](../web/src/utils/faceTopology.ts) | `web/src/utils/faceTopology.test.ts` |
 | Comparison geometry and face overlays | README summary plus this policy | [`web/src/utils/imageViewport.ts`](../web/src/utils/imageViewport.ts), `ComparisonViewer.tsx`, `TargetCanvas.tsx` | `web/src/utils/imageViewport.test.ts`, `ComparisonViewer.test.tsx`, `TargetCanvas.test.tsx` |
 | Batch task history and result review | [task-history.md](./task-history.md) | [`api/tasks/batch.py`](../api/tasks/batch.py), [`api/tasks/persistence.py`](../api/tasks/persistence.py), [`web/src/features/history/utils/taskHistory.ts`](../web/src/features/history/utils/taskHistory.ts) | `tests/test_api.py`, `tests/test_task_restart_persistence.py`, `web/src/features/history/utils/taskHistory.test.ts`, `RecentJobsPopover.test.tsx` |
+| Studio projects and explicit recovery | [studio-projects.md](./studio-projects.md) | [`api/projects/store.py`](../api/projects/store.py), [`api/projects/recovery.py`](../api/projects/recovery.py), [`web/src/features/projects/projectController.ts`](../web/src/features/projects/projectController.ts) | `tests/test_projects.py`, `web/src/features/projects/projectController.test.ts`, `projectSnapshot.test.ts` |
+| Historical refinement quality archive | [delivery-quality.md](./delivery-quality.md) | [`api/refinement/legacy.py`](../api/refinement/legacy.py), [`api/refinement/legacy_quality.py`](../api/refinement/legacy_quality.py) | `tests/test_legacy_refinement.py`, `tests/test_legacy_refinement_api.py` |
 | Offline benchmarks and historical measurements | [swap-benchmarks.md](./swap-benchmarks.md) | `scripts/compare_source_strategies.py`, `scripts/evaluate_swap_quality.py`, `scripts/diagnose_batch_strength.py` | `tests/test_source_strategy_comparison.py`, `tests/test_swap_benchmarks.py`, `tests/test_diagnose_batch_strength.py` |
 | Engineering boundaries and cleanup policy | [engineering-architecture.md](./engineering-architecture.md) | package boundaries, `config/ai_gateway.yaml`, `scripts/download_models.py` | `tests/test_package_boundaries.py`, `tests/test_ai_gateway_config.py`, `tests/test_download_models.py`, `tests/test_documentation_consistency.py` |
 
@@ -70,5 +72,5 @@ LiteLLM 以官方 [Router 文档](https://docs.litellm.ai/docs/routing) 和 [图
 ## 机械检查
 
 - `tests/test_documentation_consistency.py` 检查高风险的重复事实：精修生命周期、模型目录与网关配置、环境变量引用、生成/重试默认值、已退役供应商路径、素材选择数量，以及本地文件和章节链接。
-- `tests/test_documentation_governance.py` 检查：文档字符上限、事实文档中历史变迁词不得增加、决策笔记含必备章节且无全局索引、笔记中的本地链接有效。
+- `tests/test_documentation_governance.py` 检查：文档字符上限（存量上限只降不升）、事实文档不含历史变迁词、没有孤儿文档（每篇 `docs/*.md` 都被其他文档链接）、决策笔记结构完整且无全局索引、每篇笔记都能从某份文档或规则文件找到、笔记里的本地链接有效。
 - 这些检查补充评审，不证明正文语义正确。

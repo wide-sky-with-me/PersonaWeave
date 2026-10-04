@@ -64,7 +64,7 @@ AI Agent 在本仓库开发、维护和执行任务时必须遵守本文件。�
 - 精修 `issue.category` 仅限 identity/anatomy/occlusion/blending/lighting/texture/composition，region/description/evidence/suggestion 必须具体；不得恢复自由分类、分数门槛或自动 accept。回归 `tests/test_refinement_conversation.py`、`tests/test_vlm_contracts.py`。
 
 ### 6.5 对话式整图精修
-权威文档 [ai-refinement.md](docs/ai-refinement.md)（提示词依据见 [refinement-prompts.md](docs/refinement-prompts.md)）。
+权威文档 [ai-refinement.md](docs/ai-refinement.md)；接口与存储见 [refinement-session-api.md](docs/refinement-session-api.md)，工作台与恢复见 [refinement-workbench.md](docs/refinement-workbench.md)，提示词依据见 [refinement-prompts.md](docs/refinement-prompts.md)。
 - 生产是 session/turn/version 工作流；旧逐脸表单与单任务生成不是备用路径。会话冻结原图、初稿、稳定 person_id 与实际参考；原图只锚定姿态/人数/遮挡/场景，不锚定身份；不得按新检测排序重绑人物。
 - 后端控制 `discuss` / `generate` / `auto`：讨论绝不生图；每轮至多一次生图；禁止无限自动循环和 AI accept 工具。`Diagnosis` 必须具体可核验、可返回无缺陷，禁止编造分数或身份真值。
 - 生图只接收显式 `base_version_id` 的当前完整图与文字，禁止原图、参考板、素材、局部裁剪、mask、关键点或历史图进入生成输入；输出只做解码和规范化后整图保存，不得 `apply_candidate`、拼接、mask 回填或重新配准。
@@ -86,7 +86,7 @@ SQLite（`data/portrait_library/library.sqlite3`）持久化，禁止改为文�
 `models/` 下大小异常（几字节到几十字节）的 `.onnx` 先用 `file`/`cat` 检查，失败下载会留下伪装成权重的文本错误页。新增或修复模型前用 `onnxruntime.InferenceSession(...).get_inputs()/get_outputs()` 核实输入输出，并在 `tests/fixtures/` 的真实图片上推理核对输出语义；新增下载源必须验证 SHA-256（或来源完整性摘要），并同步 `models/README.md` 与 `scripts/download_models.py`。
 
 ### 6.9 批任务历史与结果回看
-权威文档 [task-history.md](docs/task-history.md)。服务端 SQLite 快照是事实源，浏览器 `localStorage` 只存不含图片的轻量关联；历史列表只返回有上限的轻量摘要，禁止传完整 `results`、请求体、图片 URL、base64；详情按 `task_id` 获取，新历史类型沿用“摘要 + 详情”。新成功结果同步保存不可变原始画布和处理产物，只经受控 `/api/v1/files/` 暴露，缺失时明确返回不可用，禁止猜路径或重建替代结果。历史查看器只读，不写入 `useStudioStore`；服务端状态始终优先。
+权威文档 [task-history.md](docs/task-history.md)，工程保存与恢复见 [studio-projects.md](docs/studio-projects.md)。服务端 SQLite 快照是事实源，浏览器 `localStorage` 只存不含图片的轻量关联；历史列表只返回有上限的轻量摘要，禁止传完整 `results`、请求体、图片 URL、base64；详情按 `task_id` 获取，新历史类型沿用“摘要 + 详情”。新成功结果同步保存不可变原始画布和处理产物，只经受控 `/api/v1/files/` 暴露，缺失时明确返回不可用，禁止猜路径或重建替代结果。历史查看器只读，不写入 `useStudioStore`；服务端状态始终优先。
 
 ### 6.10 工程边界
 权威文档 [engineering-architecture.md](docs/engineering-architecture.md)。

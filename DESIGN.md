@@ -69,8 +69,8 @@ VLM 和图像模型访问均经过 `AIGateway`，分别调用 LiteLLM `Router.ac
 当前行为由各专题文档定义，此处不重复：
 
 - 本地换脸、模型与许可：[facefusion-local-swap.md](docs/facefusion-local-swap.md)
-- 对话式整图精修：[ai-refinement.md](docs/ai-refinement.md)，实测边界见 [refinement-live-test-20260911.md](docs/refinement-live-test-20260911.md)（真实生成与版本衔接已验证，但候选出现相貌漂移，不能据流程通过宣称画质达标）
+- 对话式整图精修：[ai-refinement.md](docs/ai-refinement.md)（接口与存储 [refinement-session-api.md](docs/refinement-session-api.md)，工作台 [refinement-workbench.md](docs/refinement-workbench.md)），实测边界见 [refinement-live-test-20260911.md](docs/refinement-live-test-20260911.md)（真实生成与版本衔接已验证，但候选出现相貌漂移，不能据流程通过宣称画质达标）
 - AI 网关、超时、重试与降级：[model-catalog.md](docs/model-catalog.md)
-- 批任务、工程与历史：[task-history.md](docs/task-history.md)；内存与排队：[memory-scheduling.md](docs/memory-scheduling.md)
+- 批任务与历史：[task-history.md](docs/task-history.md)；工程保存与恢复：[studio-projects.md](docs/studio-projects.md)；内存与排队：[memory-scheduling.md](docs/memory-scheduling.md)
 - 素材库：[portrait-library.md](docs/portrait-library.md)；Windows 便携版：[windows-portable.md](docs/windows-portable.md)
 - 工程边界与清理：[engineering-architecture.md](docs/engineering-architecture.md)；文档分层与治理：[documentation-governance.md](docs/documentation-governance.md)

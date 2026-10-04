@@ -9,6 +9,16 @@
 - 新会话的接受更新 accepted_version_id，不能据此自动补造人工满意度评价，也不会被写入本页的旧 task 质量统计。新工作台不沿用旧单任务质量表单。
 - 历史人工评价与接受发布仍是独立动作。保存评价不发布候选；接受旧候选不自动填充满意度。缺少真实人工评价时，不宣称成片率提高。
 
+## 旧档案的边界与保留
+
+`api/refinement/legacy.py` 和 `api/routes/legacy_refinement.py` 只用于读取已持久化的旧任务、候选与证据、提交人工质量评价和按字节的人工接受；旧的状态和字段只描述这份档案，不属于新的轮次生命周期。
+
+- `outputs/refinement_evidence/{task_id}/` 是只读证据，不是已发布输出。发布仍使用已验证的暂存字节，不能用档案内容替代；证据收集和质量评价都不能接受候选。旧候选接受成功后清理旧的活动 staging，但保留独立的内容寻址质量证据。
+- 旧 `POST /refinement/review`、`/refinement/plan`、`/refinement/tasks`、`/refinement/tasks/{task_id}/cancel`、`/refinement/tasks/{task_id}/people/{person_id}/retry` 返回 `410`：不翻译请求，不经影子流水线生成，被淘汰的别名不会被静默映射，旧核心服务/计划和任务生成器也不是生产回退。继续编辑要从已验证可用的证据显式新建会话。
+- `GET /api/v1/refinement/legacy-tasks?limit=&offset=` 提供有界的轻量摘要供选择已有记录，不暴露完整请求或图片载荷，也不需要猜任务 ID。这份档案与新会话的轮次分离，旧评价不会变成新会话的接受授权。
+- 单条保留由显式 `DELETE /api/v1/refinement/tasks/{task_id}?expected_revision=` 控制：只有处于当前 revision 的 `REVIEW_REQUIRED`、`ACCEPTED`、`FAILED`、`CANCELLED` 记录可删，删除会清除旧请求/快照、候选、已接受文件以及该任务的 initial/generation/candidate/evaluation 质量记录和证据，不触碰新会话存储；历史页支持单条和选择删除，并关闭已删除的质量详情；沿用私有隔离与回滚边界。保留 ID `sessions` 不能删除，因为该目录属于新流程。回归 `tests/test_legacy_refinement.py`、`tests/test_legacy_refinement_api.py`、`LegacyQualityHistory.test.tsx`。
+- 仅在持久化的旧记录仍需要时保留这份档案；移除它需要明确的保留/迁移决定并同步更新回归。
+
 ## 历史证据读取与人工评价
 
 `api/refinement/legacy_quality.py::QualityEvaluationStore` 仅负责读取已有证据、校验访问、提交人工评价和计算历史汇总。历史质量生产器已删除：生产代码不提供 image / initial / start_generation / save_generation / candidate 等旧 worker 写入方法，也不为新会话创建旧表记录。测试使用临时 SQLite 与人工构造的内容寻址 fixture，不向用户档案灌测试数据。
