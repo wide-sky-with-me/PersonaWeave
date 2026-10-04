@@ -549,6 +549,16 @@ describe('server-backed conversation workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试同一请求' }));
     await waitFor(() => expect(sessionApi.turn).toHaveBeenCalledWith('s1', request));
   });
+
+  it('navigates back to prepare canvas when clicking the header back button', async () => {
+    useWorkbenchStore.setState({ view: 'refinement' });
+    mount();
+    await screen.findByText('合影精修', { selector: 'h1' });
+    const backBtn = screen.getByRole('button', { name: '返回换脸画布' });
+    expect(backBtn).toBeInTheDocument();
+    fireEvent.click(backBtn);
+    expect(useWorkbenchStore.getState().view).toBe('prepare');
+  });
 });
 
 it('uses small preview URLs while reference links and the current canvas retain full-resolution images', async () => {

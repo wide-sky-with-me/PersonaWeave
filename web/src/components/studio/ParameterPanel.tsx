@@ -37,7 +37,7 @@ const PRESETS: PresetItem[] = [
   {
     id: 'portrait',
     name: '写真质感',
-    desc: '高保真写真质感，强化正脸细节与五官清晰度',
+    desc: '换入强度 92%，自动选择模型；换入特征更强',
     icon: Sparkles,
     params: {
       swapper_model: 'auto',
@@ -50,7 +50,7 @@ const PRESETS: PresetItem[] = [
   {
     id: 'fast',
     name: '极速日常',
-    desc: '快速出图，泛化能力强，适合多场景抓拍与日常照',
+    desc: '固定 InSwapper 模型，强度 90%，识别阈值 0.35',
     icon: Zap,
     params: {
       swapper_model: 'inswapper_128',
@@ -63,7 +63,7 @@ const PRESETS: PresetItem[] = [
   {
     id: 'atmosphere',
     name: '复杂光影',
-    desc: '适度保留原片侧影高光，减少侧脸与暗光生硬边界',
+    desc: '强度 85%、识别阈值 0.30：换入特征较弱，匹配分较低的脸（如侧脸、暗光）也会被识别',
     icon: SunMedium,
     params: {
       swapper_model: 'auto',
@@ -74,9 +74,9 @@ const PRESETS: PresetItem[] = [
     },
   },
   {
-    id: 'occlusion',
-    name: '遮挡防护',
-    desc: '收紧识别截断，预防眼镜、饰品与发丝穿模贴图',
+    id: 'strict',
+    name: '严格匹配',
+    desc: '识别阈值 0.42，只替换匹配分较高的人脸；眼镜与遮挡保护在所有预设下始终开启',
     icon: ShieldCheck,
     params: {
       swapper_model: 'auto',
@@ -87,6 +87,18 @@ const PRESETS: PresetItem[] = [
     },
   },
 ];
+
+/** Recommended defaults, matching `api/schemas.py::SwapParameters`; shared by reset and the preset/tuned state. */
+const RECOMMENDED_DEFAULTS: Partial<SwapParameters> = {
+  similarity_threshold: 0.35,
+  identity_blend_strength: 0.9,
+  enable_color_transfer: true,
+  color_transfer_mode: 'boundary',
+  enable_dense_mask: true,
+  source_mode: 'best-match',
+  swapper_model: 'auto',
+  allow_research_models: false,
+};
 
 /* ── Labelled slider with value badge ───────────────────────── */
 const ParamSlider: React.FC<{
@@ -169,26 +181,19 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
   const currentTarget = targetImages[activeTargetIndex] || null;
 
   const activePresetId = useMemo(() => {
-    for (const preset of PRESETS) {
-      const p = preset.params;
-      const match =
-        (p.swapper_model === undefined || p.swapper_model === parameters.swapper_model) &&
-        (p.identity_blend_strength === undefined ||
-          Math.abs(p.identity_blend_strength - parameters.identity_blend_strength) < 0.005) &&
-        (p.similarity_threshold === undefined ||
-          Math.abs(p.similarity_threshold - parameters.similarity_threshold) < 0.005) &&
-        (p.color_transfer_mode === undefined || p.color_transfer_mode === parameters.color_transfer_mode);
-      if (match) return preset.id;
-    }
-    return 'custom';
+    const matches = (p: Partial<SwapParameters>) =>
+      (p.swapper_model === undefined || p.swapper_model === parameters.swapper_model) &&
+      (p.identity_blend_strength === undefined ||
+        Math.abs(p.identity_blend_strength - parameters.identity_blend_strength) < 0.005) &&
+      (p.similarity_threshold === undefined ||
+        Math.abs(p.similarity_threshold - parameters.similarity_threshold) < 0.005) &&
+      (p.color_transfer_mode === undefined || p.color_transfer_mode === parameters.color_transfer_mode);
+    if (matches(RECOMMENDED_DEFAULTS)) return 'default';
+    return PRESETS.find((preset) => matches(preset.params))?.id ?? 'custom';
   }, [parameters]);
 
   const handleApplyPreset = (preset: PresetItem) => {
-    updateParameters({
-      ...preset.params,
-      allow_research_models:
-        preset.params.swapper_model === 'hyperswap_1c_256' ? true : parameters.allow_research_models,
-    });
+    updateParameters(preset.params);
     toast({
       title: `已套用「${preset.name}」预设`,
       description: preset.desc,
@@ -271,16 +276,7 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
   };
 
   const handleResetDefaults = () => {
-    updateParameters({
-      similarity_threshold: 0.35,
-      identity_blend_strength: 0.9,
-      enable_color_transfer: true,
-      color_transfer_mode: 'boundary',
-      enable_dense_mask: true,
-      source_mode: 'best-match',
-      swapper_model: 'auto',
-      allow_research_models: false,
-    });
+    updateParameters(RECOMMENDED_DEFAULTS);
     toast({ title: '已恢复算法推荐默认参数', kind: 'info' });
   };
 
@@ -345,6 +341,7 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
               场景推荐预设
             </span>
             {activePresetId === 'custom' && <span className="chip chip-neutral text-xs font-medium">自定义微调</span>}
+            {activePresetId === 'default' && <span className="chip chip-neutral text-xs font-medium">推荐默认</span>}
           </div>
           <div className="grid grid-cols-2 gap-2">
             {PRESETS.map((preset) => {

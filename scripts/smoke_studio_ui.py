@@ -15,6 +15,39 @@ from playwright.sync_api import expect, sync_playwright
 from smoke_refinement_workbench import FixtureAPI, open_session
 
 
+def check_assign_popover_placement(page, output, verify):
+    """Open the quick-assign popover on faces at every canvas corner: it must stay fully inside the viewport."""
+    page.evaluate("""async () => {
+        const {useStudioStore} = await import('/src/stores/useStudioStore.ts');
+        const photo = new Image(); photo.src = '/__ui-fixture/original.png'; await photo.decode();
+        const W = photo.naturalWidth, H = photo.naturalHeight, box = (x, y) => [W*x, H*y, W*(x+0.08), H*(y+0.09)];
+        // Markers are hidden once a result exists, so return the target to its unprocessed state first.
+        useStudioStore.getState().updateTargetImageById('target1', {
+            status: 'IDLE', processedUrl: undefined, refinedUrl: undefined,
+            faces: [[1, 0.02, 0.05], [2, 0.9, 0.05], [3, 0.02, 0.86], [4, 0.9, 0.86]]
+                .map(([index, x, y]) => ({index, global_person_id: index, bbox: box(x, y)})),
+        });
+    }""")
+    for width, height in [(1440, 900), (390, 844)]:
+        page.set_viewport_size({"width": width, "height": height})
+        for index in (1, 2, 3, 4):
+            page.get_by_role("button", name=f"选择目标人物 {index}，位置人脸 {index}").click()
+            dialog = page.get_by_role("dialog", name=f"人脸 #{index} 快速指派")
+            expect(dialog).to_be_visible()
+            box = dialog.bounding_box()
+            if verify:
+                assert box and box["x"] >= 0 and box["y"] >= 0, (width, index, box)
+                assert box["x"] + box["width"] <= width and box["y"] + box["height"] <= height, (width, index, box)
+                # Not clipped or covered: the dialog is what is under its own centre point.
+                assert page.evaluate(
+                    "([x, y]) => !!document.elementFromPoint(x, y)?.closest('[role=dialog]')",
+                    [box["x"] + box["width"] / 2, box["y"] + 24],
+                ), (width, index)
+            page.screenshot(path=str(output / f"assign-popover-{width}-face{index}.png"))
+            page.keyboard.press("Escape")
+            expect(dialog).to_be_hidden()
+
+
 def main():
     """Capture preparation, result, history and refinement at desktop and phone sizes."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -177,6 +210,7 @@ def main():
                 expect(download).to_be_disabled()
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
             page.screenshot(path=str(args.output / f"deleted-result-{width}.png"))
+        check_assign_popover_placement(page, args.output, args.verify)
         page.evaluate("""async () => {
             const {saveProject} = await import('/src/features/projects/projectController.ts');
             await saveProject();
