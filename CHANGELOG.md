@@ -5,6 +5,7 @@
 - 文档治理改为三层：`AGENTS.md` 只写规则（15,092 字压到 8,398 字，细则链接到权威文档）、`docs/` 只写当前事实、新增 `.agents/notes/` 记录决策与被放弃的方案（无全局索引，只增不改）。新增 `tests/test_documentation_governance.py`：文档字符上限（存量超限文档只降不升）、事实文档禁用历史变迁词、无孤儿文档、决策笔记结构/可发现性/链接。
 - 压缩与迁移：删除约 5.7 万字的一次性前端样式审计报告，保留其会再次踩到的结论为决策笔记；`windows-portable.md` 由按日期堆叠的流水账（10,116 字）重写为当前事实（5,345 字），事故教训迁入 Windows 决策笔记；`facefusion-local-swap.md` 与 `swap-benchmarks.md` 中按日期堆叠的评测记录迁为 swap 决策笔记；README/DESIGN 尾部按修复时间追加的补丁段落改为指向专题文档的导航。
 - 继续拆分大文档：`ai-refinement.md`（31,556 字）拆为契约、`refinement-session-api.md`、`refinement-workbench.md`，历史档案边界并入 `delivery-quality.md`；`task-history.md`（25,050 字）拆出 `studio-projects.md`，设计原则迁成决策笔记；`facefusion-local-swap.md` 压到 11,878 字。
+- `ai-refinement.md` 再按职责拆分：证据/诊断/提示边界并入新的 `refinement-analysis.md`，生成与复评并入 `refinement-generation.md`，`refinement-prompts.md` 只保留提示词版本、官方依据和离线证据。所有 `docs/*.md` 现均低于默认字符上限，不再需要单独的放宽上限。
 
 ## 2026-10-03
 

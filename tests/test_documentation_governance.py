@@ -12,8 +12,6 @@ CAPS = {
     "AGENTS.md": 9_000,
     "README.md": 6_500,
     "DESIGN.md": 6_000,
-    "docs/ai-refinement.md": 13_000,
-    "docs/refinement-prompts.md": 12_500,
 }
 NOTE_CAP = 6_000
 HISTORY_WORDS = ("此前", "以前", "原先", "曾经", "现已", "如今", "不再", "previously", "formerly", "no longer")

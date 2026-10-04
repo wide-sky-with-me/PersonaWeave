@@ -2,7 +2,7 @@
 
 This is the canonical contract for PersonaWeave AI refinement. The production path is a persistent, human-directed editing session: whole-image-only generation, immutable evidence and explicit human publication. It is not a per-person scope form or a single mutable generation task. The local face-swap engine, its masks and identity matching are separate ([facefusion-local-swap.md](facefusion-local-swap.md)).
 
-Related documents: HTTP routes, storage, limits and deletion in [refinement-session-api.md](refinement-session-api.md); workbench flow and editor recovery in [refinement-workbench.md](refinement-workbench.md); prompts and evidence boards in [refinement-prompts.md](refinement-prompts.md); routing in [model-catalog.md](model-catalog.md); the read-only legacy archive in [delivery-quality.md](delivery-quality.md).
+Related documents: evidence, diagnosis and the untrusted-data boundary in [refinement-analysis.md](refinement-analysis.md); generation and review in [refinement-generation.md](refinement-generation.md); prompt version and official sources in [refinement-prompts.md](refinement-prompts.md); HTTP routes, storage, limits and deletion in [refinement-session-api.md](refinement-session-api.md); workbench flow and editor recovery in [refinement-workbench.md](refinement-workbench.md); routing in [model-catalog.md](model-catalog.md); the read-only legacy archive in [delivery-quality.md](delivery-quality.md).
 
 ## Architecture and ownership
 
@@ -23,24 +23,6 @@ A **session** freezes the original, local baseline, stable person mappings and a
 
 Selecting a historical version for viewing does not change the next generation base or publish it. Explicitly selecting an old base creates a branch; it never overwrites that version or silently substitutes the newest candidate. The server stores `accepted_version_id` separately, so later candidates do not replace an accepted result.
 
-## Evidence and diagnosis
-
-Each analysis uses three evidence roles:
-
-1. **Original image** anchors pose, people count, occlusion relationships, composition and scene, not the original facial identity. A requested identity replacement alone is not a defect.
-2. **Current selected version** is the complete canvas to assess.
-3. **Reference boards** contain only the desired identity references of each stable `person_id`, every tile carrying that ID. Missing references stay explicit; list position, fresh detector ordering or similarity guesses never rebind people.
-
-The creation snapshot names each original detection's fixed left-to-right face index and, when original dimensions are available, its face-center percentages. These text locators keep stable person IDs distinct from image-specific indices and never re-detect or reorder candidates; missing dimensions omit coordinates. Existing sessions keep their frozen locators and can be clarified through discussion.
-
-Original/current/before/candidate evidence uses a JPEG overview with a maximum edge of 3200 pixels (`VISION_MAX_SIDE` in the conversation service); smaller inputs keep their dimensions. This is an application budget, not a provider capability claim: reference boards keep their tile layout, provider-side sampling can still restrict detail or reject requests, and the decoded-evidence budgets in [refinement-session-api.md](refinement-session-api.md) apply.
-
-The VLM jointly considers identity appearance, anatomy, occlusion, blending, lighting, texture and composition and returns a `Diagnosis` (schema in `core/refinement/contracts.py`): concrete issues with region, observation, visible evidence and suggestion, per-person `identity_status` (`match`, `mismatch`, `uncertain`, `unavailable`), an edit plan and uncertainties. These are visual comparisons, not verified identities.
-
-No score threshold or compulsory fault-finding: a clean image can return no issues and no plan, and small faces, side profiles, occlusion or too few comparable features yield uncertain, not invented anatomy or identity. Without references, naturalness analysis still works but identity status is `unavailable`. Ambiguous mapping requires clarification before generation. A concrete change request without a defect goes into the plan, not a fabricated issue; user requirements stay separate from model observations.
-
-Images, OCR, user prose, historical messages and person metadata are untrusted task data, never system, tool or acceptance authority. Recent history is bounded text only; old-version mentions are not hidden image attachments.
-
 ## Execution modes and status
 
 The backend, not the model, selects the mode:
@@ -60,18 +42,6 @@ Session status is `idle` or `running`. Turn status follows:
 Discussion, no-op or clarification ends at `completed` after analysis. Failures use `failed`; cancellation uses `cancel_requested → cancelled`. `review_required` is a terminal execution state waiting for human judgment, not an instruction to regenerate. New turns use new IDs and explicit bases. Acceptance updates the session's accepted pointer and publication record; it is not an AI-emitted turn status.
 
 Each session has at most one active turn, the server limits concurrent sessions, and navigating away does not stop a worker. Cancel is an explicit revision-checked command and cannot guarantee that an already transmitted upstream request is unbilled. Restart never silently reissues a paid operation: an interrupted turn without a durable candidate fails or cancels; one with a candidate returns to human review with an interruption warning.
-
-## Whole-image generation and advisory review
-
-Before generating, analysis receives the explicitly confirmed diagnosis when supplied; otherwise the full latest completed (`completed` or `review_required`) diagnosis of the exact `base_version_id` as `previous_diagnosis`, separately from bounded prose history. It rechecks those hypotheses against the images and combines supported findings with current human feedback into one plan: current visual preferences override conflicting earlier suggestions, narrowed scope does not make every issue mandatory, and an unrelated version's diagnosis is never carried over. This is the one analysis call per generation turn. Regression: `tests/test_refinement_sessions.py`, `tests/test_refinement_conversation.py`.
-
-`generate()` sends **exactly one full-resolution lossless current image** and text to `AIGateway.edit_image`. The text has current issues, requested changes, semantic preserve intentions and stable visible person locators; analysis must turn reference observations into self-contained changes instead of telling the generator to consult absent boards. It never attaches the original, reference boards, source photos, face crops, masks, keypoints, annotations or older revisions, and the core rejects uncertain mapping and no-op diagnoses before generation. Coherent repainting of the whole image is allowed (hair, clothing, occlusion boundaries, lighting, background); preserve intentions reduce unrelated drift but do not imply pixel equality. A single image plus words may not repair a severe identity mismatch, and references used by the critic are not available to the generator.
-
-Generation size comes only from declared gateway metadata through `generation_parameters()`, never provider-name heuristics. The provider output is decoded and normalized for orientation, color and canvas dimensions (whole-image center-crop/resize only): no landmark realignment, mask, local backfill or `apply_candidate`. The normalized result is retained directly as an immutable candidate **before** review; the workbench shows provider output and canvas dimensions and states when an enlarged output does not restore detail.
-
-Review sees the original, this turn's before image, the candidate and the same reference boards. `CandidateReview` has `summary`, `improved`, `remaining`, `new_issues`, `uncertainties`, `people`: no score, accept flag or regeneration decision. It reassesses diagnosis hypotheses against visible evidence, and a requested non-face change is not automatically a regression. A review failure records `review_error` and keeps the candidate for human judgment.
-
-Analysis and review each make one structured gateway call, supplying the full JSON schema (including the cross-field consistency rules) up front with `max_text_repairs=0`; invalid output is surfaced, not repaired by extra text-only calls. Public errors carry only safe classifications (upstream HTTP status when available, timeout, allowlisted schema error codes): provider bodies, model-output values, validation context and extra-field names never appear. User-configured LiteLLM Router retries or fallbacks can still cause extra upstream attempts and charges; other callers such as identity arbitration keep their documented default repair budget.
 
 ## Waiting limits
 

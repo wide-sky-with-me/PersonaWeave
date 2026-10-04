@@ -25,4 +25,4 @@
 
 ## 影响与验证
 
-规则见 [AGENTS.md](../../../AGENTS.md) 文档规则一节；检查 `tests/test_documentation_governance.py`。仍超过默认上限、靠棘轮放行的只有 `ai-refinement.md` 与 `refinement-prompts.md`，应在其继续增长前拆分。笔记写法见 [.agents/notes/README.md](../README.md)。
+规则见 [AGENTS.md](../../../AGENTS.md) 文档规则一节；检查 `tests/test_documentation_governance.py`。精修文档按职责拆成契约、证据与诊断、生成与复评、提示词来源、会话接口与存储、工作台六份后，所有 `docs/*.md` 都低于默认上限，棘轮只剩 `AGENTS.md`、`README.md`、`DESIGN.md` 的收紧上限。笔记写法见 [.agents/notes/README.md](../README.md)。

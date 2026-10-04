@@ -1,6 +1,8 @@
 # Conversational refinement prompt contracts
 
-This document describes the implemented core prompt/evidence boundary in `core/refinement/conversation.py`, `contracts.py`, `prompts.py` and `evidence.py`. It complements the authoritative [whole-image refinement contract](ai-refinement.md); it does not introduce an acceptance policy or a second model registry. Prompt version: `conversation-refinement-v5`.
+Prompt version: `conversation-refinement-v5`.
+
+This document records the prompt provenance of the implemented boundary in `core/refinement/conversation.py`, `contracts.py`, `prompts.py` and `evidence.py`: the version, the official sources the prompts follow and the offline evidence. Behavior is defined in [refinement-analysis.md](refinement-analysis.md) (evidence, diagnosis, untrusted data), [refinement-generation.md](refinement-generation.md) (generation, review) and the authoritative [ai-refinement.md](ai-refinement.md); this file introduces no acceptance policy or second model registry.
 
 ## Official references
 
@@ -12,49 +14,6 @@ Only material actually retrieved is relied on; where a page could not be fetched
 
 The tests validate offline contracts and request construction. The [two-round live test on a five-person photo](refinement-live-test-20260911.md) verified request composition and version chaining, but both candidates had visible quality regressions and the second review failed with HTTP 408 (its candidate was retained); it does not establish prompt effectiveness across photos or model configurations.
 
-## Evidence roles and stable identity binding
-
-- `ORIGINAL`: composition, pose, people count, scene and occlusion relationship anchor. Original facial identity is explicitly **not** the intended target identity. A requested face replacement is not automatically an error.
-- `CURRENT`: the complete selected image to analyze and, if explicitly authorized, edit.
-- `REFERENCE_BOARD_PERSON_N`: desired identity evidence bound to stable `person_id=N`. Each board contains only that person's references, is labeled with the same ID at the top and in each tile, and fits complete reference images without face detection or cropping. Input list order, board arrival order and fresh left-to-right face ordering never reassign IDs.
-- During review, `BEFORE` is the explicitly selected input revision and `CANDIDATE` is the generated version. Review therefore sees original + before + candidate + the same per-person boards. These are still scene/current/reference evidence roles, with an additional before/after comparison, not reference images sent to the generator.
-
-Missing reference evidence requires `identity_status=unavailable` with an explanation. Occlusion, incompatible viewpoints, tiny faces or ambiguous locations may require `uncertain`. `mapping_confident` concerns correspondence to a supplied person, separately from visual identity similarity. Missing/extra/duplicate assessment IDs and identity claims without references are rejected; schema validity alone is not proof of visual accuracy.
-
-Safety bounds are application input budgets, not advertised provider limits: at most 24 people and eight references per person; each reference uses a 320×352 board tile, up to two columns. Decoded arrays must be nonempty uint8 BGR with the shared image pixel bound. The active provider may impose a lower image/context limit and should fail explicitly rather than silently dropping someone's evidence.
-
-## Diagnosis and discussion
-
-`analyze(original, current, people, references, history, user_message, *, previous_diagnosis=None) -> Diagnosis` calls `AIGateway.structured_vision_completion` using `vision_alias("refinement")`. It requests one structured response with text-repair retries disabled: a malformed/failed response is surfaced rather than automatically issuing another repair request. This bounds application calls, not underlying network attempts: explicit user-configured LiteLLM Router retries/fallbacks may still make additional paid upstream attempts. It never calls generation or acceptance, regardless of user/image text. The backend controls discuss/generate mode.
-
-The server supplies the explicitly confirmed diagnosis (or, for direct API commands without a binding, the latest completed diagnosis) for this exact base as structured `previous_diagnosis`, outside truncated prose history. Core validates its schema and person bindings before the model call. The prompt treats earlier findings as untrusted hypotheses to recheck, merges supported observations with human feedback, and gives current visual preferences precedence over conflicting earlier suggestions. It explains omitted/corrected suggestions and requests clarification for unresolved ambiguity. The plan translates reference observations into self-contained visual instructions, because the generator cannot see original/reference evidence. Discussion notices stay in assistant_message rather than contradicting an actionable edit plan. Generation receives the resulting plan, issues and original current user message; issues are evidence, not a second mandatory checklist. This contract is tested in `tests/test_refinement_conversation.py`; exact-base selection is tested in `tests/test_refinement_sessions.py`.
-
-The analysis summary is requested as 1–3 short sentences, without repeating structured issues or the entire plan. Visible anatomy is distinguished from natural profile perspective; glasses, hands and small objects crossing a face are checked against original scene evidence. Hidden features are not invented, and uncertain evidence must not become a confident edit instruction. These are prompt requirements, not a guarantee of real model behavior.
-
-The system prompt never assumes an image is faulty and has no score threshold. A normal result can be `needs_edit=false`, `issues=[]`, `edit_plan.changes=[]`. A concrete user-requested whole-image change can justify a plan without inventing a defect. `needs_edit` is advice, not authorization to charge for a generation.
-
-The `Diagnosis` fields (messages, `issues[]`, `people[]`, `edit_plan`, uncertainties) are defined in `core/refinement/contracts.py`. Issue categories are exactly `identity`, `anatomy`, `occlusion`, `blending`, `lighting`, `texture`, `composition`. There are no numeric scores. Region/description/evidence/suggestion minimum lengths are 3/12/12/8 characters, respectively; the concrete blending few-shot and contract tests are maintained together. Low confidence requires an uncertainty explanation. Extra fields such as tool calls, scores or acceptance decisions are rejected. The initial JSON schema also describes enforced cross-field rules: unavailable/uncertain identity evidence needs a nonempty uncertainty explanation even with confident location; mapping_uncertain is the OR of uncertain person mappings; needs_edit and edit_plan.changes/instructions must agree; stable assessment IDs are exact and unique. These descriptions do not relax validation or enable text repairs.
-
-## Prompt injection and bounded context
-
-Images (including OCR), person descriptions, prior assistant prose and user text are untrusted task data. User text may specify a visual change, but cannot modify system roles, tool permissions, credentials, execution mode or publication policy. Variable content is JSON-encoded in an escaped data envelope, never interpolated into the system instruction; the full trusted JSON schema is supplied on the initial call. Only the most recent eight history entries are considered, only user/assistant string content is retained, with 2,000 characters per entry and 12,000 total. Current messages over 4,000 characters and person locators over 300 characters are rejected before model calls, never silently truncated; these budgets and the 24-person maximum are defined once in `core/refinement/contracts.py` and shared by API/core. Only historical context is truncated. System/tool history and image-bearing message objects are not replayed. These measures define authority and bound inputs; they do not claim that a prompt alone guarantees adversarial robustness. Hard enforcement comes from separate methods, absence of tools, typed schemas and generation input construction.
-
-## Whole-image generation
-
-`generate(current, people, diagnosis, user_message, model_alias=None) -> (candidate, metadata)` requires an actionable plan and unambiguous person mapping. It calls the existing `AIGateway.edit_image` exactly once, passing only the selected current full-resolution lossless image and text. No original, reference board, annotation, mask, local crop or historical revision is attached. Size parameters come from the declared gateway generation policy through the shared `image_ops` helpers, never a provider-name heuristic.
-
-The prompt permits coherent repainting of the whole scene, including lighting, clothing, hair and background where the explicit editing intent requires it. Semantic preserve intentions help limit drift; they are not a face-only scope gate or a demand for identical background pixels. The generator has no unseen reference image: severe identity mismatch may exceed what the single current image plus textual observations can repair. No identity-recovery guarantee is implied.
-
-The output is decoded and normalized to the current canvas only. There is no local pixel compositing, mask application or acceptance. Metadata includes requested alias, actual model/provider, usage, request ID, prompt version/text, input image count and normalization audit.
-
-## Advisory review and failures
-
-`review(original, before, candidate, people, references, diagnosis, user_message) -> CandidateReview` returns `summary`, `improved`, `remaining`, `new_issues`, `uncertainties`, and per-person assessments. Prior diagnoses are hypotheses, not facts to copy into the review. Requested whole-image changes are not defects merely because non-face pixels changed. Clean candidates may have no remaining or new issues.
-
-Review does not generate, accept or discard anything. Its failure propagates to the task owner, which must retain the already generated candidate and store advisory `review_error`. No core method owns filesystem publication or an autonomous loop. Human acceptance remains outside these contracts.
-
 ## Offline regression evidence
 
-[tests/test_refinement_conversation.py](../tests/test_refinement_conversation.py) covers unsorted multi-person ID/board binding, board labels, clean no-edit results, side-profile/occlusion uncertainty, missing references, fabricated assessment IDs, evidence injection boundaries, bounded text, single full-resolution generation, whole-canvas pixel changes without local backfill, declared size selection, mapping/no-op generation guards, original/before/candidate/reference review, preserved candidates on review failure, JSON contracts and concrete issue examples.
-
-Run: `uv --no-cache run --no-sync pytest tests/test_refinement_conversation.py`.
+[tests/test_refinement_conversation.py](../tests/test_refinement_conversation.py) covers the prompt/evidence contracts listed in [refinement-generation.md](refinement-generation.md#evidence). Run: `uv --no-cache run --no-sync pytest tests/test_refinement_conversation.py`.

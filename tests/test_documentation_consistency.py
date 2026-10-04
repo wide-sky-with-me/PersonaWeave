@@ -309,5 +309,5 @@ def test_confirmed_analysis_binding_is_documented_with_direct_command_boundary()
 def test_vision_overview_budget_matches_the_current_evidence_contract():
     match = re.search(r"^VISION_MAX_SIDE = (\d+)$", _read("core/refinement/conversation.py"), re.MULTILINE)
     assert match
-    for path in ("docs/ai-refinement.md", "docs/refinement-prompts.md"):
+    for path in ("docs/refinement-analysis.md", "docs/refinement-prompts.md"):
         assert f"maximum edge of {match.group(1)} pixels" in _read(path)

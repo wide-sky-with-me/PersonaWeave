@@ -64,7 +64,7 @@ AI Agent 在本仓库开发、维护和执行任务时必须遵守本文件。�
 - 精修 `issue.category` 仅限 identity/anatomy/occlusion/blending/lighting/texture/composition，region/description/evidence/suggestion 必须具体；不得恢复自由分类、分数门槛或自动 accept。回归 `tests/test_refinement_conversation.py`、`tests/test_vlm_contracts.py`。
 
 ### 6.5 对话式整图精修
-权威文档 [ai-refinement.md](docs/ai-refinement.md)；接口与存储见 [refinement-session-api.md](docs/refinement-session-api.md)，工作台与恢复见 [refinement-workbench.md](docs/refinement-workbench.md)，提示词依据见 [refinement-prompts.md](docs/refinement-prompts.md)。
+权威文档 [ai-refinement.md](docs/ai-refinement.md)；证据与诊断见 [refinement-analysis.md](docs/refinement-analysis.md)，生成与复评见 [refinement-generation.md](docs/refinement-generation.md)，接口与存储见 [refinement-session-api.md](docs/refinement-session-api.md)，工作台与恢复见 [refinement-workbench.md](docs/refinement-workbench.md)，提示词版本与依据见 [refinement-prompts.md](docs/refinement-prompts.md)。
 - 生产是 session/turn/version 工作流；旧逐脸表单与单任务生成不是备用路径。会话冻结原图、初稿、稳定 person_id 与实际参考；原图只锚定姿态/人数/遮挡/场景，不锚定身份；不得按新检测排序重绑人物。
 - 后端控制 `discuss` / `generate` / `auto`：讨论绝不生图；每轮至多一次生图；禁止无限自动循环和 AI accept 工具。`Diagnosis` 必须具体可核验、可返回无缺陷，禁止编造分数或身份真值。
 - 生图只接收显式 `base_version_id` 的当前完整图与文字，禁止原图、参考板、素材、局部裁剪、mask、关键点或历史图进入生成输入；输出只做解码和规范化后整图保存，不得 `apply_candidate`、拼接、mask 回填或重新配准。
