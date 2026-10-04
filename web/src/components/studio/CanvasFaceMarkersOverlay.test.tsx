@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CanvasFaceMarkersOverlay } from './CanvasFaceMarkersOverlay';
+import { BADGE_EDGE_MARGIN, CanvasFaceMarkersOverlay, keepInside } from './CanvasFaceMarkersOverlay';
 import { useStudioStore } from '@/stores/useStudioStore';
 import type { DetectedFaceBox, PersonMappingItem, SourcePerson, SourceReference } from '@/types';
 
@@ -304,5 +304,57 @@ describe('CanvasFaceMarkersOverlay', () => {
     expect(marker().contains(dialog)).toBe(false);
     expect(marker().querySelector('button, a, input')).toBeNull();
     expect(dialog.parentElement).toBe(document.body);
+  });
+});
+
+describe('keepInside', () => {
+  const container = { left: 0, right: 300, top: 0, bottom: 400 };
+  const badge = (left: number, top: number, width = 80, height = 22) => ({
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+  });
+
+  it('needs no shift for a badge fully inside the margin', () => {
+    expect(keepInside(badge(100, 100), container)).toEqual({ x: 0, y: 0 });
+  });
+
+  it.each([
+    ['left', badge(-30, 100), { x: 30 + BADGE_EDGE_MARGIN, y: 0 }],
+    ['right', badge(260, 100), { x: 300 - BADGE_EDGE_MARGIN - 340, y: 0 }],
+    ['top', badge(100, -11), { x: 0, y: 11 + BADGE_EDGE_MARGIN }],
+    ['bottom', badge(100, 390), { x: 0, y: 400 - BADGE_EDGE_MARGIN - 412 }],
+  ])('moves a badge that overflows the %s edge back inside', (_edge, rect, expected) => {
+    expect(keepInside(rect, container)).toEqual(expected);
+  });
+
+  it('keeps the start of a badge wider than the container readable', () => {
+    expect(keepInside(badge(-50, 100, 400), container).x).toBe(50 + BADGE_EDGE_MARGIN);
+  });
+});
+
+describe('badge placement in the overlay', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const mockRects = (anchor: Partial<DOMRect>) => {
+    const container = { left: 0, right: 300, top: 0, bottom: 400, width: 300, height: 400 } as DOMRect;
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+      if (this.matches('[data-testid="face-badge-anchor"]')) return { ...container, ...anchor } as DOMRect;
+      return this.matches('[data-testid="face-markers-overlay"]') ? container : ({} as DOMRect);
+    });
+  };
+
+  it('shifts only the badge, never the anchor, when it would be clipped at the left edge', () => {
+    mockRects({ left: -30, right: 50, top: 20, bottom: 42 });
+    mountOverlay();
+    expect(screen.getByTestId('face-badge').style.transform).toBe(`translate(${30 + BADGE_EDGE_MARGIN}px, 0px)`);
+    expect(screen.getByTestId('face-badge-anchor').style.transform).toBe('');
+  });
+
+  it('leaves the badge alone when it already fits', () => {
+    mockRects({ left: 100, right: 180, top: 100, bottom: 122 });
+    mountOverlay();
+    expect(screen.getByTestId('face-badge').style.transform).toBe('translate(0px, 0px)');
   });
 });

@@ -16,7 +16,7 @@
 
 ## 工作台任务控制
 
-准备页的角色映射、单图/批量换脸、AI 首轮授权、任务重连与 ZIP 导出统一在右侧 `ParameterPanel`（场景预设只陈述参数，参数等于推荐默认值时显示“推荐默认”，依据见[决策笔记](../.agents/notes/frontend/20261004-preset-copy-states-parameters.md)；高级算法调校渐进折叠并透出动态摘要）；目标画布人脸框点击后呼出快速指派浮窗（`FaceAssignPopover`，经 portal 渲染并随视口夹紧，窄屏为底部抽屉，键盘可用，依据见[决策笔记](../.agents/notes/frontend/20261004-face-assign-popover-portal.md)）；精修工作台头部提供一键返回准备画布的导航；窄屏使用“换脸控制”抽屉。顶部准备项仅为状态标签，底部 `BatchStatusBar` 只展示任务状态、进度与耗时，不放按钮或开关。
+准备页的角色映射、单图/批量换脸、AI 首轮授权、任务重连与 ZIP 导出统一在右侧 `ParameterPanel`（场景预设只陈述参数，参数等于推荐默认值时显示“推荐默认”，依据见[决策笔记](../.agents/notes/frontend/20261004-preset-copy-states-parameters.md)；高级算法调校渐进折叠并透出动态摘要）；目标画布人脸框的编号徽标始终留在图内，点击后呼出快速指派浮窗（`FaceAssignPopover`，经 portal 渲染并随视口夹紧，窄屏为底部抽屉，键盘可用，依据见[决策笔记](../.agents/notes/frontend/20261004-face-assign-popover-portal.md)）；精修工作台头部提供一键返回准备画布的导航；窄屏使用“换脸控制”抽屉。顶部准备项仅为状态标签，底部 `BatchStatusBar` 只展示任务状态、进度与耗时，不放按钮或开关。
 
 `App` 唯一挂载 [`useBatchPipeline`](../web/src/hooks/useBatchPipeline.ts)，负责批量提交、服务端轮询、已关联任务恢复与导出；通过属性将同一控制器交给桌面/抽屉侧栏和状态栏，不使用窗口自定义事件转发。关闭侧栏或切换工作区不卸载控制器；提交前同步读取工作区运行状态，避免重复请求。AI 首轮授权默认关闭，单张目标也可显式授权走批任务接续精修；单图试换仍仅执行本地换脸。侧栏打开映射对话框时关闭抽屉，避免遮挡。
 

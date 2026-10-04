@@ -30,6 +30,15 @@ def check_assign_popover_placement(page, output, verify):
     }""")
     for width, height in [(1440, 900), (390, 844)]:
         page.set_viewport_size({"width": width, "height": height})
+        if verify:
+            # Faces at the corners must keep their number badge fully inside the (clipping) image container.
+            image = page.get_by_test_id("face-markers-overlay").bounding_box()
+            for badge in page.get_by_test_id("face-badge").all():
+                box = badge.bounding_box()
+                assert box and box["x"] >= image["x"] and box["y"] >= image["y"], (width, box, image)
+                assert box["x"] + box["width"] <= image["x"] + image["width"], (width, box, image)
+                assert box["y"] + box["height"] <= image["y"] + image["height"], (width, box, image)
+        page.screenshot(path=str(output / f"face-badges-{width}.png"))
         for index in (1, 2, 3, 4):
             page.get_by_role("button", name=f"选择目标人物 {index}，位置人脸 {index}").click()
             dialog = page.get_by_role("dialog", name=f"人脸 #{index} 快速指派")
