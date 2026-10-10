@@ -37,7 +37,20 @@ def test_build_checks_missing_vc_component_before_installing_dependencies(tmp_pa
 
 
 @pytest.mark.parametrize(
-    "path", [".env", "data/portable-runtime.json", "data/projects.sqlite3", "data/private.png", "outputs/result.png"]
+    "path",
+    [
+        ".env",
+        ".ENV",
+        "data/portable-runtime.json",
+        "DATA/private.png",
+        "data/projects.sqlite3",
+        "data/private.png",
+        "outputs/result.png",
+        "OUTPUTS/result.png",
+        "LOGS/private.txt",
+        "api/private.DB",
+        "OUTPUTS\\result.png",
+    ],
 )
 def test_build_rejects_credentials_and_prior_runtime_data(path):
     with pytest.raises(ValueError, match="private data"):
@@ -402,10 +415,14 @@ def test_publish_rename_failure_rolls_back_entire_release(portable_build_tree, m
     assert not list(tree.output.parent.glob(".*-build-*"))
 
 
-def test_private_distribution_is_rejected_before_build_tools(portable_build_tree, monkeypatch):
+@pytest.mark.parametrize(
+    "private_name", [".env", ".ENV", "OUTPUTS/private.png", "DATA/private.png", "LOGS/private.txt", "api/private.DB"]
+)
+def test_private_distribution_is_rejected_before_build_tools(portable_build_tree, monkeypatch, private_name):
     tree = portable_build_tree
-    tree.output.mkdir(parents=True)
-    (tree.output / ".env").write_text("TEST_ONLY=private-fixture")
+    private = tree.output / private_name
+    private.parent.mkdir(parents=True)
+    private.write_text("TEST_ONLY=private-fixture")
     before = release_bytes(tree.output.parent)
     monkeypatch.setattr(tree.builder.subprocess, "check_output", lambda *args, **kwargs: pytest.fail("must not export"))
     with pytest.raises(ValueError, match="private data"):
@@ -498,3 +515,23 @@ def test_archive_cannot_be_written_inside_its_source(portable_build_tree):
     with pytest.raises(ValueError, match="outside the distribution"):
         tree.builder.write_archive(tree.output, tree.output / "nested.zip")
     assert release_bytes(tree.output) == before
+
+
+def test_launcher_blocks_pending_update_before_opening_service(tmp_path, monkeypatch):
+    import sys
+
+    from api import portable
+
+    (tmp_path / "data").mkdir()
+    marker = tmp_path / "data" / portable.UPDATE_MARKER
+    marker.write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(portable, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["Start.cmd", "--no-browser"])
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "old")
+    monkeypatch.setenv("PERSONAWEAVE_AI_CONFIG", "old")
+    monkeypatch.setattr(portable.socket, "socket", lambda *a, **k: pytest.fail("must not open service"))
+    with pytest.raises(RuntimeError, match="升级尚未完成"):
+        portable.main()
+    assert marker.exists()
+    assert not (tmp_path / "data/portable-runtime.json").exists()

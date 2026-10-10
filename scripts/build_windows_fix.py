@@ -4,13 +4,20 @@ import argparse
 import hashlib
 import json
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.build_windows_portable import MSVC_FILES, check_public_asset, sha256  # noqa: E402
+from scripts.build_windows_portable import (  # noqa: E402
+    MSVC_FILES,
+    check_public_asset,
+    cleanup_staging,
+    publish_artifacts,
+    sha256,
+)
 
 LAUNCHER = '''"""Apply only the patch for this installation's declared edition."""
 import json
@@ -35,12 +42,13 @@ except (OSError, ValueError, RuntimeError, KeyError) as exc:
 INSTRUCTIONS = """PersonaWeave Windows CPU/GPU 程序修复包
 
 适用：原始交付的 Windows CPU/GPU 完整包（安装器核对具体版本摘要）。
-包含：中文路径图片读写、素材库预览图工程归档、AI 本地路由错误分类修复。
+包含：便携启动与升级恢复、图片路径和素材预览归档等差异程序文件。
 若提供 Repair-Runtime.cmd，还包含同版本的五个 Microsoft VC++ 运行库 DLL。
 不包含：Python、模型权重、GPU 驱动、素材库、AI Key、个人图片和历史。
 
 已打过补丁或不确定版本：先双击 Check-Install.cmd，提供生成的 install-check.json。
-自检不修改程序/工程，只写脱敏报告并临时验证图片归档，不调用 AI。
+自检不迁移或改写程序/工程/素材库数据，只写脱敏报告并临时验证图片归档，不调用 AI。
+若提示升级未完成，重新执行同一个修复包；请勿删除 data/portable-update.json。
 若原来是从已修复的 E 盘目录复制，请关闭后端后直接运行 Repair-Runtime.cmd。
 它支持已有本地源码补丁，补齐 VC++ DLL、备份原 DLL 并更新清单，不需要开发环境。
 原始未打补丁的发行包应先执行 Apply-Fix.cmd，再执行 Repair-Runtime.cmd。
@@ -58,11 +66,14 @@ INSTRUCTIONS = """PersonaWeave Windows CPU/GPU 程序修复包
 """
 
 
+# Decision: .agents/notes/windows/20261008-guard-interrupted-updates-and-readonly-checks.md
 def build(bases, output, *, source=ROOT, msvc_dir=None):
     """Bundle changed application bytes, preserving each edition's runtime and model manifest."""
     msvc_hashes = {name: sha256(msvc_dir / name) for name in MSVC_FILES} if msvc_dir is not None else None
     files = {
-        str(p.relative_to(source)): p for folder in ("api", "core", "utils") for p in (source / folder).rglob("*.py")
+        p.relative_to(source).as_posix(): p
+        for folder in ("api", "core", "utils")
+        for p in (source / folder).rglob("*.py")
     }
     files.update(
         {
@@ -101,46 +112,71 @@ def build(bases, output, *, source=ROOT, msvc_dir=None):
             "base_files": old["files"],
         }
         prepared.append((edition, encoded, update, changed))
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as package:
-        package.writestr("windows-fix/apply.py", LAUNCHER)
-        package.write(ROOT / "scripts/upgrade_windows_gpu.py", "windows-fix/engine.py")
-        package.write(ROOT / "scripts/check_windows_portable.py", "windows-fix/check.py")
-        if msvc_dir is not None:
-            package.writestr("windows-fix/vc-runtime.json", json.dumps(msvc_hashes))
-            for name in MSVC_FILES:
-                package.write(msvc_dir / name, "windows-fix/vc-runtime/" + name)
-            package.writestr(
-                "windows-fix/repair-runtime.ps1",
-                (ROOT / "scripts/repair_windows_runtime.ps1").read_text().encode("utf-8-sig"),
-            )
-            package.writestr(
-                "Repair-Runtime.cmd",
-                b'@echo off\r\nchcp 65001 >nul\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0windows-fix\\repair-runtime.ps1"\r\npause\r\n',
-            )
-        package.writestr("修复使用说明.txt", INSTRUCTIONS.encode("utf-8-sig"))
-        package.writestr(
-            "Check-Install.cmd",
-            (
-                b"@echo off\r\nchcp 65001 >nul\r\n"
-                b'"%~dp0runtime\\python.exe" -X utf8 "%~dp0windows-fix\\check.py"\r\npause\r\n'
-            ),
+    members = {
+        "windows-fix/apply.py": LAUNCHER.encode(),
+        "修复使用说明.txt": INSTRUCTIONS.encode("utf-8-sig"),
+        "Check-Install.cmd": (
+            b'@echo off\r\nchcp 65001 >nul\r\n"%~dp0runtime\\python.exe" -X utf8 "%~dp0windows-fix\\check.py"\r\npause\r\n'
+        ),
+        "Apply-Fix.cmd": (
+            "@echo off\r\nchcp 65001 >nul\r\n"
+            'if not exist "%~dp0runtime\\python.exe" (\r\n'
+            "echo 请解压到程序目录，与 Start.cmd 放在一起。\r\npause\r\nexit /b 1\r\n)\r\n"
+            '"%~dp0runtime\\python.exe" -X utf8 "%~dp0windows-fix\\apply.py"\r\npause\r\n'
+        ).encode(),
+    }
+    sources = {
+        "windows-fix/engine.py": ROOT / "scripts/upgrade_windows_gpu.py",
+        "windows-fix/check.py": ROOT / "scripts/check_windows_portable.py",
+    }
+    expected = {name: sha256(path) for name, path in sources.items()}
+    if msvc_hashes is not None:
+        members["windows-fix/vc-runtime.json"] = json.dumps(msvc_hashes).encode()
+        members["windows-fix/repair-runtime.ps1"] = (
+            (ROOT / "scripts/repair_windows_runtime.ps1").read_text().encode("utf-8-sig")
         )
-        package.writestr(
-            "Apply-Fix.cmd",
-            (
-                "@echo off\r\nchcp 65001 >nul\r\n"
-                'if not exist "%~dp0runtime\\python.exe" (\r\n'
-                "echo 请解压到程序目录，与 Start.cmd 放在一起。\r\npause\r\nexit /b 1\r\n)\r\n"
-                '"%~dp0runtime\\python.exe" -X utf8 "%~dp0windows-fix\\apply.py"\r\npause\r\n'
-            ).encode(),
+        members["Repair-Runtime.cmd"] = (
+            b'@echo off\r\nchcp 65001 >nul\r\npowershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0windows-fix\\repair-runtime.ps1"\r\npause\r\n'
         )
-        for edition, encoded, update, changed in prepared:
-            prefix = f"windows-fix/{edition}/"
-            package.writestr(prefix + "manifest.json", encoded)
-            package.writestr(prefix + "update.json", json.dumps(update))
-            for name, path in sorted(changed.items()):
-                package.write(path, prefix + "files/" + name)
-    output.with_suffix(output.suffix + ".sha256").write_text(sha256(output) + "  " + output.name + "\n")
+        for name in MSVC_FILES:
+            key = "windows-fix/vc-runtime/" + name
+            sources[key] = msvc_dir / name
+            expected[key] = msvc_hashes[name]
+    for edition, encoded, update, changed in prepared:
+        prefix = f"windows-fix/{edition}/"
+        members[prefix + "manifest.json"] = encoded
+        members[prefix + "update.json"] = json.dumps(update).encode()
+        checksums = json.loads(encoded)["files"]
+        for name, path in changed.items():
+            key = prefix + "files/" + name
+            sources[key] = path
+            expected[key] = checksums[name]
+    expected.update({name: hashlib.sha256(value).hexdigest() for name, value in members.items()})
+    output.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{output.name}-build-", dir=output.parent))
+    backups = staging / "previous"
+    published = False
+    try:
+        staged = staging / output.name
+        checksum = output.with_suffix(output.suffix + ".sha256")
+        with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as package:
+            for name, value in members.items():
+                package.writestr(name, value)
+            for name, path in sorted(sources.items()):
+                package.write(path, name)
+        with zipfile.ZipFile(staged) as package:
+            if set(package.namelist()) != expected.keys() or len(package.infolist()) != len(expected):
+                raise ValueError("Repair archive file set mismatch")
+            for name, value in expected.items():
+                with package.open(name) as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != value:
+                        raise ValueError(f"Repair archive checksum mismatch: {name}")
+        staged_checksum = staging / checksum.name
+        staged_checksum.write_text(sha256(staged) + "  " + output.name + "\n", encoding="utf-8")
+        publish_artifacts([(staged, output), (staged_checksum, checksum)], backups)
+        published = True
+    finally:
+        cleanup_staging(staging, backups, published)
     return {edition: sorted(changed) for edition, _, _, changed in prepared}
 
 

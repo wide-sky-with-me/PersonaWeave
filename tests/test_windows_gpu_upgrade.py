@@ -79,6 +79,7 @@ def test_corrupt_payload_changes_no_program_files(upgrade):
     before = digest(root / "manifest.json")
     with pytest.raises(ValueError, match="校验失败"):
         apply_update(root, payload)
+    assert not (root / "data/portable-update.json").exists()
     assert (root / "runtime/engine.dll").read_bytes() == b"cpu"
     assert digest(root / "manifest.json") == before
 
@@ -103,8 +104,15 @@ def test_interrupted_upgrade_resumes_without_overwriting_user_edits(upgrade, mon
         patch.setattr(Path, "replace", fail_on_cuda)
         with pytest.raises(OSError, match="interrupted"):
             apply_update(root, payload)
+    from api.portable import UPDATE_MARKER, check_update_complete
+
     assert (root / "runtime/engine.dll").read_bytes() == b"gpu"
+    assert (root / "data" / UPDATE_MARKER).exists()
+    with pytest.raises(RuntimeError, match="升级尚未完成"):
+        check_update_complete(root)
     apply_update(root, payload)
+    assert not (root / "data" / UPDATE_MARKER).exists()
+    check_update_complete(root)
     assert (root / "runtime/cuda.dll").read_bytes() == b"cuda"
 
 
@@ -144,6 +152,11 @@ def test_unchanged_model_is_not_rehashed_or_rewritten(upgrade, monkeypatch):
         "runtime/../.env",
         "./.env",
         "runtime/../data/projects.sqlite3",
+        ".ENV",
+        "OUTPUTS/result.png",
+        "LOGS/private.txt",
+        "DATA/projects.sqlite3",
+        "runtime/../DATA/private.png",
     ],
 )
 def test_update_paths_cannot_touch_private_or_external_data(tmp_path, name):
@@ -233,3 +246,81 @@ def test_upgrade_builder_rejects_symlink_escape(upgrade_build, tmp_path):
     with pytest.raises(ValueError, match="非法路径"):
         build(cpu, gpu, output)
     assert not output.exists()
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_published_manifest_pending_marker_is_verified_before_clearing(upgrade, monkeypatch, corrupt):
+    root, payload = upgrade
+    marker = root / "data/portable-update.json"
+    original = Path.unlink
+
+    def fail_marker(path, *args, **kwargs):
+        if path == marker:
+            raise PermissionError("marker cleanup interrupted")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", fail_marker)
+        with pytest.raises(PermissionError, match="cleanup interrupted"):
+            apply_update(root, payload)
+    assert digest(root / "manifest.json") == digest(payload / "manifest.json")
+    assert marker.exists()
+    if corrupt:
+        (root / "runtime/cuda.dll").write_bytes(b"unrelated modification")
+        with pytest.raises(ValueError, match="校验失败"):
+            apply_update(root, payload)
+        assert marker.exists()
+    else:
+        apply_update(root, payload)
+        assert not marker.exists()
+        assert not (payload / "files").exists()
+
+
+def test_other_update_cannot_replace_pending_transaction(upgrade):
+    root, payload = upgrade
+    marker = root / "data/portable-update.json"
+    marker.write_text(json.dumps({"new_manifest_sha256": "another update"}))
+    with pytest.raises(ValueError, match="其他升级"):
+        apply_update(root, payload)
+    assert (root / "runtime/engine.dll").read_bytes() == b"cpu"
+    assert json.loads(marker.read_text())["new_manifest_sha256"] == "another update"
+
+
+def test_marker_publication_failure_changes_no_application_bytes(upgrade, monkeypatch):
+    root, payload = upgrade
+    original = Path.replace
+
+    def fail_marker(path, target):
+        if Path(target).name == "portable-update.json":
+            raise OSError("marker write interrupted")
+        return original(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_marker)
+    with pytest.raises(OSError, match="marker write interrupted"):
+        apply_update(root, payload)
+    assert (root / "runtime/engine.dll").read_bytes() == b"cpu"
+    assert not (root / "runtime/cuda.dll").exists()
+
+
+def test_older_installation_gets_guarded_launcher_before_other_changes(upgrade, monkeypatch):
+    root, payload = upgrade
+    # Deliberately append the launcher after runtime changes in the target manifest.
+    update = json.loads((payload / "update.json").read_text())
+    target = json.loads((payload / "manifest.json").read_text())
+    target["files"].update(write_files(payload / "files", {"api/portable.py": b"guarded launcher"}))
+    (payload / "manifest.json").write_text(json.dumps(target))
+    update["new_manifest_sha256"] = digest(payload / "manifest.json")
+    (payload / "update.json").write_text(json.dumps(update))
+    original = Path.replace
+
+    def fail_first_runtime(path, destination):
+        if Path(destination) == root / "runtime/engine.dll":
+            assert (root / "api/portable.py").read_bytes() == b"guarded launcher"
+            raise OSError("runtime interrupted after launcher bootstrap")
+        return original(path, destination)
+
+    monkeypatch.setattr(Path, "replace", fail_first_runtime)
+    with pytest.raises(OSError, match="after launcher bootstrap"):
+        apply_update(root, payload)
+    assert (root / "data/portable-update.json").exists()
+    assert (root / "runtime/engine.dll").read_bytes() == b"cpu"

@@ -65,6 +65,8 @@ Python 使用 uv + Ruff，前端使用 pnpm + 固定版本 Prettier。前端格�
 
 行为变更须同步权威文档、摘要和 Changelog，执行 Ruff、相关 Python 回归；跨模块重构执行完整 pytest，前端变更执行类型检查、Vitest 和构建。文档-only 变更执行文档一致性检查；修改 Python 测试时仍执行 Ruff。交付前清理临时文件。证据要求见 [文档治理](documentation-governance.md)。
 
+FastAPI `TestClient` 回归的执行环境须允许 asyncio socketpair 跨线程唤醒；启动停滞时先用有时限的空应用及线程栈定位，再对照运行同一测试。依据见 [测试环境决策](../.agents/notes/platform/20261010-testclient-requires-socketpair-wakeup.md)。
+
 ## 界面交互与可视验证
 
 目标画布的视图工具与身份定位位于顶部，角色映射仍决定真正的换脸对象；当前图的精修/下载各有一个固定入口，结果操作栏占据独立布局空间，不覆盖图像。窄屏保留导航文字，工具不压缩成竖排，工作区使用动态视口高度。快捷键说明通过 Radix 对话框提供焦点约束、Escape 关闭与焦点恢复；隐藏准备页或打开对话框时暂停画布快捷键，窗口失焦结束临时原图对比。处理中锁定右栏参数与目标图移除；单图同步请求没有可用进度时仅显示等待状态。

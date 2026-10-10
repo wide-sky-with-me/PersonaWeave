@@ -15,7 +15,7 @@ import os
 import sqlite3
 from collections import defaultdict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 DEFAULT_LIBRARY_ROOT = Path("data/portrait_library")
@@ -259,7 +259,9 @@ def resolve_asset_path(asset_id: str, *, root: Path | None = None, thumbnail: bo
     if not db_path(library_root).is_file():
         return None
 
-    with connect(library_root) as conn:
+    # Lookup must not initialize/migrate a real library during installation diagnostics.
+    with closing(sqlite3.connect(f"{db_path(library_root).as_uri()}?mode=ro", uri=True)) as conn:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT original_relpath, thumbnail_relpath FROM assets WHERE id = ?", (asset_id,)
         ).fetchone()

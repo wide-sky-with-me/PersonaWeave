@@ -14,6 +14,13 @@ import webbrowser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+UPDATE_MARKER = "portable-update.json"
+
+
+def check_update_complete(root):
+    """Block mixed installations before loading native modules or opening application databases."""
+    if (root / "data" / UPDATE_MARKER).exists():
+        raise RuntimeError("程序升级尚未完成，请重新执行同一个升级/修复包，完成后再启动；请勿删除升级标记。")
 
 
 def check_writable_directories(root):
@@ -114,6 +121,7 @@ def main():
         return 0
     check_writable_directories(ROOT)
     with instance_lock(ROOT) as acquired:
+        check_update_complete(ROOT)
         if not acquired:
             state = ROOT / "data/portable-runtime.json"
             if state.exists() and not args.no_browser:

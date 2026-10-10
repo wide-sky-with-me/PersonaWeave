@@ -2,8 +2,10 @@
 
 import builtins
 import json
+import sqlite3
 import zipfile
-from pathlib import Path
+from contextlib import closing
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -219,3 +221,170 @@ def test_diagnostics_explains_unavailable_working_directory(tmp_path, monkeypatc
     monkeypatch.chdir(tmp_path)
     assert main(tmp_path / "not-extracted") == 1
     assert "无法进入程序目录" in capsys.readouterr().out
+
+
+@pytest.fixture
+def repair_build(tmp_path):
+    base, source = tmp_path / "installed", tmp_path / "source"
+    for root, value in ((base, "old"), (source, "new")):
+        (root / "api").mkdir(parents=True)
+        (root / "api/file.py").write_text(value)
+    (source / "docs").mkdir()
+    (source / "docs/windows-portable.md").write_text("instructions")
+    (base / "manifest.json").write_text(
+        json.dumps(
+            {
+                "edition": "windows-x64-cpu",
+                "files": {"api/file.py": sha256(base / "api/file.py")},
+            }
+        )
+    )
+    return base, source, tmp_path / "repair.zip"
+
+
+def test_repair_paths_are_posix_even_with_windows_relative_paths(repair_build, monkeypatch):
+    base, source, output = repair_build
+    original = Path.relative_to
+
+    def windows_relative(path, other, *args, **kwargs):
+        relative = original(path, other, *args, **kwargs)
+        return PureWindowsPath(relative.as_posix()) if other == source else relative
+
+    monkeypatch.setattr(Path, "relative_to", windows_relative)
+    build([base], output, source=source)
+    with zipfile.ZipFile(output) as archive:
+        archive.extractall(base)
+        manifest = json.loads(archive.read("windows-fix/windows-x64-cpu/manifest.json"))
+        assert "api/file.py" in manifest["files"]
+        assert not any("\\" in name for name in archive.namelist())
+    apply_update(base, base / "windows-fix/windows-x64-cpu")
+    assert (base / "api/file.py").read_text() == "new"
+
+
+@pytest.mark.parametrize("failure", ["zip_write", "source_changed", "checksum_write", "checksum_publish"])
+def test_repair_archive_failure_preserves_zip_and_checksum(repair_build, monkeypatch, failure):
+    base, source, output = repair_build
+    build([base], output, source=source)
+    checksum = output.with_suffix(".zip.sha256")
+    previous = output.read_bytes(), checksum.read_bytes()
+    if failure in {"zip_write", "source_changed"}:
+        original = zipfile.ZipFile.write
+
+        def write(archive, path, *args, **kwargs):
+            if failure == "zip_write":
+                raise OSError("injected ZIP failure")
+            if Path(path) == source / "api/file.py":
+                Path(path).write_bytes(b"changed after manifest preparation")
+            return original(archive, path, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", write)
+    elif failure == "checksum_write":
+        original = Path.write_text
+
+        def write_text(path, *args, **kwargs):
+            if path.name == checksum.name:
+                raise OSError("injected checksum failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", write_text)
+    else:
+        original = Path.replace
+        failed = False
+
+        def replace(path, target):
+            nonlocal failed
+            if Path(target) == checksum and not failed:
+                failed = True
+                raise OSError("injected publication failure")
+            return original(path, target)
+
+        monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises((OSError, ValueError), match=r"injected|checksum mismatch"):
+        build([base], output, source=source)
+    assert (output.read_bytes(), checksum.read_bytes()) == previous
+    assert not list(output.parent.glob(".*-build-*"))
+
+
+@pytest.mark.parametrize("journal", ["DELETE", "WAL"])
+def test_diagnostics_and_preview_do_not_migrate_existing_library(tmp_path, monkeypatch, journal):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from api.portraits.library import SCHEMA
+
+    monkeypatch.chdir(tmp_path)
+    library = tmp_path / "library"
+    (library / "originals").mkdir(parents=True)
+    (library / "thumbnails").mkdir()
+    image = BytesIO()
+    Image.new("RGB", (16, 16), "blue").save(image, "PNG")
+    for name in ("originals/test.png", "thumbnails/test.png"):
+        (library / name).write_bytes(image.getvalue())
+    db = library / "library.sqlite3"
+    asset_id = "as_" + "a" * 20
+    with closing(sqlite3.connect(db)) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute("DROP TABLE archived_identities")
+        conn.execute("DROP TABLE import_audit")
+        conn.execute(
+            "INSERT INTO identities VALUES (?,?,?,?,?,?,?)",
+            ("pid_test", "test", "female", 20, "young_adult", "Test", "2026-10-08"),
+        )
+        conn.execute(
+            "INSERT INTO assets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                asset_id,
+                "pid_test",
+                "angle",
+                "front",
+                "test.png",
+                "originals/test.png",
+                "thumbnails/test.png",
+                "fixture",
+                16,
+                16,
+                "2026-10-08",
+            ),
+        )
+        conn.commit()
+        conn.execute(f"PRAGMA journal_mode={journal}")
+    monkeypatch.setenv("PERSONAWEAVE_PORTRAIT_LIBRARY_ROOT", str(library))
+    (tmp_path / "manifest.json").write_text(json.dumps({"files": {}}))
+    before = {p.relative_to(library): p.read_bytes() for p in library.rglob("*") if p.is_file()}
+    result = inspect(tmp_path)
+    assert result["missing_originals"] == result["missing_previews"] == 0
+    assert result["library_preview"] == {"ok": True}
+    assert "project_probe_error" not in result
+    after = {p.relative_to(library): p.read_bytes() for p in library.rglob("*") if p.is_file()}
+    # SQLite's read-only WAL reader may create coordination files; neither data nor schema may change.
+    auxiliaries = {Path("library.sqlite3-shm"), Path("library.sqlite3-wal")}
+    assert {p: data for p, data in after.items() if p not in auxiliaries} == before
+    assert after.keys() - before.keys() <= auxiliaries
+    with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal.lower()
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert not tables.intersection({"archived_identities", "import_audit"})
+
+
+def test_readonly_asset_lookup_reads_committed_wal_and_never_executes_writes(tmp_path):
+    from api.portraits.library import resolve_asset_path
+
+    (tmp_path / "originals").mkdir()
+    asset = tmp_path / "originals/test.png"
+    asset.write_bytes(b"fixture")
+    db = tmp_path / "library.sqlite3"
+    with closing(sqlite3.connect(db)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE assets (id TEXT, original_relpath TEXT, thumbnail_relpath TEXT)")
+        writer.execute("INSERT INTO assets VALUES ('as_test', 'originals/test.png', NULL)")
+        writer.commit()
+        before = db.read_bytes(), db.with_name(db.name + "-wal").read_bytes()
+        assert resolve_asset_path("as_test", root=tmp_path) == asset
+        assert (db.read_bytes(), db.with_name(db.name + "-wal").read_bytes()) == before
+        with (
+            closing(sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)) as reader,
+            pytest.raises(sqlite3.OperationalError, match="readonly"),
+        ):
+            reader.execute("DELETE FROM assets")

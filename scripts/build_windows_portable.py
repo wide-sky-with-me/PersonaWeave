@@ -36,6 +36,8 @@ SAMPLES = {
 
 def check_public_asset(relative):
     """Reject runtime state even when rebuilding a previously launched distribution."""
+    # Windows aliases differ in spelling but address the same private files.
+    relative = relative.replace("\\", "/").casefold()
     path = Path(relative)
     if (
         path.name.startswith(".env")
