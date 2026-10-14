@@ -1,5 +1,6 @@
 """Guard public collaboration metadata and clean-checkout CI prerequisites."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -81,11 +82,38 @@ def test_ci_prepares_real_models_before_api_regressions():
     prepare = runs.index("uv run python scripts/download_models.py")
     regression = runs.index("uv run pytest -q")
     assert prepare < regression
-    cache = next(step for step in backend if step.get("uses") == "actions/cache@v4")
+    cache = next(step for step in backend if step.get("uses", "").startswith("actions/cache@"))
     assert cache["with"]["path"] == "models"
     assert "scripts/download_models.py" in cache["with"]["key"]
     frontend = workflow["jobs"]["frontend"]["steps"]
     assert any(step.get("run") == "pnpm lint" for step in frontend)
+
+
+def test_ci_pins_runner_actions_and_keeps_application_toolchain():
+    workflow = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert set(workflow["on"]) == {"push", "pull_request"}
+    assert workflow["permissions"] == {"contents": "read"}
+    actions = {}
+    for job in workflow["jobs"].values():
+        assert job["runs-on"] == "ubuntu-24.04"
+        for step in job["steps"]:
+            if "uses" not in step:
+                continue
+            repository, separator, commit = step["uses"].partition("@")
+            assert separator and re.fullmatch(r"[0-9a-f]{40}", commit), step["uses"]
+            assert repository not in actions or actions[repository] == step, repository
+            actions[repository] = step
+    assert set(actions) == {
+        "actions/checkout",
+        "actions/cache",
+        "actions/setup-node",
+        "astral-sh/setup-uv",
+        "pnpm/action-setup",
+    }
+    assert actions["astral-sh/setup-uv"]["with"]["python-version"] == "3.11"
+    assert actions["astral-sh/setup-uv"]["with"]["version"] == "0.12.23"
+    assert actions["actions/setup-node"]["with"]["node-version"] == "22"
+    assert actions["pnpm/action-setup"]["with"]["version"] == "10"
 
 
 def test_public_fixture_images_have_no_embedded_private_metadata():

@@ -76,7 +76,7 @@ AI 配置遵循以下边界，完整说明见 [模型目录](model-catalog.md)�
 
 `pyproject.toml` 声明顶层 `api` / `core` / `utils` 的打包位置；CLI 从安装包解析。内部职责提取保持源码、wheel、便携及公开文档入口兼容，不另设转发目录树。模型、AI YAML 和本机运行数据不随 wheel 打包，部署须显式提供资产；包入口不通过重新导出掩盖失效引用。取舍见 [领域提取决策](../.agents/notes/platform/20261014-domain-extraction-with-stable-entrypoints.md)，本轮验证见 [分支验收](validation/20261014-organization-branch.md)。
 
-Python 使用 uv + Ruff，前端使用 pnpm + 固定版本 Prettier。前端格式为 2 空格、单引号、120 字符；构建产物和锁文件不参与格式化。运行命令见 [README](../README.md#开发与验证)。
+Python 使用 uv + Ruff，前端使用 pnpm + 固定版本 Prettier。前端格式为 2 空格、单引号、120 字符；构建产物和锁文件不参与格式化。运行命令见 [README](../README.md#开发与验证)。CI 的 Runner、动作与应用工具链以 [workflow](../.github/workflows/ci.yml)为准；固定基线和动作提交的理由见 [CI 决策](../.agents/notes/platform/20261014-ci-runner-baseline-and-action-pins.md)。
 
 - `tests/test_package_boundaries.py`：包入口、纯配置隔离及禁止反向依赖。
 - `tests/test_facefusion_pipeline.py`、`tests/test_swap_diagnostics.py`：当前换脸、保护遮罩与回贴。
