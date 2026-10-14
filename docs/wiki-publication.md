@@ -4,9 +4,9 @@ Wiki 源文件在 [wiki/](../wiki/Home.md)，与代码和专题文档一起提�
 
 ## 可用性与首次初始化
 
-项目仓库为公开状态，Wiki 源文件可匿名阅读；仓库 Wiki 开关、独立 Wiki Git 仓库和已发布页面是不同状态。GitHub [官方说明](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages)要求先通过网页创建首个页面，再克隆 `<仓库名>.wiki.git`。公开仓库可使用 GitHub Free 的 Wiki，但 `has_wiki: true`本身不证明独立页面已初始化。
+项目仓库为公开状态，正式 [GitHub Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki)已初始化并发布，源码仍可匿名阅读；发布版本和核对方式见 [正式发布记录](validation/20261014-github-wiki.md)。仓库 Wiki 开关、独立 Wiki Git 仓库和已发布页面是不同状态。GitHub [官方说明](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages)要求新建 Wiki 时先通过网页创建首个页面，再克隆 `<仓库名>.wiki.git`；`has_wiki: true`本身不证明页面已发布。
 
-在有仓库写权限的已登录浏览器中打开 [Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki)，创建 `Home`页并保存，再执行下面的普通快进同步。无需提交或传递浏览器凭据。版本化 [首页](../wiki/Home.md)在独立 Wiki 初始化前即可从仓库匿名阅读；实际初始化与推送结果见 [公开发布记录](validation/20261014-public-repository.md)。
+本项目已完成首次初始化，后续直接执行下面的普通快进同步；无需提交或传递浏览器凭据。其他尚未初始化的仓库，先在有写权限的已登录浏览器中创建 `Home`页并保存，再同步。版本化 [首页](../wiki/Home.md)与正式页面使用同一事实来源。
 
 ## 同步页面
 
@@ -45,4 +45,4 @@ test "$local_head" = "$remote_head"
 
 Wiki 链接、导航覆盖和事实文档链接检查见 [Wiki 回归](../tests/test_wiki_documentation.py)及 [文档一致性回归](../tests/test_documentation_consistency.py)。运行 `uv run pytest tests/test_wiki_documentation.py tests/test_documentation_consistency.py tests/test_documentation_governance.py`，并对同步命令执行 `bash -n`。
 
-源码推送成功不等于独立 Wiki 发布成功。交付记录分别登记代码 commit、Wiki remote HEAD、实际网页及未执行项；公开状态及最新核对见 [公开发布记录](validation/20261014-public-repository.md)，首次私有提交的限定范围见 [原提交核对](validation/20261014-repository-publication.md)。
+源码推送成功不等于独立 Wiki 发布成功。交付记录分别登记代码 commit、Wiki remote HEAD、实际网页及未执行项；正式发布见 [Wiki 核对记录](validation/20261014-github-wiki.md)，公开设置及初始化前的范围见 [公开记录](validation/20261014-public-repository.md)，首次私有提交见 [原提交核对](validation/20261014-repository-publication.md)。

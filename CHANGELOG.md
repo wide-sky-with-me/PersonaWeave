@@ -12,6 +12,7 @@
 - 补齐 [Mac 启动守卫安装与停用步骤](docs/macos-boot-guard.md)、脱敏 LaunchAgent 模板与生成回归；明确本地推理槽位空闲不能代表全部 HTTP/远端 VLM 操作结束，修复仅用于已确认空闲的恢复窗口。历史验收中的实例诊断脚本和原始报告须独立移交，不宣称 Git clone 含全部运行证据。
 - 将仓库设为公开，补齐简介、主题、文档主页、[公开说明与样例](docs/public-project.md)、贡献/私密报告入口及 Issue/PR 模板；源码许可证保持未指定，不将公开可见性当作资产商用授权。新增 Wiki 协作专题和公开资料回归，实际核对见 [公开发布记录](docs/validation/20261014-public-repository.md)。
 - 修复 CI 干净 checkout 缺模型资产的前置失败：pytest 前由现有下载器准备并校验模型，按下载器摘要键缓存；前端补 lint。将当前文档指向本地忽略目录的 M01 记录改为 [有限范围的版本化摘要](docs/validation/20261014-portrait-reference-evidence.md)，保持图片、数据库及模型不进入 Git。
+- 在维护者完成网页初始化后，将版本化首页、专题、侧栏和页脚正式发布到独立 GitHub Wiki；正常快进保留初始化历史，逐文件与源码核对。README 和仓库主页指向正式入口，维护流程及发布版本见 [Wiki 核对记录](docs/validation/20261014-github-wiki.md)。
 
 ## 2026-10-13
 
