@@ -1,4 +1,5 @@
 name: CI
+# Decision: .agents/notes/platform/20261014-ci-runner-baseline-and-action-pins.md
 
 on:
   push:

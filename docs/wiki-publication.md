@@ -6,7 +6,7 @@ Wiki 的维护源在 [wiki/](../wiki/Home.md)，与代码和专题文档一起�
 
 ## 可用性与首次初始化
 
-**本项目状态**：仓库公开，正式 [GitHub Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki)可公开读取并提供专题导航，源码也可匿名阅读。发布版本与核验方式见 [正式发布记录](validation/20261014-github-wiki.md)。后续维护使用普通快进同步，不重复初始化，不提交或传递浏览器凭据。
+**本项目状态**：仓库公开，正式 [GitHub Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki)可公开读取并提供专题导航，源码也可匿名阅读。初始化版本见 [正式发布记录](validation/20261014-github-wiki.md)，源稿同步及网页核验见 [善后验收](validation/20261014-post-merge-cleanup.md)。后续维护使用普通快进同步，不重复初始化，不提交或传递浏览器凭据。
 
 **其他仓库的前提**：Wiki 开关、独立 Git 仓库和已发布页面是不同状态。`has_wiki: true`不证明页面可读。GitHub [官方说明](https://docs.github.com/en/communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages)要求通过网页创建首个页面后再克隆 `<仓库名>.wiki.git`；有写权限的已登录维护者先创建并保存 `Home`，再同步。
 

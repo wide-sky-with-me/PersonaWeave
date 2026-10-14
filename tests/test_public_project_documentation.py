@@ -90,6 +90,7 @@ def test_ci_prepares_real_models_before_api_regressions():
 
 
 def test_ci_pins_runner_actions_and_keeps_application_toolchain():
+    """Keep action maintenance separate from the application's verified toolchain."""
     workflow = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     assert set(workflow["on"]) == {"push", "pull_request"}
     assert workflow["permissions"] == {"contents": "read"}

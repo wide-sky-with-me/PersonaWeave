@@ -7,6 +7,7 @@
 - 在同一分支整理现行文档与 Wiki 源稿的阅读路径，新增 [文档总览](docs/README.md)，按读者目标组织启动、业务、排错与开发入口；技术正文补中文术语、拆开前提/操作/结果/失败边界，保留原锚点和冻结证据。修正文案中的 HyperSwap 研究自动路由、旧证据删除范围与工程保存提示歧义；不改变运行契约，不部署 Mac、不发布独立 Wiki。核对与测试见 [可读性验收](docs/validation/20261014-documentation-readability.md)。
 - 在用户授权合并 main 后完成隔离全量验证：后端 967 项、前端 246 项，以及格式、类型、生产构建和 Wheel 安装/CLI 检查通过；全量检查发现强度文档遗漏绑定短句，补回原文后复测，未放宽断言。合并阶段的基线、失败与复现、部署保护和远程核对范围见 [合并验收](docs/validation/20261014-main-merge.md)；Mac 实例与独立 Wiki 保持不动。
 - CI 善后固定 Ubuntu 24.04，将五个动作更新为已核实的 Node 24 稳定发布并固定完整提交 SHA；保留 Python 3.11、Node 22、pnpm 10，uv 固定为已验证版本。新增环境与引用护栏，保留模型摘要检查、缓存和全量回归步骤，不改变应用依赖或部署。依据见 [CI 基线决策](.agents/notes/platform/20261014-ci-runner-baseline-and-action-pins.md)。
+- 在维护者授权后完成独立 Wiki 源稿快进同步与公开网页核验，并删除精确确认已合并的本地/远程结构优化分支；Git 历史保留，Mac 实例不升级。CI 维护运行前后端通过且零 check-run 注释，发布 SHA、网页探针复核和清理证据见 [善后验收](docs/validation/20261014-post-merge-cleanup.md)。
 
 - Mac 实例追加指定 WiFi 局域网地址的端口发布，保留 Tailscale 入口、原 CPU 镜像与持久目录；提供可选 LAN Compose 覆盖及配置回归。关闭浏览器代理后实测上传、五脸检测、单人换脸、下载及工程刷新恢复。见 [局域网验收](docs/validation/20261014-lan-access.md)。
 - Mac 实例按用户选择配置 AI 连接，补齐模型协议前缀与容器出站；增加 Clash Verge 全局扩展，让 Tailscale 网段/进程/域名优先直连，尾网与所配 AI 域名返回真实 IP，保留订阅和其他代理规则。模型目录鉴权与国内点对点连接均实测通过，未进行付费生成。见 [AI 与网络验证](docs/validation/20261014-remote-ai-configuration.md)。
