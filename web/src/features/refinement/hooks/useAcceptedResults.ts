@@ -6,6 +6,7 @@ import type { SessionDetail } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
 import { forgetSession } from '../sessionCache';
 import { isResourceUnavailable } from '@/utils/apiError';
+import { sessionKey } from '../queryKeys';
 
 /** Keep accepted results current even while the preparation workspace is visible after restoration. */
 export function useAcceptedResults() {
@@ -20,10 +21,10 @@ export function useAcceptedResults() {
   ];
   const queries = useQueries({
     queries: ids.map((id) => ({
-      queryKey: ['refinement-session', id],
+      queryKey: sessionKey(id),
       queryFn: async () => {
         const fresh = await sessionApi.get(id);
-        const current = client.getQueryData<SessionDetail>(['refinement-session', id]);
+        const current = client.getQueryData<SessionDetail>(sessionKey(id));
         return current && current.revision > fresh.revision ? current : fresh;
       },
       retry: false,

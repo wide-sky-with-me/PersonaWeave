@@ -3,6 +3,7 @@ import { useRecordDeletion } from '@/hooks/useRecordDeletion';
 import { sessionApi } from '../sessionApi';
 import { forgetSession } from '../sessionCache';
 import type { SessionSummary } from '../sessionTypes';
+import { sessionKeys, sessionsKey } from '../queryKeys';
 
 /** Shared deletion behavior for the history list and the open workbench. */
 export function useSessionDeletion(sessions: SessionSummary[]) {
@@ -15,8 +16,8 @@ export function useSessionDeletion(sessions: SessionSummary[]) {
     remove: ({ id, revision }) => sessionApi.delete(id, revision),
     onDeleted: (id) => forgetSession(client, id),
     refresh: () => {
-      void client.invalidateQueries({ queryKey: ['refinement-sessions'] });
-      void client.invalidateQueries({ queryKey: ['refinement-session'] });
+      void client.invalidateQueries({ queryKey: sessionsKey });
+      void client.invalidateQueries({ queryKey: sessionKeys });
     },
   });
 }

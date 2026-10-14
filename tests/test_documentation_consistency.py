@@ -2,9 +2,10 @@
 
 import re
 from pathlib import Path
-from urllib.parse import unquote
 
 import yaml
+
+from scripts.documentation_links import link_errors, repository_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -230,41 +231,8 @@ def test_current_architecture_does_not_reference_removed_shadow_paths():
 
 
 def test_current_document_relative_links_exist():
-    """Catch deleted files and renamed Markdown sections in documentation links."""
-    documents = [
-        ROOT / "AGENTS.md",
-        ROOT / "README.md",
-        ROOT / "DESIGN.md",
-        ROOT / "CHANGELOG.md",
-        ROOT / "models/README.md",
-        ROOT / "tests/fixtures/README.md",
-        *sorted((ROOT / "docs").glob("*.md")),
-    ]
-    link_pattern = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-
-    missing: list[str] = []
-    for document in documents:
-        for raw_target in link_pattern.findall(document.read_text(encoding="utf-8")):
-            target = raw_target.strip().strip("<>")
-            if "://" in target or target.startswith("mailto:"):
-                continue
-            path, _, fragment = target.partition("#")
-            resolved = (document.parent / unquote(path)).resolve() if path else document
-            if not resolved.exists():
-                missing.append(f"{document.relative_to(ROOT)} -> {raw_target}")
-            elif fragment and resolved.suffix == ".md":
-                headings = re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", resolved.read_text(encoding="utf-8"), re.M)
-                anchors = set()
-                for heading in headings:
-                    slug = re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
-                    anchor, suffix = slug, 0
-                    while anchor in anchors:
-                        suffix += 1
-                        anchor = f"{slug}-{suffix}"
-                    anchors.add(anchor)
-                if unquote(fragment) not in anchors:
-                    missing.append(f"{document.relative_to(ROOT)} -> {raw_target} (missing section)")
-
+    """Check current, historical, public and Wiki links with the same offline resolver."""
+    missing = link_errors(ROOT, repository_documents(ROOT))
     assert not missing, "Missing local documentation links:\n" + "\n".join(missing)
 
 

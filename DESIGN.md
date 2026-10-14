@@ -13,12 +13,14 @@ web/src → HTTP API → api → core → provider / ONNX runtime
 | `web/src/components`、`features` | 工作台展示、精修与历史功能；Zustand 管理工作区，TanStack Query 管理远程状态 |
 | `api/app.py`、`api/lifecycle.py` | 应用装配及共享服务生命周期 |
 | `api/routes/`、`api/schemas.py` | HTTP 路由和请求/响应契约 |
-| `api/tasks/`、`api/media.py` | 本地批任务、持久化与受控图片加载 |
-| `api/refinement/` | 新精修会话、turn/version 契约、SQLite、事件及受控发布；`legacy.py` / `legacy_quality.py` 保留旧档案与人工质量评价 |
+| `api/tasks/` | 本地批任务、持久化及跨恢复/精修共享的人物来源规则 |
+| `api/projects/` | 编辑工程、媒体副本与显式恢复 |
+| `api/media.py`、`utils/image_io.py` | 跨功能受控图片加载与 Unicode 路径编解码 |
+| `api/refinement/` | 会话 SQLite 与事件、turn/version 契约、独立制品 I/O 及受控发布；`legacy.py` / `legacy_quality.py` 保留旧档案与评价 |
 | `api/portraits/` | SQLite 素材库及幂等导入 |
 | `api/cli.py` | 离线换脸命令行；根目录 `cli.py` 为源码启动器 |
 | `api/portable.py` | Windows CPU/GPU 便携入口：本机单实例、浏览器启动及本地 AI 配置 |
-| `core/pipeline.py`、`core/swapper.py` | 本地换脸编排与模型推理适配器 |
+| `core/pipeline.py`、`face_execution.py`、`swapper.py` | 人物/图像编排、独立单脸执行与模型推理适配 |
 | `core/ai/`、`core/refinement/` | AI 配置、契约、协议与整图精修服务 |
 | `scripts/`、`tests/` | 下载/开发工具、非生产诊断与回归验证 |
 
@@ -30,7 +32,7 @@ web/src → HTTP API → api → core → provider / ONNX runtime
 工程媒体回看复用相同 MIME 规则并保留原始字节。辅助帧不进入检测/聚类，既有编码体积、主图像素与内存保护不变；
 相机文件兼容契约与回归见 [Windows 使用说明](docs/windows-portable.md)。
 
-准备工作区的任务操作集中在右侧“换脸控制”，常驻场景推荐预设与特征融合主滑块，高级算法调校（推理模型、余弦截断阈值 $\tau$、光影色温适配）由渐进折叠面板收纳并动态透出摘要；窄屏由抽屉承载；顶部准备标签及底部状态栏仅负责展示。`App` 唯一挂载 `useBatchPipeline` 管理批任务提交、轮询与导出，侧栏通过显式属性调用，关闭抽屉或切换工作区不影响任务恢复。见 [工程架构](docs/engineering-architecture.md)。
+准备工作区的任务操作集中在右侧“换脸控制”，窄屏由抽屉承载；`App` 唯一挂载 `useBatchPipeline`，关闭抽屉或切换工作区不卸载任务控制器。布局、映射交互与验证入口见 [工程架构](docs/engineering-architecture.md#工作台任务控制)。
 
 ## 两条图像处理流程
 
@@ -38,9 +40,7 @@ web/src → HTTP API → api → core → provider / ONNX runtime
 
 **对话式 AI 精修**：冻结原图、当前基线和按稳定人物 ID 绑定的参考 → 提高有界整图证据清晰度的三证据 VLM 诊断/讨论 → 按后端 mode 执行至多一次单图生成 → 直接保留规范化候选 → VLM 建议性复评 → 人工选择接受或开启新轮次。创建与轮次执行共用累计解码像素预算，超限创建不落库并清理本次临时快照。模型失败仅公开上游状态码、超时或白名单格式校验类型，保留候选的失败语义不变。无问题、仅讨论或人物对应不确定时不自动生图；可显式从旧版本分支，查看版、修改基图和最终接受版独立。画布默认完整查看选中版，可显式开启原图/初稿对比；工作台同时展示模型原生输出尺寸与画布尺寸，避免将适配放大误认成细节恢复。状态机、单图约束、SSE 恢复及发布以 [精修契约](docs/ai-refinement.md) 为唯一说明。
 
-VLM 和图像模型访问均经过 `AIGateway`，分别调用 LiteLLM `Router.acompletion` 与 `Router.aimage_edit`。原生 `model_list` 同时声明两类 deployment；稳定 `model_name` 与实际模型、连接参数解耦，允许同别名多 deployment。`image_models` 仅保存引用同一目录的展示与 `generation` metadata，不另建 provider/params 路由；角色、别名与生成能力来自 [config/ai_gateway.yaml](config/ai_gateway.yaml)。目录 API 保持原响应形状，provider 标记为 `litellm`，不暴露 URL 或凭据，前端无需另建服务配置。
-
-连接与模型通过通用环境变量分开配置视觉/图像服务；默认不自动重试付费请求，不伪造免费定价，不按模型名猜分辨率。供应商协议委托 LiteLLM 原生 endpoint，禁止手写供应商 HTTP 或失败时切回私有协议。尺寸、同能力 fallback、迁移与支持边界见 [模型目录](docs/model-catalog.md)。
+VLM 和图像模型均经 `AIGateway` 访问 LiteLLM 原生 endpoint。角色、稳定别名、deployment 连接与生成能力以 [config/ai_gateway.yaml](config/ai_gateway.yaml) 为可执行来源；供应商协议、环境配置、尺寸、fallback、重试费用与迁移边界只在 [模型目录](docs/model-catalog.md) 维护。
 
 ## 数据与发布
 

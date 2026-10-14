@@ -9,10 +9,10 @@
 - Web 组件负责展示及局部交互，Zustand 管工作区，TanStack Query 管远程状态。精修和历史归 `features/`，测试随功能放置；跨目录使用 `@/`，同目录使用相对引用。
 - `api/app.py` 装配中间件、路由和静态站点，`lifecycle.py` 创建/关闭共享服务。路由从 `request.app.state` 读取服务，可选 AI 服务通过 `dependencies.py` 访问。
 - `api/portable.py` 是 Windows CPU/GPU 便携生产入口，复用现有应用和生命周期；`scripts/build_windows_portable.py` 负责固定依赖及资产打包，`build_windows_gpu_upgrade.py` 与 `upgrade_windows_gpu.py` 是差分交付工具，不引入另一条推理路径。升级只修改清单内程序文件，持有同一运行锁，校验全部载荷后逐文件原子替换、最后发布 manifest；中断允许从旧/新摘要混合状态重试。交付契约见 [Windows 便携版](windows-portable.md)。
-- 本地批任务归 `api/tasks/`；对话精修会话的命令、状态、SQLite、事件与发布归 `api/refinement/`。跨功能图片 I/O 归 `api/media.py`，素材库与导入归 `api/portraits/`。这些领域模块不得反向导入路由或应用入口。
+- 本地批任务归 `api/tasks/`，人物来源、已分配结果和跳过原因由 `provenance.py` 供批任务、精修接续与工程恢复共享，不由恢复模块反向依赖精修编排。对话会话的状态、SQLite 与事件归 `api/refinement/store.py`，内容寻址及受控文件 I/O 归同域 `artifacts.py`。跨功能图片 I/O 归 `api/media.py`，素材库与导入归 `api/portraits/`；领域模块不得反向导入路由或应用入口。
 - `core` 不导入 `api`。`core/__init__.py` 与 `api/__init__.py` 无副作用，不重新导出模型、不创建应用或设置运行状态。
 - `core/ai/configuration.py` 和 `types.py` 不加载 LiteLLM、provider 或推理模型；业务通过 `AIGateway` 访问，供应商协议交由 LiteLLM 原生 Router endpoint，禁止仓内手写供应商 HTTP 或私有协议回退。视觉使用 `Router.acompletion`，图像使用 `Router.aimage_edit`（LiteLLM 1.98.0 在实例上动态注册该方法，不得仅检查类属性就判定不支持）。
-- `core/swapper.py` 只做 `infer_aligned()` 推理并声明共享对齐模板；对齐、保护遮罩、校色和回贴由流水线统一执行。纯姿态/质量规则归 `core/face_metrics.py`。
+- `core/swapper.py` 只做 `infer_aligned()` 推理并声明共享对齐模板；对齐、保护遮罩、校色和回贴由 `core/face_execution.py` 单脸执行边界完成。`pipeline.py` 保留模型缓存与锁、检测、全局人物分配及逐脸编排；纯姿态/质量规则归 `core/face_metrics.py`。
 
 ## 工作台任务控制
 
@@ -26,7 +26,9 @@
 
 按变化原因拆分展示、纯计算、外部 I/O、状态机和持久化。同一状态机的连续步骤保留在一个编排器，不增加多层单行转发。抽象须消除重复事实、隔离副作用或形成可独立测试的稳定边界，否则保留直观函数。
 
-精修会话事实源是 `api/refinement/store.py`，连续执行步骤位于 `api/refinement/service.py`；契约与批量接续分别在同域 `contracts.py` / `batch.py`。Core 的 `conversation.py` 只负责三证据诊断、单图生成与建议性复评，不访问 API/SQLite/发布目录；`image_ops.py` 复用纯尺寸与编码规则。前端按画布、对话、版本与人物参考组织，查看版、修改基图、已接受版独立；SSE 仅通知快照失效，浏览器不是任务状态机。保护画笔仍属于本地换脸，集中于 `useManualProtectionBrush`。
+精修会话事实源是 `api/refinement/store.py`，连续执行步骤位于 `api/refinement/service.py`；契约与批量接续分别在同域 `contracts.py` / `batch.py`。`artifacts.py` 只管理路径、已校验字节及磁盘副作用，不判定数据库归属；store 保留服务使用的读取入口、事务和恢复决定，延迟加载仍经 store 校验。Core 的 `conversation.py` 负责三证据诊断、单图生成与建议性复评，不访问 API/SQLite/发布目录；`image_ops.py` 复用纯尺寸与编码规则。前端查看版、修改基图和已接受版独立；SSE 仅通知快照失效，浏览器不是状态机。保护画笔集中于 `useManualProtectionBrush`。
+
+精修查询键由无运行依赖的 [`queryKeys.ts`](../web/src/features/refinement/queryKeys.ts) 维护，工作台、接受投影、SSE、删除与历史复用同一来源；历史列表不为读取键值而导入工作台 Hook。缓存键形状和分页失效范围由 [就近回归](../web/src/features/refinement/queryKeys.test.ts) 固定。
 
 | 事实 | 可执行来源 |
 | --- | --- |
@@ -54,7 +56,7 @@
 
 ## 打包与验证
 
-`pyproject.toml` 声明顶层 `api` / `core` / `utils` 的打包位置；CLI 从安装包解析。模型、AI YAML 和本机运行数据不随 wheel 打包，部署须显式提供相应资产。包入口不通过重新导出掩盖失效引用。
+`pyproject.toml` 声明顶层 `api` / `core` / `utils` 的打包位置；CLI 从安装包解析。内部职责提取保持源码、wheel、便携及公开文档入口兼容，不另设转发目录树。模型、AI YAML 和本机运行数据不随 wheel 打包，部署须显式提供资产；包入口不通过重新导出掩盖失效引用。取舍见 [领域提取决策](../.agents/notes/platform/20261014-domain-extraction-with-stable-entrypoints.md)，本轮验证见 [分支验收](validation/20261014-organization-branch.md)。
 
 Python 使用 uv + Ruff，前端使用 pnpm + 固定版本 Prettier。前端格式为 2 空格、单引号、120 字符；构建产物和锁文件不参与格式化。运行命令见 [README](../README.md#开发与验证)。
 
@@ -77,4 +79,4 @@ FastAPI `TestClient` 回归的执行环境须允许 asyncio socketpair 跨线程
 
 ## 编辑工程持久化边界
 
-`api/projects/` 隔离工程 SQLite、图片快照与旧记录恢复；`api/routes/projects.py` 只装配 HTTP。`web/src/features/projects/` 隔离序列化媒体、自动保存与显式恢复，组件负责保存反馈和历史入口。工程只持久化编辑输入、结果副本和轻量精修选择，不成为任务/接受状态的第二事实源。先完整校验后更新 Zustand，原图拓扑与人物编号保留；既有只读历史测试仍有效。细节与证据见 [工程契约](task-history.md#complete-studio-projects-and-explicit-recovery)。
+`api/projects/` 隔离工程 SQLite、图片快照与旧记录恢复；`api/routes/projects.py` 只装配 HTTP。`web/src/features/projects/` 隔离序列化媒体、自动保存与显式恢复，组件负责保存反馈和历史入口。工程只持久化编辑输入、结果副本和轻量精修选择，不成为任务/接受状态的第二事实源。先完整校验后更新 Zustand，原图拓扑与人物编号保留；既有只读历史测试仍有效。细节与证据见 [工程契约](studio-projects.md)。

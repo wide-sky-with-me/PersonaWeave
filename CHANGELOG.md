@@ -2,6 +2,9 @@
 
 ## 2026-10-14
 
+- 结构整理：精修查询键集中到无运行依赖的功能域模块，历史页与 SSE/删除/接受同步复用，保持缓存键和失效范围；文档链接/锚点检查共享离线解析，以当前入口链接图检查含嵌套验收记录的可发现性，包边界检查补相对导入与包内别名。补齐工程目录地图、收敛架构摘要的重复配置事实，修正文档权威来源与失效测试引用；不迁移发布路径或改变运行行为。见 [结构审查记录](docs/validation/20261014-organization-audit.md)。
+- 在独立结构优化分支提取单脸执行与会话制品 I/O，保持模型缓存、像素计算及 SQLite 连续事务；批任务人物来源与已分配结果归到 task provenance，消除工程恢复对精修编排的依赖。保留顶层安装/公开路径并增加入口护栏，隔离运行完整回归与安装包验证后交付；不合并 main、不升级 Mac 实例、不重发 Wiki。见 [分支验收](docs/validation/20261014-organization-branch.md)及 [领域提取决策](.agents/notes/platform/20261014-domain-extraction-with-stable-entrypoints.md)。
+
 - Mac 实例追加指定 WiFi 局域网地址的端口发布，保留 Tailscale 入口、原 CPU 镜像与持久目录；提供可选 LAN Compose 覆盖及配置回归。关闭浏览器代理后实测上传、五脸检测、单人换脸、下载及工程刷新恢复。见 [局域网验收](docs/validation/20261014-lan-access.md)。
 - Mac 实例按用户选择配置 AI 连接，补齐模型协议前缀与容器出站；增加 Clash Verge 全局扩展，让 Tailscale 网段/进程/域名优先直连，尾网与所配 AI 域名返回真实 IP，保留订阅和其他代理规则。模型目录鉴权与国内点对点连接均实测通过，未进行付费生成。见 [AI 与网络验证](docs/validation/20261014-remote-ai-configuration.md)。
 - 修复 Mac 登录启动时 Tailscale 地址晚于 Colima、导致容器健康但宿主端口不转发的顺序问题：增加周期启动守卫，地址和专用空闲 VM 就绪后补齐转发，保留 Homebrew 原服务及既有数据；有其他运行容器或推理时延后，限制重启频率。见 [宿主重启故障记录](docs/validation/20261014-host-reboot.md)。

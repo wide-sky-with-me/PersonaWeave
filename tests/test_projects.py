@@ -591,3 +591,40 @@ def test_recovers_only_a_unique_accepted_session_with_matching_execution_evidenc
         assert restore_project(store, project["id"], manager, sessions)["revision"] == restored["revision"]
     else:
         assert associated is None
+
+
+def test_failed_interrupted_batch_restores_only_committed_results_without_replaying_work(store):
+    manager = batch_with_assignments()
+    task = manager.get_task("batch")
+    task.status = "FAILED"
+    task.error = "CancelledError fixture: completed local outputs remain available"
+    task.results[1].status = "FAILED"
+    task.results[1].processed_url = None
+    task.results[1].error = "fixture image failed"
+    recovered = recover_record(store, "batch", "batch", manager, None)
+    first, second = recovered["document"]["studio"]["targetImages"]
+    assert first["status"] == "SUCCESS" and first["refinementInput"]
+    assert first["refinementInput"]["people"][0]["person_id"] == 1
+    assert first["refinementInput"]["people"][0]["face_index"] == 2
+    assert first["refinementInput"]["original_image_url"] == first["url"]
+    assert first["refinementInput"]["baseline_image_url"] == first["processedUrl"]
+    assert first["faces"] == second["faces"] == []
+    assert second["status"] == "FAILED" and second["url"]
+    assert second["error"] == "fixture image failed"
+    assert "refinementInput" not in second and "processedUrl" not in second
+    assert recover_record(store, "batch", "batch", manager, None)["revision"] == recovered["revision"]
+
+
+def test_confirmed_skipped_person_keeps_original_canvas_position_and_identity_reference(store):
+    manager = batch_with_assignments()
+    task = manager.get_task("batch")
+    task.results[0].person_outcomes[1]["diagnostics"]["matching"]["face_index"] = 1
+    task.results[0].person_outcomes[1]["reason"] = "no_visible_change"
+    recovered = recover_record(store, "batch", "batch", manager, None)
+    target = recovered["document"]["studio"]["targetImages"][0]
+    people = target["refinementInput"]["people"]
+    assert [(p["person_id"], p["face_index"]) for p in people] == [(1, 2), (4, 1)]
+    assert store.asset(recovered["id"], people[0]["source_manual_images"][0]["$asset"]) == png("red")
+    assert store.asset(recovered["id"], people[1]["source_manual_images"][0]["$asset"]) == png("blue")
+    assert target["personOutcomes"] == task.results[0].person_outcomes
+    assert target["faces"] == []

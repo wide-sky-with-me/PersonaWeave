@@ -23,14 +23,14 @@
 
 ## 编辑器恢复
 
-完整 Studio 工程连同准备区保存每个会话的查看/基图版本、已确认分析、未提交意见，以及模型/对比/缩放/分栏选择。同一标签页刷新也保留轻量选择；状态不确定的待提交命令沿用原幂等键，永不自动重放。打开会话与显式恢复其关联工程是两件事。恢复不改变服务端轮次、接受或稳定的人物绑定；没有完整工程的旧会话只能恢复它保留的证据和显式映射，并显示缺失提示。存储、归属、冲突和删除语义见 [task-history.md](studio-projects.md)。
+完整 Studio 工程连同准备区保存每个会话的查看/基图版本、已确认分析、未提交意见，以及模型/对比/缩放/分栏选择。同一标签页刷新也保留轻量选择；状态不确定的待提交命令沿用原幂等键，永不自动重放。打开会话与显式恢复其关联工程是两件事。恢复不改变服务端轮次、接受或稳定的人物绑定；没有完整工程的旧会话只能恢复它保留的证据和显式映射，并显示缺失提示。存储、归属、冲突和删除语义见 [studio-projects.md](studio-projects.md)。
 
-批任务建会话只使用每张图实际的人物-人脸分配：没有分配到人脸的被跳过角色不会绑到猜测位置，也不阻止其他已确认的人物进入精修；成功结果却没有人脸分配则仍然失败。每个工程恢复入口都能在校验两张画布（摘要相同或解码像素完全一致）后，用保留的显式参考和分配结果重建缺失的创建配方，不重跑本地换脸。运行中的批任务输入还会连同任务 ID 保存，刷新后显式关联的工作区可在结果到达时完成同一配方。见 `api/refinement/batch.py`、`api/projects/recovery.py`、`web/src/hooks/useBatchPipeline.ts` 及其回归测试。
+批任务建会话只使用每张图实际的人物-人脸分配：未分配角色不绑到猜测位置，不阻止已确认人物进入精修；成功结果没有分配则失败。来源枚举和已分配结果统一由 [task provenance](../api/tasks/provenance.py)提供，精修接续与恢复各自编排。工程恢复在校验两张画布（摘要相同或解码像素完全一致）后，以保留的参考和分配结果重建缺失配方，不重跑换脸；运行中输入连同任务 ID 保存，显式关联的工作区可在刷新后的结果到达时接续。实现 `api/refinement/batch.py`、`api/projects/recovery.py`、`web/src/hooks/useBatchPipeline.ts`；回归见 `tests/test_assignment_provenance.py`、`tests/test_batch_refinement.py`、`tests/test_projects.py`。
 
 ## 已接受结果投影与导出
 
 服务端确认的接受被投影到关联编辑目标的 `refinedUrl`，原图和 `processedUrl` 本地基线保持不变；准备画布、对比、胶片条和当前图下载都使用这一最终结果。全局观察器即使在精修视图之外也刷新显式关联的会话，所以恢复工程后已接受的结果同样出现。会话 ID 和目标 ID 必须同时匹配，重新处理的目标被排除，旧 revision 不能替换新的接受；查看候选或无关历史不改变编辑器结果。已保存工程保留独立的图片副本和版本/revision 投影，这些元数据不构成服务端接受授权。实现与回归：`acceptedResults.ts`、`useAcceptedResults.ts`、`SessionWorkbench.test.tsx`、`acceptedResults.test.ts`。
 
-确认删除会清除匹配会话的已接受 URL 和元数据，并持久化“结果不可用”标记；画布明确标出剩下的本地初稿，它不能被下载为已接受的最终图。工程冻结的 data URI 副本在删除后仍然保留。单图和 ZIP 导出先核对关联会话并使用它当前的已接受发布，只有确认的 404/410 才允许回退到冻结图；网络错误、服务端失败和会话/目标不匹配会明确失败，不静默导出过期的接受结果。实现 `sessionCache.ts`、`acceptedResults.ts`、`workspaceExport.ts`，回归 `sessionCache.test.ts`、`workspaceExport.test.ts`、`useSingleSwap.test.tsx`。
+确认删除会清除匹配会话的已接受 URL 和元数据，并持久化“结果不可用”标记；画布明确标出剩下的本地初稿，它不能被下载为已接受的最终图。工程冻结的 data URI 副本在删除后仍然保留。单图和 ZIP 导出先核对关联会话并使用它当前的已接受发布，只有确认的 404/410 才允许回退到冻结图；网络错误、服务端失败和会话/目标不匹配会明确失败，不静默导出过期的接受结果。实现 `sessionCache.ts`、`acceptedResults.ts`、`workspaceExport.ts`，回归 [缓存清理](../web/src/features/refinement/sessionCache.test.ts)、[最终图导出](../web/src/utils/workspaceExport.test.ts)、[接受投影](../web/src/features/refinement/hooks/useAcceptedResults.test.tsx)。
 
 工作台和历史列表提供同一个带 revision 检查的删除；历史还支持选择和批量删除并分别显示结果。只有删除成功（或重试时确认 `404`）后行和缓存的详情才消失；运行中的记录不可选，过期或失败的行保留并刷新。该会话打开的工作区、草稿、待提交命令和匹配的轻量 `refinementSessionId` 关联都被清除，源图、本地输出、映射和遮罩不被改写；已有 SSE 订阅收到 `deleted` 通知后关闭，对已删除记录重连返回 `404`。

@@ -14,9 +14,8 @@ import type { SessionCreate, SessionDetail, TurnMode } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
 import { apiErrorMessage, isResourceUnavailable } from '@/utils/apiError';
 import { requestUuid } from '@/utils/browserCrypto';
+import { sessionKey, sessionsKey } from '../queryKeys';
 
-export const sessionKey = (id: string | null) => ['refinement-session', id] as const;
-export const sessionsKey = ['refinement-sessions'] as const;
 /** Server snapshots own progress and acceptance; local choices never overwrite these facts. */
 export function useSessionWorkbench(target?: TargetImageItem) {
   const workspace = useWorkbenchStore();

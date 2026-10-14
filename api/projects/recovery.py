@@ -9,9 +9,9 @@ import numpy as np
 
 from api.media import encode_image_to_base64, load_image_from_source
 from api.portraits.library import resolve_asset_ids, resolve_asset_path, resolve_identity_asset_ids
-from api.refinement.batch import assigned_outcomes
 from api.refinement.contracts import SessionPersonInput
 from api.schemas import ProjectAssetRequest, ProjectSaveRequest
+from api.tasks.provenance import assigned_outcomes, request_person_sources
 from core.image_security import MAX_IMAGE_BYTES, decode_image_bytes, decode_snapshot_bytes, encode_snapshot_image
 from core.refinement.contracts import MAX_PEOPLE
 
@@ -233,15 +233,9 @@ def recover_record(store, kind, record_id, task_manager, sessions):
         else:
             title = f"恢复任务 {record_id}"
             studio["parameters"] = request.parameters.model_dump(mode="json") if request else {}
-            mappings = [m.model_dump(mode="json") for m in request.person_mappings] if request else []
-            if request and not mappings:
-                mappings = [
-                    {
-                        **request.model_dump(mode="json"),
-                        "person_index": request.person_index,
-                        "target_reference_person_index": request.person_index,
-                    }
-                ]
+            mappings = [m.model_dump(mode="json") for m in request_person_sources(request)]
+            if request and not request.person_mappings:
+                mappings[0]["target_reference_person_index"] = request.person_index
             for index, mapping in enumerate(mappings):
                 images = references(mapping, f"角色 {index + 1}")
                 if images:
@@ -324,10 +318,11 @@ def restore_batch_refinement_inputs(store, project, task, request, sessions):
     doc = project["document"]
     project_id = project["id"]
     results = {item.client_target_id: item for item in task.results}
-    mappings = {item.person_index: item.model_dump(mode="json") for item in request.person_mappings}
+    sources = request_person_sources(request)
+    mappings = {item.person_index: item.model_dump(mode="json") for item in sources} if request.person_mappings else {}
     # In the single-source API, one explicit source can apply to all recorded face assignments.
     # person_index is optional there; the outcome still supplies the actual stable ID and face index.
-    single_source = request.model_dump(mode="json") if not request.person_mappings else None
+    single_source = sources[0].model_dump(mode="json") if not request.person_mappings else None
     changed = False
     references = {}
 

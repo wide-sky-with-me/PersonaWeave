@@ -9,7 +9,7 @@ Production local swap follows the processing sequence of FaceFusion commit `4b1d
 5. Boundary-ring color correction: a full-crop Reinhard LAB harmonization against the unswapped aligned crop is computed, but only its narrow mask-edge ring is blended in; the swapped face's interior tone is never touched. This targets exposure/white-balance seams without whole-face drift. Off when `color_transfer_mode="off"`.
 6. Inverse affine alpha paste-back, with manual protection subtracted last.
 
-All adapters in `core/swapper.py` expose `infer_aligned()` for an already aligned crop; alignment and compositing belong only to `PersonaWeavePipeline.swap_single_face_facefusion()`, and adapters offer no second paste-back path. Templates are normalized in `core/swapper.py`, scaled per crop. Coverage: `tests/test_facefusion_pipeline.py`, `tests/test_swap_diagnostics.py`.
+`core/swapper.py` adapters expose only `infer_aligned()`. The supported `PersonaWeavePipeline.swap_single_face_facefusion()` entry delegates alignment, masks, correction and paste-back to [`core/face_execution.py`](../core/face_execution.py); adapters have no second paste-back path. Templates stay normalized. Coverage: `tests/test_facefusion_pipeline.py`, `tests/test_swap_diagnostics.py`.
 
 Poisson cloning, whole-face color transfer and heuristic hair protection are not supported: they can alter facial structure, identity or protected pixels (`swap_single_face_seamless()` is retired, not an alternative). Ghost is explicit-only; automatic routing picks InSwapper unless the user opts into a suitable HyperSwap path.
 
@@ -25,7 +25,7 @@ All production model constructors use `utils/gpu_helper.py::local_session_option
 
 ## Multi-person mapping assignment
 
-For `person_mappings` on a group photo, `resolve_person_mapping_assignment()` (`core/pipeline.py`) solves a globally optimal one-to-one assignment between mappings and faces with the Hungarian algorithm (`scipy.optimize.linear_sum_assignment`) over the full cosine-similarity matrix, instead of each mapping greedily claiming its best face in list order. Below-threshold pairs are masked before optimizing and re-verified against the real similarity afterwards, so a pair forced by a saturated row or column is still rejected.
+For `person_mappings`, [`resolve_person_mapping_assignment()`](../core/face_assignment.py) solves the globally optimal one-to-one mapping/face assignment with `scipy.optimize.linear_sum_assignment` over the full cosine matrix; `core/pipeline.py` calls it. Below-threshold pairs are masked before optimizing and re-verified against real similarity afterwards, so saturated rows/columns cannot force invalid matches.
 
 Cross-image clustering is separate (`api/routes/faces.py`): a VLM may suggest merging an orphan into a cluster, but `VLMIdentityArbiter.refine_clusters()` rechecks the ArcFace cosine between the reference used for arbitration and the orphan against the request's `similarity_threshold`. Missing, malformed, zero or non-finite embeddings cannot authorize a merge, and VLM confidence is not an ArcFace score. Coverage: `tests/test_identity_cluster_arbitration.py`.
 

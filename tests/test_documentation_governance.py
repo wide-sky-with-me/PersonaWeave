@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+from scripts.documentation_links import link_errors, reachable_documents, repository_documents
+
 ROOT = Path(__file__).resolve().parents[1]
 NOTES = ROOT / ".agents/notes"
 
@@ -16,6 +18,18 @@ CAPS = {
 NOTE_CAP = 6_000
 HISTORY_WORDS = ("此前", "以前", "原先", "曾经", "现已", "如今", "不再", "previously", "formerly", "no longer")
 NOTE_HEADINGS = ("## 背景", "## 决策", "## 被放弃的方案", "## 影响与验证")
+
+READING_ENTRIES = (
+    "AGENTS.md",
+    "README.md",
+    "DESIGN.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "wiki/Home.md",
+    "wiki/_Sidebar.md",
+    "wiki/_Footer.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+)
 
 
 def documents():
@@ -83,13 +97,7 @@ def test_decision_notes_have_required_structure_and_no_global_index():
 
 
 def test_decision_note_links_resolve():
-    broken = []
-    for path in [*notes(), NOTES / "README.md"]:
-        for target in re.findall(r"\]\(([^)#\s]+)(?:#[^)]*)?\)", path.read_text(encoding="utf-8")):
-            if target.startswith(("http://", "https://", "mailto:")):
-                continue
-            if not (path.parent / target).resolve().exists():
-                broken.append(f"{relative(path)} -> {target}")
+    broken = link_errors(ROOT, [*notes(), NOTES / "README.md"])
     assert not broken, broken
 
 
@@ -99,26 +107,18 @@ def test_agent_rules_point_to_every_documentation_layer():
         assert link in rules
 
 
-def all_markdown_outside_notes():
-    top_level = [ROOT / name for name in ("AGENTS.md", "README.md", "DESIGN.md", "CHANGELOG.md", "models/README.md")]
-    return [*top_level, *sorted((ROOT / "docs").glob("*.md")), ROOT / "tests/fixtures/README.md"]
-
-
 def test_every_document_is_reachable_from_another_document():
-    """No orphan documents: each docs/*.md must be linked from some other Markdown file."""
-    texts = {path: path.read_text(encoding="utf-8") for path in all_markdown_outside_notes()}
-    orphans = [
-        relative(doc)
-        for doc in (ROOT / "docs").glob("*.md")
-        if not any(doc.name in text for path, text in texts.items() if path != doc)
-    ]
-    assert not orphans, f"Link these from README.md, DESIGN.md, AGENTS.md or a related document: {orphans}"
+    """Navigation must lead from reading/platform entries, not incidental filename mentions."""
+    documents = repository_documents(ROOT, include_notes=True)
+    reachable = reachable_documents(ROOT, documents, [ROOT / name for name in READING_ENTRIES])
+    orphans = [relative(doc) for doc in (ROOT / "docs").rglob("*.md") if doc not in reachable]
+    assert not orphans, f"Link these from a reachable current document: {orphans}"
 
 
 def test_every_decision_note_is_discoverable_without_an_index():
-    """Notes have no global index, so a document, the rules or another note must link each one."""
-    texts = {path: path.read_text(encoding="utf-8") for path in [*all_markdown_outside_notes(), *notes()]}
-    unlinked = [
-        relative(note) for note in notes() if not any(note.name in text for path, text in texts.items() if path != note)
-    ]
+    """Notes must be reachable through current documentation or another reachable note."""
+    reachable = reachable_documents(
+        ROOT, repository_documents(ROOT, include_notes=True), [ROOT / name for name in READING_ENTRIES]
+    )
+    unlinked = [relative(note) for note in notes() if note not in reachable]
     assert not unlinked, f"Link each note from the document it explains: {unlinked}"

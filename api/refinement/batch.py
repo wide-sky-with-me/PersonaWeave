@@ -4,21 +4,7 @@ import asyncio
 import hashlib
 
 from api.refinement.contracts import SessionCreateRequest, TurnCreateRequest
-
-
-def assigned_outcomes(result):
-    """Keep this image's recorded assignments; absent batch roles are not image people."""
-    assigned = []
-    for outcome in result.person_outcomes:
-        face_index = outcome.get("diagnostics", {}).get("matching", {}).get("face_index")
-        if face_index is None and outcome.get("status") == "SKIPPED":
-            continue
-        if not isinstance(face_index, int) or isinstance(face_index, bool) or face_index < 1:
-            raise ValueError("A requested person lacks a confirmed face assignment")
-        assigned.append(outcome)
-    if not assigned:
-        raise ValueError("The local result has no confirmed face assignments")
-    return assigned
+from api.tasks.provenance import assigned_outcomes
 
 
 def batch_session_request(task_id, request, result, source_references, prepared_mappings):
