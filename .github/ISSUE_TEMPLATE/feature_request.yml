@@ -1,0 +1,26 @@
+name: 功能或文档建议
+description: 描述实际使用问题和可验收的改进。
+title: "[建议] "
+body:
+  - type: markdown
+    attributes:
+      value: 不提交密钥或个人数据；请区分现有功能的缺陷和新增能力。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 具体场景与问题
+      description: 谁在什么步骤遇到什么限制？为什么现有流程不足？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望行为与验收方式
+      description: 描述明确输入、输出及成功条件，不假定尚未验证的模型能力。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案及成本
+      description: 说明尝试过的现有流程；如涉及 AI，写明额外请求、费用和失败边界。

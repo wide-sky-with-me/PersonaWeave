@@ -16,6 +16,13 @@ jobs:
       - run: uv sync --dev
       - run: uv run ruff format --check .
       - run: uv run ruff check .
+      - name: Cache verified local inference models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: ${{ runner.os }}-onnx-models-${{ hashFiles('scripts/download_models.py') }}
+      - name: Prepare and verify inference models
+        run: uv run python scripts/download_models.py
       - run: uv run pytest -q
 
   frontend:
@@ -34,5 +41,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       - run: pnpm test
       - run: pnpm build

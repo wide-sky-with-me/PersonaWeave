@@ -69,4 +69,4 @@ Source galleries keep face geometry, embeddings and quality/pose metadata after 
 
 ## 证据
 
-手动真实图对比写在 `outputs/diagnostics/facefusion-parity/`。单元覆盖：[`tests/test_facefusion_pipeline.py`](../tests/test_facefusion_pipeline.py)（掩码柔化、pixel boost 往返、极端姿态拒绝、映射结果）、[`tests/test_swapper_policy.py`](../tests/test_swapper_policy.py)（路由）、[`tests/test_task_swap_outcome.py`](../tests/test_task_swap_outcome.py)（部分结果提示）；M01 姿态扩展的校验和与 SCRFD/ArcFace 测量见 [`data/portrait_expansions/README.md`](../data/portrait_expansions/README.md)。实现 [`core/pipeline.py`](../core/pipeline.py)；文档规则 [documentation-governance.md](./documentation-governance.md)。
+手动真实图对比写在 `outputs/diagnostics/facefusion-parity/`。单元覆盖：[`tests/test_facefusion_pipeline.py`](../tests/test_facefusion_pipeline.py)（掩码柔化、pixel boost 往返、极端姿态拒绝、映射结果）、[`tests/test_swapper_policy.py`](../tests/test_swapper_policy.py)（路由）、[`tests/test_task_swap_outcome.py`](../tests/test_task_swap_outcome.py)（部分结果提示）；M01 姿态扩展的校验和与 SCRFD/ArcFace 测量的限定范围见 [版本化摘要](validation/20261014-portrait-reference-evidence.md)。实现 [`core/pipeline.py`](../core/pipeline.py)；文档规则 [documentation-governance.md](./documentation-governance.md)。

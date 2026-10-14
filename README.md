@@ -2,6 +2,10 @@
 
 批量图片定点换脸工作台，支持多人物映射、跨图身份匹配和人工确认的整图 AI 精修。
 
+[![CI](https://github.com/wide-sky-with-me/PersonaWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/wide-sky-with-me/PersonaWeave/actions/workflows/ci.yml)
+
+[公开说明与样例](docs/public-project.md) · [Wiki](wiki/Home.md) · [参与贡献](CONTRIBUTING.md) · [漏洞报告](SECURITY.md) · [发行附件](https://github.com/wide-sky-with-me/PersonaWeave/releases)
+
 ## 当前功能
 
 - **磁盘保存与精修回看**：参考大图在特征提取后释放，授权精修证据无损落盘；保存后的工程照片按需读取。精修图片查看不重复解码大图，支持加载失败后重试；接受结果立即保存关联工程，历史支持翻看 50 条以外的旧会话。见 [内存与排队](docs/memory-scheduling.md)、[任务历史](docs/task-history.md)。
@@ -9,12 +13,12 @@
 - **换脸排队诊断**：显示模型实际加载的 CPU/CUDA 后端，以及等待内存、分析参考图和取消后收尾状态；`Check-Performance.cmd` 采集不含图片或密钥的运行报告。本地模型关闭闲置线程空转，测试依据见 [内存与排队](docs/memory-scheduling.md)。
 - **多图内存控制**：上传逐张解码，批任务排队逐张换脸；内存不足时等待并显示原因，超时保留已完成结果。自动精修也按图片串行，融合分块计算保持原分辨率和像素结果。见 [内存与排队](docs/memory-scheduling.md)。
 
-- **操作布局与交互分层**：右侧“换脸控制”常驻场景推荐预设与特征融合主滑块，高级算法调校（ONNX 模型、余弦截断阈值 $\tau$、光影色温适配）采用渐进式折叠并透出实时摘要；目标画布人脸框支持原位点击呼出快速指派浮窗（带多角度头像预览），并与全局映射矩阵无缝联动；AI 精修工作台顶栏提供一键返回画布导航。底部横条展示状态、进度与耗时。
+- **操作布局**：右侧常驻场景预设与融合滑块，高级调校按需展开；画布人脸框可直接指派人物，并与映射矩阵联动。精修工作台支持返回画布，底部展示进度与耗时。见 [工程架构](docs/engineering-architecture.md)。
 - **本地换脸**：ONNX 推理、全局人物匹配、遮挡/眼镜保护、手动保护画笔与边界色彩校正。输出仍需人工检查身份和自然度，算法细节见 [本地换脸](docs/facefusion-local-swap.md)。
 - **大图精修快照**：合法上传图片转换为无损 PNG 后，内部快照不套用 20 MiB 上传限制；仍检查像素与内存预算。大图精修结果可随工程保存和恢复，见 [精修契约](docs/ai-refinement.md)。
 
-- **对话式 AI 精修**：以原图检测位置冻结人物定位，先查看折叠分组的问题，确认该版本的分析后填写意见；后端绑定已确认诊断并与人工意见合并成编辑计划，生成后对比定稿；允许无问题或无法判断。视觉整图使用更清晰的有界预览，模型内部采样仍可能限制小脸判断；界面显示原生生成尺寸及放大情况，画布默认完整展示当前版本。生图只接收当前整图与文字，允许必要的整图重绘。每轮至多生成一版，复评只提供建议；可选择旧版本为基图继续编辑，最终由人明确接受。见 [精修契约](docs/ai-refinement.md) 与 [提示词依据](docs/refinement-prompts.md)。
-- **素材库**：按身份管理参考图，默认最多选择 8 张非拼图素材；SQLite 持久化，接口只暴露不透明 ID。个人素材包采用自然上镜风格的虚构中国年轻人，男女各 32 位，包含多角度与表情。支持归档人物而保留历史引用，见 [素材库维护](docs/portrait-library.md)。
+- **对话式 AI 精修**：冻结人物与实际参考，确认指定版本的诊断后合并人工意见形成编辑计划；允许无问题或无法判断。生成只接收当前整图与文字，每轮至多一版，可选择旧版本继续编辑；复评只提供建议，最终由人明确接受。整图重绘、小脸判断及原生尺寸边界见 [精修契约](docs/ai-refinement.md) 与 [提示词依据](docs/refinement-prompts.md)。
+- **素材库**：按身份管理参考图，默认最多选择 8 张非拼图素材；SQLite 持久化，接口只暴露不透明 ID。素材独立准备，不随源码 clone 提供；支持归档人物而保留历史引用，见 [素材库维护](docs/portrait-library.md)。
 - **失败提示**：单图、批量、人物分析及精修错误以需手动关闭的弹窗展示具体原因；批量失败按图片汇总，避免轮询重复弹出。
 - **Windows 便携交付**：支持中文图片路径、源码修复包原子发布与未完成升级的启动拦截；安装自检不迁移素材库或写入工程数据。使用与兼容边界见 [Windows 使用说明](docs/windows-portable.md)。
 - **相机 JPG 兼容**：携带 MPO/MPF 信息的 JPEG 读取主图，工程保留原始字节；大小和内存限制保持生效。见 [Windows 使用说明](docs/windows-portable.md)。
@@ -95,6 +99,7 @@ pnpm --dir web build
 
 | 目的 | 文档 |
 | --- | --- |
+| 公开获取、样例、许可与协作 | [公开项目说明](docs/public-project.md)、[贡献说明](CONTRIBUTING.md)、[漏洞报告](SECURITY.md) |
 | 项目交接与接任验收 | [综合交接说明](docs/project-handover.md)、[运行维护手册](docs/operations-runbook.md) |
 | 按主题浏览与维护 Wiki | [Wiki 首页](wiki/Home.md)、[Wiki 发布说明](docs/wiki-publication.md) |
 | 理解系统与存储边界 | [架构概述](DESIGN.md) |

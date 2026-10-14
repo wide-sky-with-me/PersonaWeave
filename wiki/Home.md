@@ -8,6 +8,7 @@ PersonaWeave 是批量图片定点换脸工作台，支持多人物映射、跨�
 
 | 目的 | Wiki 专题 | 权威入口 |
 | --- | --- | --- |
+| 公开获取、样例、许可与协作 | [公开项目与协作](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Community.md) | [公开项目说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/public-project.md)、[贡献说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/CONTRIBUTING.md) |
 | 首次运行与配置 | [快速开始](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Getting-Started.md) | [README](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/README.md) |
 | 源码、CPU 容器、Windows 部署 | [部署](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Deployment.md) | [Docker 部署](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/docker-deployment.md)、[Windows 指南](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/windows-portable.md) |
 | 理解模块和数据边界 | [架构](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Architecture.md) | [架构概述](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/DESIGN.md)、[工程架构](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/engineering-architecture.md) |

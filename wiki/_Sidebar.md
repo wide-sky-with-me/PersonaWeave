@@ -1,6 +1,7 @@
 ## PersonaWeave
 
 - [首页](https://github.com/wide-sky-with-me/PersonaWeave/wiki/Home)
+- [公开项目与协作](https://github.com/wide-sky-with-me/PersonaWeave/wiki/Community)
 - [快速开始](https://github.com/wide-sky-with-me/PersonaWeave/wiki/Getting-Started)
 - [部署](https://github.com/wide-sky-with-me/PersonaWeave/wiki/Deployment)
 - [架构](https://github.com/wide-sky-with-me/PersonaWeave/wiki/Architecture)

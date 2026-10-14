@@ -10,6 +10,8 @@
 - 新增 [项目综合交接说明](docs/project-handover.md) 与 [运行维护手册](docs/operations-runbook.md)，统一业务、代码、文档、验证和责任入口，补齐实例登记、同批数据备份恢复、升级回滚、故障排查及接任验收。按源码说明多图视觉仲裁费用与文件访问边界；本次仅修改文档，不改变运行行为。核对范围见 [交接记录](docs/validation/20261014-project-handover.md)。
 - 新增随代码版本化的 [Wiki 首页与专题导航](wiki/Home.md)、侧栏、页脚及 [发布说明](docs/wiki-publication.md)，事实仍链接到所属文档；增加导航、仓库文件和章节链接回归。独立 Wiki 的首次初始化及本次提交验证边界见 [提交核对记录](docs/validation/20261014-repository-publication.md)。
 - 补齐 [Mac 启动守卫安装与停用步骤](docs/macos-boot-guard.md)、脱敏 LaunchAgent 模板与生成回归；明确本地推理槽位空闲不能代表全部 HTTP/远端 VLM 操作结束，修复仅用于已确认空闲的恢复窗口。历史验收中的实例诊断脚本和原始报告须独立移交，不宣称 Git clone 含全部运行证据。
+- 将仓库设为公开，补齐简介、主题、文档主页、[公开说明与样例](docs/public-project.md)、贡献/私密报告入口及 Issue/PR 模板；源码许可证保持未指定，不将公开可见性当作资产商用授权。新增 Wiki 协作专题和公开资料回归，实际核对见 [公开发布记录](docs/validation/20261014-public-repository.md)。
+- 修复 CI 干净 checkout 缺模型资产的前置失败：pytest 前由现有下载器准备并校验模型，按下载器摘要键缓存；前端补 lint。将当前文档指向本地忽略目录的 M01 记录改为 [有限范围的版本化摘要](docs/validation/20261014-portrait-reference-evidence.md)，保持图片、数据库及模型不进入 Git。
 
 ## 2026-10-13
 

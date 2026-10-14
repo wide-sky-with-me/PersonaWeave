@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 公开项目说明与常见问题
+    url: https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/public-project.md
+    about: 查阅安装、样例、资产和源码许可边界。
+  - name: Wiki 文档导航
+    url: https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md
+    about: 查找部署、架构、工作流和维护文档。
+  - name: 私密漏洞报告
+    url: https://github.com/wide-sky-with-me/PersonaWeave/security/advisories/new
+    about: 涉及漏洞或私人数据暴露时使用此入口，不提交公开 issue。
