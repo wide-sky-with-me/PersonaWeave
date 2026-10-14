@@ -1,6 +1,6 @@
 # 文档治理
 
-文档是交付行为的一部分：改变了对外可见的流程、默认值、模型、状态、安全规则、存储规则或失败语义，却没有同时更新对应文档和回归证据，这次改动就是不完整的。本文件定义文档分层、权威来源、写作规则和机械检查；`AGENTS.md` 只保留规则和指向这里的链接。
+本文供文档维护者使用：确定内容写在哪一层、找到权威事实源，再执行链接与一致性检查。按任务找文档请先看 [文档总览](README.md)。行为、默认值、模型、状态、权限边界、存储或失败语义改变时，文档与回归须随同交付；`AGENTS.md` 只保留短规则和链接。
 
 ## 分层
 
@@ -18,7 +18,10 @@
 
 两处描述冲突时，以下表中最窄的权威来源为准，并在同一变更里修正另一处。`README.md` 是面向用户的能力摘要，`DESIGN.md` 说明架构，二者必须链接到权威文档，不得另建一套状态机或模型清单。
 
-| Topic | Canonical current document | Executable fact source | Regression evidence |
+<details>
+<summary>展开：按主题查权威文档、实现与回归依据</summary>
+
+| 主题 | 权威当前文档 | 实现或配置 | 回归依据 |
 | --- | --- | --- | --- |
 | Conversational whole-image refinement | [ai-refinement.md](./ai-refinement.md); evidence/diagnosis in [refinement-analysis.md](./refinement-analysis.md); generation/review in [refinement-generation.md](./refinement-generation.md); routes/storage in [refinement-session-api.md](./refinement-session-api.md); UI in [refinement-workbench.md](./refinement-workbench.md) | [`service.py`](../api/refinement/service.py), [`store.py`](../api/refinement/store.py), [`artifacts.py`](../api/refinement/artifacts.py), [`contracts.py`](../api/refinement/contracts.py), [`conversation.py`](../core/refinement/conversation.py) | `tests/test_refinement_sessions.py`, `tests/test_refinement_artifacts.py`, `tests/test_refinement_conversation.py`, `tests/test_batch_refinement.py`, `tests/test_legacy_refinement.py` |
 | Refinement evidence and prompt contracts | [refinement-analysis.md](./refinement-analysis.md) and [refinement-prompts.md](./refinement-prompts.md) (version and sources), subordinate to the refinement architecture | [`core/refinement/contracts.py`](../core/refinement/contracts.py), [`core/refinement/prompts.py`](../core/refinement/prompts.py), [`core/refinement/evidence.py`](../core/refinement/evidence.py) | `tests/test_refinement_conversation.py`; official sources and retrieval limitations are recorded in the prompt document |
@@ -33,6 +36,8 @@
 | Historical refinement quality archive | [delivery-quality.md](./delivery-quality.md) | [`api/refinement/legacy.py`](../api/refinement/legacy.py), [`api/refinement/legacy_quality.py`](../api/refinement/legacy_quality.py) | `tests/test_legacy_refinement.py`, `tests/test_legacy_refinement_api.py` |
 | Offline benchmarks and historical measurements | [swap-benchmarks.md](./swap-benchmarks.md) | `scripts/compare_source_strategies.py`, `scripts/evaluate_swap_quality.py`, `scripts/diagnose_batch_strength.py` | `tests/test_source_strategy_comparison.py`, `tests/test_swap_benchmarks.py`, `tests/test_diagnose_batch_strength.py` |
 | Engineering boundaries and cleanup policy | [engineering-architecture.md](./engineering-architecture.md) | package boundaries, `config/ai_gateway.yaml`, `scripts/download_models.py` | `tests/test_package_boundaries.py`, `tests/test_ai_gateway_config.py`, `tests/test_download_models.py`, `tests/test_documentation_consistency.py` |
+
+</details>
 
 ## 事实文档的写作规则
 
@@ -67,11 +72,12 @@ LiteLLM 以官方 [Router 文档](https://docs.litellm.ai/docs/routing) 和 [图
 4. 删除或替换架构时移除冲突的现行描述，不得让两套流程在不同章节同时生效；
 5. 属于非平凡改动的，新增一篇决策笔记；
 6. 能机械验证的不变量写进测试；
-7. 运行 `uv run pytest tests/test_documentation_consistency.py tests/test_documentation_governance.py`；改 Python 时运行 Ruff 与相关回归，改前端时运行检查、测试和构建。
+7. 运行 `uv run pytest tests/test_documentation_consistency.py tests/test_documentation_governance.py`；新增阅读导航另运行 `uv run pytest tests/test_documentation_readability.py`，公开入口和 Wiki 分别运行对应专项。改 Python 运行 Ruff 与相关回归，改前端运行检查、测试和构建。
 
 ## 机械检查
 
 - `tests/test_documentation_consistency.py` 检查高风险的重复事实、配置与当前契约；本地文件、章节和指向本仓库 main/Wiki 的链接由非生产工具 [`documentation_links.py`](../scripts/documentation_links.py) 统一离线解析，覆盖根入口、公共协作页、`docs/` 子目录与 Wiki 源码，不访问运行数据或外网。
 - `tests/test_documentation_governance.py` 检查字符上限（存量上限只降不升）、事实文档的历史变迁词、笔记结构和禁止全局索引。`docs/**/*.md` 与决策笔记必须能沿真实链接从 README、DESIGN、AGENTS、公共协作入口或 Wiki 首页/平台导航抵达；文件名提及、代码示例、孤立互链与仅有 Changelog 入链不算可发现。
 - [`test_documentation_links.py`](../tests/test_documentation_links.py) 覆盖解析与导航反例，公开页/Wiki 专项回归保留各自的发布契约。检查归属和导航取舍见 [决策笔记](../.agents/notes/platform/20261014-rooted-documentation-navigation.md)。
-- 这些检查补充评审，不证明正文语义正确。
+- [`test_documentation_readability.py`](../tests/test_documentation_readability.py) 保证阅读总览直接覆盖全部现行专题，用户/开发入口能抵达总览，并能返回维护入口；不复制运行时契约。
+- 这些检查补充评审，不证明正文语义正确。阅读结构整理的范围与核对见 [文档验收](validation/20261014-documentation-readability.md)；整分支检查及合并阶段见 [合并验收](validation/20261014-main-merge.md)。

@@ -1,36 +1,64 @@
 # 精修工作台与编辑器恢复
 
-本文定义精修工作台的交互流程、失败提示，以及围绕会话的编辑器恢复、已接受结果投影和导出。会话语义见 [ai-refinement.md](ai-refinement.md)，接口与存储见 [refinement-session-api.md](refinement-session-api.md)，工程与历史契约见 [task-history.md](task-history.md)。代码在 `web/src/features/refinement/`，行为由就近测试覆盖。
+本文说明精修工作台的操作、失败提示、编辑器恢复，以及已接受结果的展示和导出。实现位于 `web/src/features/refinement/`，行为由就近测试覆盖。
+
+会话语义见 [ai-refinement.md](ai-refinement.md)，接口与存储见 [refinement-session-api.md](refinement-session-api.md)，工程与历史契约见 [task-history.md](task-history.md)。
 
 ## 交互流程
 
-工作台依次是 **检查问题 → 确认分析 → 补充意见与修改 → 对比并继续下一轮**。打开或创建会话不调用模型。准备区的 AI 接续选项仅在服务端健康接口确认精修就绪后启用；失去就绪会清除选中状态，重新就绪不自动勾选。HTTP IP 浏览器使用强随机请求 ID，幂等语义与安全上下文一致；实现及原因见 [浏览器兼容决策](../.agents/notes/frontend/20261014-verify-project-assets-without-secure-context.md)。
+工作台顺序为 **检查问题 → 确认分析 → 补充意见与修改 → 对比并继续下一轮**。打开或创建会话不调用模型。
 
-1. 先提交一次 `discuss` 检查。发现按可折叠分组展示（人物与五官、遮挡与融合、光影与质感、构图与场景），含具体位置、观察、证据和建议；不确定项、人物对照和修改计划是独立的可展开部分。生成结果突出展示建议性复评，输入计划和先前的分析折叠。
-2. 人类对**这一基图**的已完成讨论显式确认后，意见输入框和生成才可用。意见可以修改或收窄 AI 建议；干净的诊断需要新的视觉要求才能生成；人物对应不明确时只开放澄清与讨论。更新分析要重新确认。
-3. “以此版继续”显式更换基图，同时清除确认和旧意见草稿，且必须先分析该版本才能再次生成。
-4. 画布默认完整展示所选版本；原图/基线的分屏对比需要显式选择，避免目标被原图那一半悄悄遮住。查看、选基图、接受三者独立，生成不会悄悄推进下一轮基图或最终版。迭代由人类驱动，上限 200 个轮次。
+**开始前：**准备区的 AI 接续选项仅在服务端健康接口确认精修就绪后启用。失去就绪会清除选中状态，重新就绪不自动勾选。HTTP IP 浏览器使用强随机请求 ID，幂等（重复同一命令不重复执行）语义与安全上下文一致。实现与原因见 [浏览器兼容决策](../.agents/notes/frontend/20261014-verify-project-assets-without-secure-context.md)。
 
-展示的人物定位来自原图检测冻结的从左到右人脸序号，以及原图尺寸可用时脸框中心距左上角的百分比；缺尺寸时省略坐标而不是编造。参考侧栏显示人物 ID 和缩略图，较长的原图定位默认折叠。实现与回归见 [会话配方](../web/src/features/refinement/sessionRecipe.ts)、[配方测试](../web/src/features/refinement/sessionRecipe.test.ts)。生成命令携带 `diagnosis_turn_id` 的服务端校验见 [ai-refinement.md](ai-refinement.md)；组件见 [工作台](../web/src/features/refinement/components/SessionWorkbench.tsx)、[输入区](../web/src/features/refinement/components/SessionComposer.tsx)，交互测试 [SessionWorkbench.test.tsx](../web/src/features/refinement/components/SessionWorkbench.test.tsx)。
+1. 提交 `discuss` 检查。发现按人物与五官、遮挡与融合、光影与质感、构图与场景分组，可折叠查看具体位置、观察、证据和建议。不确定项、人物对照与修改计划各自可展开。
+2. 显式确认**这一基图**的已完成讨论后，意见输入框和生成才可用。意见可修改或收窄建议；干净诊断需要新的视觉要求才能生成。人物对应不明确时只开放澄清与讨论，更新分析须重新确认。
+3. 用“以此版继续”显式更换基图。这会清除确认和旧意见草稿；再次生成前须先分析新基图。
+4. 对比候选后由人决定下一步。生成结果突出建议性复评，输入计划和先前分析折叠。迭代上限为 200 个轮次。
+
+**查看不等于修改或接受：**画布默认完整展示所选版本，原图/基线分屏须显式选择，避免目标被原图一半遮住。查看、选基图、接受是独立动作；生成不自动推进下一轮基图或最终版。
+
+**人物定位与参考：**界面使用原图检测时冻结的左右人脸序号；原图尺寸已知时，另显示脸框中心距左上角的百分比。缺尺寸就省略坐标，不编造。参考侧栏显示人物 ID 和缩略图，较长的原图定位默认折叠。
+
+定位实现及回归见 [会话配方](../web/src/features/refinement/sessionRecipe.ts)、[配方测试](../web/src/features/refinement/sessionRecipe.test.ts)。生成命令的 `diagnosis_turn_id`（已确认分析 ID）校验见 [ai-refinement.md](ai-refinement.md)；组件见 [工作台](../web/src/features/refinement/components/SessionWorkbench.tsx)、[输入区](../web/src/features/refinement/components/SessionComposer.tsx)，交互回归见 [SessionWorkbench.test.tsx](../web/src/features/refinement/components/SessionWorkbench.test.tsx)。
 
 ## 失败提示
 
-被拒绝的命令、失败的轮次和失败的候选复评都用需要确认的对话框展示，被拒绝的输入保留服务端错误详情。复评失败仍保留候选供人工查看；关闭对话框不会重试或生成任何东西。恢复会话时历史失败保留在对话里而不重放旧对话框，新观察到的轮次失败需要确认。
+命令校验失败、轮次失败、候选复评失败都用需确认的对话框展示；输入校验失败时保留服务端错误详情。
+
+复评失败仍保留候选供人查看。关闭对话框不重试，也不生成图片。恢复会话时，历史失败保留在对话中，不重放旧弹窗；新观察到的轮次失败仍需确认。
 
 ## 图片读取
 
-工作台对参考图和版本缩略图懒加载，临时失败后可显式“仅重新加载图片”，重载从不创建轮次。显式接受后，关联的编辑器等待工程保存；保存失败时提示“服务端接受已成功，但工程仍需保存”，会话中的接受仍是权威。
+参考图和版本缩略图懒加载，即在需要显示时读取。临时读取失败后，可显式选择“仅重新加载图片”；此动作不创建轮次。
+
+接受成功后，关联编辑器等待工程保存。保存失败会提示“服务端接受已成功，但工程仍需保存”；接受状态仍以会话服务端为准。
 
 ## 编辑器恢复
 
-完整 Studio 工程连同准备区保存每个会话的查看/基图版本、已确认分析、未提交意见，以及模型/对比/缩放/分栏选择。同一标签页刷新也保留轻量选择；状态不确定的待提交命令沿用原幂等键，永不自动重放。打开会话与显式恢复其关联工程是两件事。恢复不改变服务端轮次、接受或稳定的人物绑定；没有完整工程的旧会话只能恢复它保留的证据和显式映射，并显示缺失提示。存储、归属、冲突和删除语义见 [studio-projects.md](studio-projects.md)。
+**保存哪些状态：**完整 Studio 工程连同准备区，保存每个会话的查看/基图版本、已确认分析、未提交意见，以及模型、对比、缩放和分栏选择。同标签页刷新也保留轻量选择；状态不确定的待提交命令保留原幂等键，绝不自动重放。
 
-批任务建会话只使用每张图实际的人物-人脸分配：未分配角色不绑到猜测位置，不阻止已确认人物进入精修；成功结果没有分配则失败。来源枚举和已分配结果统一由 [task provenance](../api/tasks/provenance.py)提供，精修接续与恢复各自编排。工程恢复在校验两张画布（摘要相同或解码像素完全一致）后，以保留的参考和分配结果重建缺失配方，不重跑换脸；运行中输入连同任务 ID 保存，显式关联的工作区可在刷新后的结果到达时接续。实现 `api/refinement/batch.py`、`api/projects/recovery.py`、`web/src/hooks/useBatchPipeline.ts`；回归见 `tests/test_assignment_provenance.py`、`tests/test_batch_refinement.py`、`tests/test_projects.py`。
+**恢复的边界：**打开会话与显式恢复关联工程是两件事。恢复不改变服务端轮次、接受或稳定人物绑定。没有完整工程的旧会话只恢复已有证据和显式映射，并提示缺失项。归属、存储、冲突和删除见 [studio-projects.md](studio-projects.md)。
+
+**批任务如何形成配方：**建会话只用每张图实际的人物-人脸分配。未分配角色不绑到猜测位置，也不阻止已确认人物进入精修；成功结果缺分配则失败。来源枚举与已分配结果统一来自 [task provenance](../api/tasks/provenance.py)（任务来源证据）；精修接续和工程恢复分别编排。
+
+工程恢复时，将服务端保留的原图与本地结果，分别与编辑器中对应的画布比对：每一对须摘要相同，或解码像素完全一致。两项都通过后，才用保留参考与分配结果重建缺失配方，不重跑换脸。运行中输入连同任务 ID 保存；只有显式关联的工作区，才在刷新后结果到达时接续。
+
+实现见 `api/refinement/batch.py`、`api/projects/recovery.py`、`web/src/hooks/useBatchPipeline.ts`；回归见 `tests/test_assignment_provenance.py`、`tests/test_batch_refinement.py`、`tests/test_projects.py`。
 
 ## 已接受结果投影与导出
 
-服务端确认的接受被投影到关联编辑目标的 `refinedUrl`，原图和 `processedUrl` 本地基线保持不变；准备画布、对比、胶片条和当前图下载都使用这一最终结果。全局观察器即使在精修视图之外也刷新显式关联的会话，所以恢复工程后已接受的结果同样出现。会话 ID 和目标 ID 必须同时匹配，重新处理的目标被排除，旧 revision 不能替换新的接受；查看候选或无关历史不改变编辑器结果。已保存工程保留独立的图片副本和版本/revision 投影，这些元数据不构成服务端接受授权。实现与回归：`acceptedResults.ts`、`useAcceptedResults.ts`、`SessionWorkbench.test.tsx`、`acceptedResults.test.ts`。
+**最终结果如何进入编辑器：**服务端确认的接受投影到关联目标的 `refinedUrl`，原图和 `processedUrl`（本地初稿）保持不变。准备画布、对比、胶片条和当前图下载使用这一最终结果。
 
-确认删除会清除匹配会话的已接受 URL 和元数据，并持久化“结果不可用”标记；画布明确标出剩下的本地初稿，它不能被下载为已接受的最终图。工程冻结的 data URI 副本在删除后仍然保留。单图和 ZIP 导出先核对关联会话并使用它当前的已接受发布，只有确认的 404/410 才允许回退到冻结图；网络错误、服务端失败和会话/目标不匹配会明确失败，不静默导出过期的接受结果。实现 `sessionCache.ts`、`acceptedResults.ts`、`workspaceExport.ts`，回归 [缓存清理](../web/src/features/refinement/sessionCache.test.ts)、[最终图导出](../web/src/utils/workspaceExport.test.ts)、[接受投影](../web/src/features/refinement/hooks/useAcceptedResults.test.tsx)。
+全局观察器即使不在精修视图也刷新显式关联的会话，因此恢复工程后仍会显示已接受结果。会话 ID 与目标 ID 必须同时匹配；重新处理的目标不适用旧关联，旧 revision（状态修订号）不覆盖新的接受。查看候选或无关历史不改变编辑器结果。
 
-工作台和历史列表提供同一个带 revision 检查的删除；历史还支持选择和批量删除并分别显示结果。只有删除成功（或重试时确认 `404`）后行和缓存的详情才消失；运行中的记录不可选，过期或失败的行保留并刷新。该会话打开的工作区、草稿、待提交命令和匹配的轻量 `refinementSessionId` 关联都被清除，源图、本地输出、映射和遮罩不被改写；已有 SSE 订阅收到 `deleted` 通知后关闭，对已删除记录重连返回 `404`。
+已保存工程保留独立图片副本和版本/revision 投影；这些元数据不是接受授权。实现与回归见 `acceptedResults.ts`、`useAcceptedResults.ts`、`SessionWorkbench.test.tsx`、`acceptedResults.test.ts`。
+
+**删除后的展示：**确认删除清除匹配会话的已接受 URL 和元数据，并持久化“结果不可用”标记。画布明确标出剩下的本地初稿，不将它下载为已接受最终图。工程冻结的 data URI（内嵌图片数据地址）副本仍保留。
+
+**单图与 ZIP 导出：**先核对关联会话，使用其当前已接受发布。只有确认 `404/410` 才可回退到冻结图；网络错误、服务端失败或会话/目标不匹配均明确失败，不静默导出过期接受结果。
+
+实现见 `sessionCache.ts`、`acceptedResults.ts`、`workspaceExport.ts`；回归见 [缓存清理](../web/src/features/refinement/sessionCache.test.ts)、[最终图导出](../web/src/utils/workspaceExport.test.ts)、[接受投影](../web/src/features/refinement/hooks/useAcceptedResults.test.tsx)。
+
+**工作台和历史中的删除：**两处使用同一带 revision 校验的删除。历史支持选择和批量删除，并分别显示结果。只有删除成功，或重试确认 `404` 后，记录和缓存详情才消失；运行中记录不可选，过期或失败记录保留并刷新。
+
+删除会清除该会话打开的工作区、草稿、待提交命令及匹配的轻量 `refinementSessionId` 关联；源图、本地输出、映射和遮罩保持不变。SSE（服务端事件流）订阅收到 `deleted` 后关闭，向已删除记录重连返回 `404`。

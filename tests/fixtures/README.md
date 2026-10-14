@@ -1,8 +1,12 @@
 # API integration-test fixtures
 
-This directory contains only the four images required by `tests/test_api.py`:
+这个目录只保存 [API 集成回归](../test_api.py)需要的四张小图，用于可重复的本地检测与换脸测试，不是用户素材库。
 
-- `source-01.png` and `source-02.png`: source identity references.
-- `group-01.png` and `group-02.png`: multi-person target images.
+| 文件 | 用途 |
+| --- | --- |
+| `source-01.png`、`source-02.png` | 源身份参考 |
+| `group-01.png`、`group-02.png` | 多人物目标图 |
 
-The rest of `data/` is local working data and remains ignored. Keep fixtures small, deterministic, free of generated outputs, and cleared for storage in the repository. Fixture images must not contain EXIF/device/location metadata or be copied from private user uploads; use only material whose repository storage and testing use have been explicitly cleared. If these images are replaced, rerun the full API test suite because its assertions require detectable faces and a successful swap.
+夹具保持小体积、确定性，不放生成结果；素材须明确允许版本库保存与测试使用，不复制私人上传，不携带 EXIF、设备或位置元数据。其余 `data/` 是本机工作数据，保持 Git 忽略。
+
+替换图片后运行完整 API 回归：断言依赖可检测人脸和成功换脸，文件能打开本身不足以证明夹具可用。测试隔离要求见 [贡献说明](../../CONTRIBUTING.md)，模型准备见 [模型资产](../../models/README.md)。

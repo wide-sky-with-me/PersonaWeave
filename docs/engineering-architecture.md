@@ -16,7 +16,11 @@
 
 ## 工作台任务控制
 
-准备页的角色映射、单图/批量换脸、AI 首轮授权、任务重连与 ZIP 导出统一在右侧 `ParameterPanel`（场景预设只陈述参数，参数等于推荐默认值时显示“推荐默认”，依据见[决策笔记](../.agents/notes/frontend/20261004-preset-copy-states-parameters.md)；高级算法调校渐进折叠并透出动态摘要）；目标画布人脸框的编号徽标始终留在图内，点击后呼出快速指派浮窗（`FaceAssignPopover`，经 portal 渲染并随视口夹紧，窄屏为底部抽屉，键盘可用，依据见[决策笔记](../.agents/notes/frontend/20261004-face-assign-popover-portal.md)）；精修工作台头部提供一键返回准备画布的导航；窄屏使用“换脸控制”抽屉。顶部准备项仅为状态标签，底部 `BatchStatusBar` 只展示任务状态、进度与耗时，不放按钮或开关。
+准备页的执行操作集中在右侧 `ParameterPanel`，窄屏使用「换脸控制」抽屉。按职责区分：
+
+- **参数与执行**：侧栏负责角色映射、单图/批量换脸、AI 首轮授权、任务重连与 ZIP 导出。场景预设只陈述参数；符合推荐值时显示「推荐默认」，依据见 [预设文案决策](../.agents/notes/frontend/20261004-preset-copy-states-parameters.md)。高级调校折叠展示，并提供动态摘要。
+- **画布指派**：人脸编号留在图内，点击后打开 `FaceAssignPopover`；浮窗通过 portal 渲染并夹紧到视口，窄屏用底部抽屉，保留键盘访问。依据见 [指派浮窗决策](../.agents/notes/frontend/20261004-face-assign-popover-portal.md)。
+- **导航与反馈**：精修页头部可返回准备画布；顶部准备项只显示状态。底部 `BatchStatusBar` 展示进度、状态与耗时，不承载按钮或开关。
 
 `App` 唯一挂载 [`useBatchPipeline`](../web/src/hooks/useBatchPipeline.ts)，负责批量提交、服务端轮询、已关联任务恢复与导出；通过属性将同一控制器交给桌面/抽屉侧栏和状态栏，不使用窗口自定义事件转发。关闭侧栏或切换工作区不卸载控制器；提交前同步读取工作区运行状态，避免重复请求。AI 首轮授权默认关闭，单张目标也可显式授权走批任务接续精修；单图试换仍仅执行本地换脸。侧栏打开映射对话框时关闭抽屉，避免遮挡。
 
@@ -26,7 +30,13 @@
 
 按变化原因拆分展示、纯计算、外部 I/O、状态机和持久化。同一状态机的连续步骤保留在一个编排器，不增加多层单行转发。抽象须消除重复事实、隔离副作用或形成可独立测试的稳定边界，否则保留直观函数。
 
-精修会话事实源是 `api/refinement/store.py`，连续执行步骤位于 `api/refinement/service.py`；契约与批量接续分别在同域 `contracts.py` / `batch.py`。`artifacts.py` 只管理路径、已校验字节及磁盘副作用，不判定数据库归属；store 保留服务使用的读取入口、事务和恢复决定，延迟加载仍经 store 校验。Core 的 `conversation.py` 负责三证据诊断、单图生成与建议性复评，不访问 API/SQLite/发布目录；`image_ops.py` 复用纯尺寸与编码规则。前端查看版、修改基图和已接受版独立；SSE 仅通知快照失效，浏览器不是状态机。保护画笔集中于 `useManualProtectionBrush`。
+精修各层分工如下：
+
+- `api/refinement/store.py` 管会话事实、读取门面、事务与恢复决定；延迟图片加载仍先经 store 校验归属。
+- `api/refinement/service.py` 保留连续执行步骤；同域 `contracts.py` 定义契约，`batch.py` 处理批量接续。
+- `artifacts.py` 只处理路径、已校验字节与磁盘副作用，不判定数据库归属。
+- `core/refinement/conversation.py` 负责三证据诊断、单图生成和建议性复评，不访问 API、SQLite 或发布目录；`image_ops.py` 复用纯尺寸/编码规则。
+- 前端区分查看版、修改基图与已接受版。SSE 只通知快照失效，浏览器不是状态机；保护画笔集中于 `useManualProtectionBrush`。
 
 精修查询键由无运行依赖的 [`queryKeys.ts`](../web/src/features/refinement/queryKeys.ts) 维护，工作台、接受投影、SSE、删除与历史复用同一来源；历史列表不为读取键值而导入工作台 Hook。缓存键形状和分页失效范围由 [就近回归](../web/src/features/refinement/queryKeys.test.ts) 固定。
 
@@ -38,7 +48,15 @@
 | 任务状态 | 服务端 SQLite 快照 |
 | 运行耗时估计 | 已完成任务的真实 `cost_ms`；样本不足时返回 `0` 表示暂无可靠估计 |
 
-原生 `model_list` 是视觉与图像 deployment 的唯一连接/模型来源，稳定别名允许多 deployment。`image_models` 仅含 `model_name`、`display_name`、`description`、`generation`；不得再放 `provider`/`params` 或复制路由。业务不得按别名猜测模型能力；`generation` 明确三选一：`size: auto`、离散 `sizes`、动态 `max_side/min_side/grid/max_pixels?/delimiter`，缺失或冲突声明必须配置验证失败并禁用可选 AI，API 仍提供本地换脸与已存会话/档案访问，而不是整体启动失败。默认 `size: auto` 不承诺 4K。fallback 必须同能力，图像还必须有相同 generation；默认 Router `num_retries: 0`、图像 deployment `max_retries: 0`，显式增加重试由用户承担重复付费风险。前端只将服务端默认模型置顶，其余保持配置顺序；不另建可用性或排序表。算法常量可靠近算法，但须有注释与测试，不能伪造精确性能数字。
+AI 配置遵循以下边界，完整说明见 [模型目录](model-catalog.md)：
+
+- `model_list` 是视觉与图像 deployment 的唯一连接/模型来源，稳定别名可关联多个 deployment。
+- `image_models` 只含 `model_name`、`display_name`、`description`、`generation`，不复制 `provider`/`params` 或路由；业务不按别名猜能力。
+- `generation` 三选一：`size: auto`、离散 `sizes`、动态 `max_side/min_side/grid/max_pixels?/delimiter`。缺失或冲突使配置验证失败并禁用可选 AI，不阻断本地换脸、已存会话或档案访问。
+- 默认 `size: auto` 不承诺 4K。fallback 须同能力，图像还须同 generation；默认 Router `num_retries: 0`、图像 `max_retries: 0`，显式增加重试意味着重复付费风险。
+- 前端只将服务端默认模型置顶，其余保持配置顺序，不另建可用性或排序表。
+
+算法常量可靠近实现，但须有注释与测试；未经实测不写精确性能值。
 
 ## 生产、诊断与退役
 
@@ -71,7 +89,12 @@ FastAPI `TestClient` 回归的执行环境须允许 asyncio socketpair 跨线程
 
 ## 界面交互与可视验证
 
-目标画布的视图工具与身份定位位于顶部，角色映射仍决定真正的换脸对象；当前图的精修/下载各有一个固定入口，结果操作栏占据独立布局空间，不覆盖图像。窄屏保留导航文字，工具不压缩成竖排，工作区使用动态视口高度。快捷键说明通过 Radix 对话框提供焦点约束、Escape 关闭与焦点恢复；隐藏准备页或打开对话框时暂停画布快捷键，窗口失焦结束临时原图对比。处理中锁定右栏参数与目标图移除；单图同步请求没有可用进度时仅显示等待状态。
+界面交互按操作、导航与执行状态分别约束：
+
+- **图像操作**：视图工具和身份定位在画布顶部，角色映射决定实际换脸对象。精修/下载各有固定入口；结果操作栏占独立空间，不覆盖图片。
+- **窄屏导航**：保留导航文字，工具不挤成竖排；工作区使用动态视口高度。
+- **快捷键隔离**：Radix 说明对话框负责焦点约束、Escape 和焦点恢复。准备页隐藏或对话框打开时暂停画布快捷键，窗口失焦结束临时原图对比。
+- **执行中操作**：锁定右栏参数和目标图移除。同步单图请求没有真实进度时只显示等待状态。
 
 历史加载、错误与空列表分别展示；列表/详情共用中文状态标签，列表日期采用中文格式，批量选择支持半选并在删除时锁定。精修空页面提供回到准备与选择已有图片的路径。CSS 和 Framer Motion 遵循系统减少动态效果偏好。
 

@@ -1,18 +1,20 @@
 # Mac 登录启动守卫安装
 
-适用于 [Docker 部署](docker-deployment.md)中的专用 Colima VM；[守卫脚本](../scripts/macos-colima-boot-guard.sh)只修复绑定地址晚于 VM 启动造成的地址转发规则缺失，保持 Homebrew 对 Colima 的管理。用户登录前、FileVault 解锁前不在覆盖范围内；实例故障证据见 [重启记录](validation/20261014-host-reboot.md)。
+适用于 [Docker 部署](docker-deployment.md) 的专用 Colima VM。[守卫脚本](../scripts/macos-colima-boot-guard.sh) 仅修复绑定地址晚于 VM 启动造成的转发规则缺失，仍由 Homebrew 管理 Colima。仅覆盖用户登录后，不覆盖登录前或 FileVault 解锁前；实例证据见 [重启记录](validation/20261014-host-reboot.md)。
 
 ## 前提与检查边界
 
-Colima 已启用 `network.hostAddresses`，Homebrew 登录服务已配置，应用是 VM 中唯一运行容器。绑定地址、部署目录和容器名称以实例实际配置为准；脚本支持的覆盖变量查实现，不把某次记录中的 IP 或用户名硬编码到新机器。
+**前提。** Colima 启用 `network.hostAddresses`，Homebrew 登录服务已配置，应用是 VM 中唯一运行容器。部署目录、绑定地址和容器名按实例配置填写；覆盖变量查脚本，不照抄记录中的 IP/用户名。
 
-守卫只观察 `/health`的 `pipeline_ready`及 `local_inference`槽位。它不是全部 HTTP、工程写入或远端 AI 请求的活动探测器：跨图 VLM 仲裁在释放本地槽位后仍可能等待上游，健康空闲不保证该请求结束。仅在确认实例没有其他操作的登录恢复窗口启用自动修复；计划运行这些操作时先停守卫，待操作完成及地址规则正常后再启用。健康规则齐全时守卫直接返回；缺失规则触发重启仍须遵守这一边界。证据与取舍见 [空闲判定决策](../.agents/notes/platform/20261014-scope-boot-guard-idleness.md)。
+**观察边界。** 守卫只读 `/health` 的 `pipeline_ready` 和 `local_inference` 槽位，不探测全部 HTTP、工程写入或远端 AI 活动。跨图 VLM（视觉语言模型）仲裁释放本地槽位后仍可能等待上游，健康空闲不代表请求结束。
+
+**启用时机。** 仅在确认无其他操作的登录恢复窗口启用自动修复；计划执行上述操作时先停守卫，完成且地址规则正常后再恢复。规则齐全即返回；缺失规则的重启也须遵守此边界。依据：[空闲判定决策](../.agents/notes/platform/20261014-scope-boot-guard-idleness.md)。
 
 ## 安装
 
-模板在 [LaunchAgent plist](../scripts/macos-colima-boot-guard.plist)。它的路径和地址占位符须按实例替换后才能加载。已有同名守卫时核对并沿用原安装，不重复创建；下面的生成过程在文件存在时停止。
+**模板。** [LaunchAgent plist](../scripts/macos-colima-boot-guard.plist) 是 macOS 登录任务配置，须替换路径/地址占位符后加载。已有同名守卫时核对并沿用，不重复创建；下面的生成过程遇到已有文件会停止。
 
-在 Mac 的仓库根目录执行，先在终端 export 实际的 `PERSONAWEAVE_DEPLOYMENT_DIR`绝对路径及 `PERSONAWEAVE_BIND_ADDRESS`。Homebrew 工具位于 `/opt/homebrew/bin`；不同安装位置或容器名在生成 plist 后按脚本的覆盖变量明确设置。
+**操作。** 在 Mac 仓库根目录，先 export 实际 `PERSONAWEAVE_DEPLOYMENT_DIR` 绝对路径和 `PERSONAWEAVE_BIND_ADDRESS`。默认 Homebrew 工具位于 `/opt/homebrew/bin`；其他安装位置或容器名，生成 plist 后按脚本覆盖变量设置。
 
 ```bash
 set -eu
@@ -51,10 +53,12 @@ launchctl bootstrap "gui/$(id -u)" "$plist"
 launchctl print "gui/$(id -u)/io.personaweave.boot-guard"
 ```
 
-模板定义 30 秒周期和登录后启动；具体重启条件、600 秒冷却与失败退出由脚本决定。安装失败时保留错误与本次生成的文件，核对后再加载，不删除已存在的用户安装。示例生成和 plist 结构由 [安装回归](../tests/test_macos_boot_guard_installation.py)检查，Linux 检查不证明 macOS 的 launchd、实际服务重启或目标机器安装成功。
+**结果与排错。** 模板定义登录后启动、30 秒周期；脚本决定重启条件、600 秒冷却及失败退出。安装失败保留错误与本次生成文件，核对后再加载，不删除已有用户安装。[安装回归](../tests/test_macos_boot_guard_installation.py) 仅检查生成示例和 plist 结构；Linux 检查不证明 macOS launchd、实际重启或目标安装成功。
 
 ## 停用、恢复与移除
 
-`launchctl bootout "gui/$(id -u)/io.personaweave.boot-guard"`停用守卫，不停止原 Homebrew Colima 服务。恢复使用 `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.personaweave.boot-guard.plist"`，并核对 label、周期退出状态和实际宿主端口。
+**停用。** `launchctl bootout "gui/$(id -u)/io.personaweave.boot-guard"` 只停守卫，不停原 Homebrew Colima 服务。
 
-正式移除先 bootout，再仅移除本次守卫专属 plist 和部署目录内 `colima-boot-guard.sh`；日志和 `.boot-guard/last-restart`按实例保留策略处理，不清理应用数据或 VM。此操作不属于代码发布过程，发布代码不会自动安装、启动或停用该服务。
+**恢复。** `launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.personaweave.boot-guard.plist"`，随后核对 label、周期退出状态及宿主实际端口。
+
+**移除。** 先 bootout，仅删除本次专属 plist 和部署目录内 `colima-boot-guard.sh`；日志与 `.boot-guard/last-restart` 按实例策略保留，不清应用数据或 VM。代码发布不自动安装、启动或停用该服务。

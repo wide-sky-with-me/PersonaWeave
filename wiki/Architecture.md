@@ -1,6 +1,6 @@
 # 架构
 
-整体代码地图及两条处理链见 [综合交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#4-代码地图与改动落点)。本页只索引各领域的权威事实源。
+先用 [架构概述](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/DESIGN.md)建立模块与数据流认识，再按下表找细节。[综合交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#4-代码地图与改动落点)补充改动落点；本页不复制接口字段或模型目录。
 
 | 领域 | 说明及可执行来源 |
 | --- | --- |
@@ -12,6 +12,6 @@
 | 工程、历史及素材数据所有权 | [工程](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/studio-projects.md)、[任务历史](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/task-history.md)、[素材库](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/portrait-library.md) |
 | 内存、队列与原生推理生命周期 | [内存与排队](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/memory-scheduling.md) |
 
-请求字段以 [通用 schema](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/api/schemas.py)和 [精修 HTTP 契约](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/api/refinement/contracts.py)为准。选择原因按主题查 [决策笔记规则](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/.agents/notes/README.md)，变更时间查 [Changelog](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/CHANGELOG.md)。
+请求字段查 [通用 schema](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/api/schemas.py)与 [精修 HTTP 契约](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/api/refinement/contracts.py)。想了解原因，按主题检索 [决策笔记](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/.agents/notes/README.md)；想了解变化时间，查 [Changelog](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/CHANGELOG.md)。
 
 [返回首页](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md)

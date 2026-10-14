@@ -4,6 +4,8 @@
 
 - 结构整理：精修查询键集中到无运行依赖的功能域模块，历史页与 SSE/删除/接受同步复用，保持缓存键和失效范围；文档链接/锚点检查共享离线解析，以当前入口链接图检查含嵌套验收记录的可发现性，包边界检查补相对导入与包内别名。补齐工程目录地图、收敛架构摘要的重复配置事实，修正文档权威来源与失效测试引用；不迁移发布路径或改变运行行为。见 [结构审查记录](docs/validation/20261014-organization-audit.md)。
 - 在独立结构优化分支提取单脸执行与会话制品 I/O，保持模型缓存、像素计算及 SQLite 连续事务；批任务人物来源与已分配结果归到 task provenance，消除工程恢复对精修编排的依赖。保留顶层安装/公开路径并增加入口护栏，隔离运行完整回归与安装包验证后交付；不合并 main、不升级 Mac 实例、不重发 Wiki。见 [分支验收](docs/validation/20261014-organization-branch.md)及 [领域提取决策](.agents/notes/platform/20261014-domain-extraction-with-stable-entrypoints.md)。
+- 在同一分支整理现行文档与 Wiki 源稿的阅读路径，新增 [文档总览](docs/README.md)，按读者目标组织启动、业务、排错与开发入口；技术正文补中文术语、拆开前提/操作/结果/失败边界，保留原锚点和冻结证据。修正文案中的 HyperSwap 研究自动路由、旧证据删除范围与工程保存提示歧义；不改变运行契约，不部署 Mac、不发布独立 Wiki。核对与测试见 [可读性验收](docs/validation/20261014-documentation-readability.md)。
+- 在用户授权合并 main 后完成隔离全量验证：后端 967 项、前端 246 项，以及格式、类型、生产构建和 Wheel 安装/CLI 检查通过；全量检查发现强度文档遗漏绑定短句，补回原文后复测，未放宽断言。合并阶段的基线、失败与复现、部署保护和远程核对范围见 [合并验收](docs/validation/20261014-main-merge.md)；Mac 实例与独立 Wiki 保持不动。
 
 - Mac 实例追加指定 WiFi 局域网地址的端口发布，保留 Tailscale 入口、原 CPU 镜像与持久目录；提供可选 LAN Compose 覆盖及配置回归。关闭浏览器代理后实测上传、五脸检测、单人换脸、下载及工程刷新恢复。见 [局域网验收](docs/validation/20261014-lan-access.md)。
 - Mac 实例按用户选择配置 AI 连接，补齐模型协议前缀与容器出站；增加 Clash Verge 全局扩展，让 Tailscale 网段/进程/域名优先直连，尾网与所配 AI 域名返回真实 IP，保留订阅和其他代理规则。模型目录鉴权与国内点对点连接均实测通过，未进行付费生成。见 [AI 与网络验证](docs/validation/20261014-remote-ai-configuration.md)。

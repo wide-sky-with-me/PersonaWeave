@@ -1,23 +1,41 @@
 # 参与贡献
 
-PersonaWeave 接收可复现的问题报告、文档修正和有明确范围的改动。使用问题与功能建议提交到 [Issues](https://github.com/wide-sky-with-me/PersonaWeave/issues)；涉及凭据、任意文件访问或个人图片泄露的报告按 [漏洞报告说明](SECURITY.md)私下提交。项目能力、发行入口与许可边界见 [公开项目说明](docs/public-project.md)。
+可以提交可复现的问题、文档修正或范围明确的代码改动。一般使用问题和功能建议走 [Issues](https://github.com/wide-sky-with-me/PersonaWeave/issues)；凭据、个人图片或文件访问暴露走 [私下报告](SECURITY.md)。项目获取、样例和许可见 [公开项目说明](docs/public-project.md)。
 
 ## 提交问题
 
-先搜索已有问题，选择对应表单。报告程序 commit/包版本、系统和 CPU/GPU 平台、安装方式、脱敏配置、最小复现步骤、预期和实际结果。图片优先用 [仓库夹具](tests/fixtures/README.md)，不要上传实际用户照片、`.env`、完整数据库、token 或未经审查的日志；无法用夹具复现时先描述条件，不公开业务数据。
+先搜索已有 issue，再选对应表单。一个便于复现的报告应包含：
 
-画质问题需区分身份变化、错位、遮挡、颜色及生成误差；测试通过、健康就绪或有像素变化不等于成片验收。报告 AI 问题时说明角色别名、调用阶段及公开状态码，不贴上游原始响应和密钥。
+- **环境**：commit/包版本、系统、CPU/GPU 平台及安装方式。
+- **步骤与结果**：最小输入、操作步骤、预期和实际结果。
+- **必要证据**：脱敏配置、公开错误状态或经过审查的日志。
+
+图片优先使用 [仓库夹具](tests/fixtures/README.md)。不用真实用户照片、`.env`、完整数据库或 token 作公开复现材料；夹具复现不了时，先描述条件。
+
+画质问题请说明是身份、错位、遮挡、颜色还是生成误差。测试通过、健康就绪或图片发生变化，都不等于成片验收。AI 问题标注角色别名和调用阶段，不贴上游原始响应或密钥。
 
 ## 修改与验证
 
-从 `main`创建独立分支，遵循 [AGENTS.md](AGENTS.md)和相关目录规则。环境、启动及检查命令统一在 [README](README.md#开发与验证)维护；使用 uv/pnpm 和锁文件，不提交模型缓存、素材库、结果、构建产物或实际凭据。
+从 `main` 创建独立分支，读 [Agent 规则](AGENTS.md)和相关目录约定。先按 [文档总览](docs/README.md)找到所属专题，再改实现。
 
-后端集成测试需要按 [模型说明](models/README.md)准备真实模型，在隔离副本运行；外部 AI 使用测试端点/mock，不对真实付费服务做自动回归。前端改动运行格式、类型、测试和构建；纯文档改动运行 [文档治理检查](docs/documentation-governance.md#机械检查)，新增 Wiki 检查见 [发布说明](docs/wiki-publication.md)。
+启动与检查命令统一在 [README](README.md#开发与验证)维护。使用 uv、pnpm 和锁文件；模型缓存、素材库、结果、构建产物及实际凭据不进入提交。
 
-改变行为时同步更新其唯一权威文档、相关回归和 [Changelog](CHANGELOG.md)；有长期取舍时增加 [决策笔记](.agents/notes/README.md)。不要放宽断言、删除失败测试或伪造未执行的目标平台验收。
+| 改动类型 | 需要核验什么 |
+| --- | --- |
+| 后端行为或边界 | Ruff 和对应回归；集成测试在隔离副本准备 [真实模型](models/README.md)，外部 AI 用测试端点/mock |
+| 前端 | 格式、类型、测试和生产构建 |
+| 纯文档 | [文档治理检查](docs/documentation-governance.md#机械检查)；Wiki 另核对 [发布契约](docs/wiki-publication.md) |
+
+行为改变时，同一变更更新唯一权威文档、相关回归和 [Changelog](CHANGELOG.md)；长期取舍按 [笔记规则](.agents/notes/README.md)记录。不放宽断言或删除失败测试，不把未执行的平台验证写成通过。
 
 ## Pull Request
 
-说明解决的问题、改动范围、实际运行的命令/结果及未执行项，链接已有 issue。保留维护者和其他贡献者的改动，不夹带无关格式化、业务数据或历史重写。图片或第三方代码须说明来源及使用范围；源码许可状态以 [公开项目说明](docs/public-project.md#源码与资产许可)为准，提交 PR 不替维护者决定顶层许可证。
+PR 说明要让维护者能独立核对：
 
-CI 结果以对应提交的 [Actions](https://github.com/wide-sky-with-me/PersonaWeave/actions)为准。维护者审查后决定是否合并；没有固定响应时限或未发布版本的支持承诺。
+- 解决什么问题，关联哪个 issue，改动范围是什么。
+- 实际执行了哪些命令，结果是什么；哪些验证尚未执行。
+- 图片和第三方代码来自哪里，适用范围是什么。
+
+保留他人改动，不夹带无关格式化、业务数据或历史重写。源码许可状态见 [公开项目说明](docs/public-project.md#源码与资产许可)；提交 PR 不代维护者选择顶层许可证。
+
+持续集成以对应提交的 [Actions](https://github.com/wide-sky-with-me/PersonaWeave/actions)为准。维护者审查后决定合并；项目没有固定响应时限或未发布版本的支持承诺。

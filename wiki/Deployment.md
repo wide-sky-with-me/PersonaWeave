@@ -1,6 +1,6 @@
 # 部署
 
-安装、更新与回滚按目标平台文档执行，沿用同一组持久目录和匹配程序版本。
+先选择实际安装方式；源码、CPU 容器与 Windows 包使用不同的依赖流程。首次安装按平台指南准备资产，更新和回滚沿用同一组持久目录与匹配程序版本。
 
 | 平台或问题 | 权威说明 |
 | --- | --- |
@@ -12,6 +12,6 @@
 | 镜像、模型、素材与配置移交 | [维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#持久数据与资产清单) |
 | 更新、停机备份与回滚 | [维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#更新与回滚) |
 
-生产前端与 API 的部署边界、应用访问隔离及单进程约束以 [维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#访问与进程边界)为准。容器内健康、宿主端口转发和远端浏览器访问是不同检查项，实例证据见 [验证与交接](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Validation-and-Handover.md)。
+更新前确认持久数据与配置已备份，部署约束见 [访问与进程边界](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#访问与进程边界)。容器健康、宿主转发和远端浏览器访问是三个独立检查，不能互相替代；实例范围见 [验证与交接](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Validation-and-Handover.md)。
 
 [返回首页](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md)
