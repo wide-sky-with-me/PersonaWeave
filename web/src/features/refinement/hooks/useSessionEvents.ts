@@ -2,12 +2,13 @@ import { useEffect } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import type { SessionDetail } from '../sessionTypes';
 import { forgetSession } from '../sessionCache';
+import { sessionKey, sessionsKey } from '../queryKeys';
 
 /** SSE carries notifications, never authoritative UI state; GET remains the source of facts. */
 export function useSessionEvents(client: QueryClient, sessionId: string | null) {
   useEffect(() => {
     if (!sessionId || typeof EventSource === 'undefined') return;
-    const key = ['refinement-session', sessionId];
+    const key = sessionKey(sessionId);
     const initial = client.getQueryData<SessionDetail>(key);
     const stream = new EventSource(
       '/api/v1/refinement/sessions/' + encodeURIComponent(sessionId) + '/events?after=' + (initial?.event_cursor ?? 0),
@@ -27,7 +28,7 @@ export function useSessionEvents(client: QueryClient, sessionId: string | null) 
         const current = client.getQueryData<SessionDetail>(key);
         if (!current || notice.revision > current.revision) {
           void client.invalidateQueries({ queryKey: key });
-          void client.invalidateQueries({ queryKey: ['refinement-sessions'] });
+          void client.invalidateQueries({ queryKey: sessionsKey });
         }
       } catch {
         // Malformed notifications have no authority. Running-task polling still repairs state.
@@ -37,9 +38,7 @@ export function useSessionEvents(client: QueryClient, sessionId: string | null) 
       try {
         if (JSON.parse(event.data)?.session_id !== sessionId) return;
         stream.close();
-        void forgetSession(client, sessionId).then(() =>
-          client.invalidateQueries({ queryKey: ['refinement-sessions'] }),
-        );
+        void forgetSession(client, sessionId).then(() => client.invalidateQueries({ queryKey: sessionsKey }));
       } catch {
         // Ignore malformed notices; a subsequent detail read still checks availability.
       }

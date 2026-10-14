@@ -1151,7 +1151,7 @@ def test_history_image_read_and_accept_do_not_decode_full_canvas_under_memory_pr
         assert accepted["accepted_version_id"] == version["id"]
         with pytest.raises(MemoryPressureError):
             store.image(detail["id"], version["digest"])
-        path = store._path(detail["id"], version["digest"])
+        path = store._artifacts.path(detail["id"], version["digest"])
         path.write_bytes(b"corrupted")
         with pytest.raises(ArtifactUnavailable, match="digest"):
             store.artifact_bytes(detail["id"], version["digest"])
@@ -1203,7 +1203,7 @@ def test_thumbnails_are_small_durable_and_never_hide_missing_or_tampered_origina
             decoded = cv2.imdecode(np.frombuffer(response.content, np.uint8), cv2.IMREAD_COLOR)
             assert decoded.shape == (256, 384, 3)
             assert len(response.content) < len(store.artifact_bytes(sid, digest)) / 20
-            preview = store._thumbnail_path(sid, digest)
+            preview = store._artifacts.thumbnail_path(sid, digest)
             for corruption in (None, b"broken"):
                 if corruption is None:
                     preview.unlink()
@@ -1215,7 +1215,7 @@ def test_thumbnails_are_small_durable_and_never_hide_missing_or_tampered_origina
             assert (await client.get(version["thumbnail_url"])).content == response.content
             forged = version["thumbnail_url"].replace(sid, uuid4().hex)
             assert (await client.get(forged)).status_code == 404
-            store._path(sid, digest).write_bytes(b"tampered")
+            store._artifacts.path(sid, digest).write_bytes(b"tampered")
             assert (await client.get(version["thumbnail_url"])).status_code == 410
 
     asyncio.run(scenario())
@@ -1235,3 +1235,67 @@ def test_turn_inputs_keep_only_deferred_image_descriptors(store, monkeypatch):
         assert all(isinstance(value, DeferredImage) for group in references.values() for value in group)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["artifact_bytes", "image", "evidence", "cached_thumbnail", "thumbnail_bytes"])
+def test_artifact_facade_enforces_database_ownership_before_file_access(store, operation):
+    detail = asyncio.run(RefinementSessionService(store=store).create_session(creation()))
+    session_id = detail["id"]
+    # Snapshots are written before registration. Disk presence alone grants no read access.
+    unregistered = store.snapshot(session_id, image(99))
+    assert store._artifacts.read(session_id, unregistered)
+    with pytest.raises(SessionNotFound, match="Artifact"):
+        getattr(store, operation)(session_id, unregistered)
+    version = detail["versions"][0]
+    evidence = store.evidence(session_id, version["digest"])
+    store.delete(session_id, detail["revision"])
+    with pytest.raises(SessionNotFound):
+        getattr(store, operation)(session_id, version["digest"])
+    with pytest.raises(SessionNotFound):
+        resolve_image(evidence)
+
+
+def test_cancel_recovery_accept_and_failed_delete_keep_transaction_event_order(store):
+    detail = asyncio.run(RefinementSessionService(store=store).create_session(creation()))
+    session_id = detail["id"]
+    command = turn(detail)
+    turn_id, _ = store.queue_turn(session_id, command, fingerprint(command.model_dump()), "test-edit")
+    assert store.update_turn(session_id, turn_id, status="generating")
+    digest = store.snapshot(session_id, image(21))
+    version_id = store.add_candidate(session_id, turn_id, digest, {"model": "synthetic"})
+    before_cancel = store.get(session_id)
+    assert store.request_cancel(session_id, before_cancel["revision"]) == turn_id
+    restarted = RefinementSessionStore(store.db_path, store.artifact_root, store.accepted_root)
+    recovered = restarted.get(session_id)
+    assert recovered["turns"][0]["status"] == "review_required"
+    assert recovered["turns"][0]["candidate_version_id"] == version_id
+    accepted = restarted.accept(session_id, recovered["revision"], version_id, digest)
+    # The stale retry remains idempotent and adds neither a revision nor an event.
+    assert restarted.accept(session_id, recovered["revision"], version_id, digest) == accepted
+    events = restarted.events(session_id)
+    assert [(event["revision"], event["kind"]) for event in events] == list(
+        enumerate(
+            ["created", "turn_queued", "generating", "candidate_ready", "cancel_requested", "recovered", "accepted"], 1
+        )
+    )
+    frozen = restarted.artifact_bytes(session_id, digest)
+    publication = restarted.accepted_root / f"{session_id}-{version_id}.png"
+    assert publication.read_bytes() == frozen
+    with restarted._connect() as connection:
+        connection.execute(
+            "CREATE TRIGGER block_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        restarted.delete(session_id, accepted["revision"])
+    assert restarted.get(session_id) == accepted
+    assert restarted.events(session_id) == events
+    assert restarted.cached_thumbnail(session_id, digest)
+    assert publication.read_bytes() == frozen
+    with restarted._connect() as connection:
+        connection.execute("DROP TRIGGER block_delete")
+    restarted.delete(session_id, accepted["revision"])
+    restored = RefinementSessionStore(store.db_path, store.artifact_root, store.accepted_root)
+    assert restored.list() == []
+    assert not publication.exists() and not (store.artifact_root / session_id).exists()
+    with pytest.raises(SessionNotFound):
+        restored.artifact_bytes(session_id, digest)

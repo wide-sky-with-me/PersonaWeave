@@ -1,6 +1,6 @@
 # 工作流
 
-完整业务阅读顺序和端到端流程在 [综合交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#6-端到端业务流程)。不同操作的数据所有权、失败与恢复语义按专题核对。
+建议按「准备人物 → 本地换脸 → 按需精修 → 保存/导出」阅读。要继续编辑旧结果时，区分只读历史查看与显式工程恢复；完整流程见 [综合交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#6-端到端业务流程)。
 
 | 操作 | 权威入口 |
 | --- | --- |
@@ -13,6 +13,6 @@
 | 下载当前工程的最终图片 | [精修工作台](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/refinement-workbench.md) |
 | 历史记录人工质量评价 | [质量档案](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/delivery-quality.md) |
 
-远端视觉仲裁和后置图像精修是不同调用；本地验收的隔离方法、真实 AI 请求费用和取消边界见 [维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#ai-配置与调用费用)。
+候选图需要人工检查和接受，生成或复评成功不等于自动定稿。远端视觉仲裁与后置图像精修是不同调用；真实请求费用、取消边界和隔离验收方法见 [维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#ai-配置与调用费用)。
 
 [返回首页](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md)

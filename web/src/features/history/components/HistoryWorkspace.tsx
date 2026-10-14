@@ -9,7 +9,7 @@ import { api } from '@/services/api';
 import { sessionApi } from '@/features/refinement/sessionApi';
 import { useWorkbenchStore } from '@/features/refinement/workbenchStore';
 import { useJobActivityStore } from '@/stores/useJobActivityStore';
-import { sessionsKey } from '@/features/refinement/hooks/useSessionWorkbench';
+import { sessionsKey } from '@/features/refinement/queryKeys';
 import type { BatchTaskSummary } from '@/types';
 import { TaskResultHistoryDialog } from './TaskResultHistoryDialog';
 import { ProjectHistory, RestoreProjectButton } from '@/features/projects/ProjectHistory';

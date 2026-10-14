@@ -47,7 +47,7 @@ AI Agent 在本仓库开发、维护和执行任务时必须遵守本文件。�
 106 点：0–32 下颌线，33–42 左眉，43–52 右眉，53–71 鼻，72–92 嘴，93–96 / 97–105 左右眼。掩码在 512×512 对齐空间生成并做 31×31 高斯羽化；关键点失败必须降级为椭圆默认掩码，禁止抛异常中断流水线。
 
 ### 6.2 手动保护画笔
-状态在 `useStudioStore`；遮罩为 base64 灰度 PNG，经 `manual_mask` 传后端，`pipeline.py` 用 `mask_warped = mask_warped * (1.0 - manual_mask)` 回填；255 = 保护（保留原图），0 = 允许换脸。
+状态在 `useStudioStore`；遮罩为 base64 灰度 PNG，经 `manual_mask` 传后端，单脸执行 `core/face_execution.py` 用 `mask_warped = mask_warped * (1.0 - manual_mask)` 回填；255 = 保护（保留原图），0 = 允许换脸。
 
 ### 6.3 多角色映射
 - `PersonMappingItem`：稳定 `person_index`、`target_reference_url` + `target_reference_person_index`、三选一的 `source_identity_id` / `source_asset_ids` / `source_manual_images` 与 `source_mode`。`person_mappings` 与顶层单角色 source/target 字段互斥，`api/schemas.py` 拒绝混用，禁止恢复“非空时静默优先”。

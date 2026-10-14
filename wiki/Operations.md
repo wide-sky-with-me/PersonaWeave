@@ -1,6 +1,6 @@
 # 运维
 
-运行操作统一在 [运行维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md)维护。本页用于快速找到事故和交接入口，不复制备份命令或持久化字段。
+先确认实例版本、安装方式和真实入口，再按故障选章节。所有操作命令在 [运行维护手册](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md)维护，本页只做导航；备份、恢复与回滚的前提请连同命令一起阅读。
 
 | 任务 | 章节 |
 | --- | --- |
@@ -12,6 +12,6 @@
 | 更新、升级中断与回退 | [更新与回滚](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#更新与回滚) |
 | 503/409/422、丢图、SQLite 锁和推理排队 | [故障排查](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/operations-runbook.md#故障排查) |
 
-Mac/Colima 登录后恢复、尾网与 LAN 转发、容器出站网络的适用边界及实例记录见 [Docker 部署](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/docker-deployment.md)。维护成功以实际入口、数据和恢复演练的证据为准，不由文档存在推定。
+Mac/Colima 启动恢复、尾网/LAN 转发与容器出站边界见 [Docker 部署](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/docker-deployment.md)。恢复是否成功，分别核对实际入口、数据和演练证据；文档存在不代表操作已经执行。
 
 [返回首页](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md)

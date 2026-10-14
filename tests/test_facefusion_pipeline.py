@@ -1,7 +1,11 @@
+import inspect
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Lock
 from types import SimpleNamespace
 
 import numpy as np
 
+from core import face_execution
 from core.face_metrics import has_visible_face_change
 from core.pipeline import PersonaWeavePipeline
 from core.swapper import create_facefusion_box_mask, explode_pixel_boost, implode_pixel_boost
@@ -432,3 +436,78 @@ def test_visible_face_change_rejects_no_op_and_tiny_noise():
     assert not has_visible_face_change(before, unchanged, bbox)
     assert not has_visible_face_change(before, noisy, bbox)
     assert has_visible_face_change(before, changed, bbox)
+
+
+def test_pipeline_entry_preserves_single_face_signature_and_forwards_explicit_runtimes(monkeypatch):
+    public = inspect.signature(PersonaWeavePipeline.swap_single_face_facefusion)
+    standalone = inspect.signature(face_execution.swap_single_face_facefusion)
+    public_args = {key: value for key, value in public.parameters.items() if key != "self"}
+    standalone_args = {
+        key: value
+        for key, value in standalone.parameters.items()
+        if key not in {"parser", "occluder", "region_parser", "restorer"}
+    }
+    assert public_args == standalone_args
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline.parser, pipeline.occluder, pipeline.region_parser, pipeline.restorer = (object() for _ in range(4))
+    canvas, target, swapper = _flat_swap_scene()
+    embedding = np.ones(2)
+    options = {
+        "swapper": swapper,
+        "enable_dense_mask": True,
+        "manual_mask": np.zeros(canvas.shape[:2]),
+        "identity_blend_strength": 0.94,
+        "enable_color_transfer": True,
+        "color_transfer_mode": "boundary",
+        "color_transfer_ring_strength": 0.23,
+        "color_transfer_ring_width_px": 21.0,
+        "enable_face_restoration": True,
+        "restoration_fidelity_weight": 0.61,
+        "restoration_strength": 0.31,
+        "diagnostics": {},
+    }
+    calls = []
+
+    def execute(*args, **kwargs):
+        calls.append((args, kwargs))
+        return canvas
+
+    monkeypatch.setattr("core.pipeline.execute_single_face", execute)
+    assert pipeline.swap_single_face_facefusion(canvas, target, embedding, **options) is canvas
+    assert all(actual is expected for actual, expected in zip(calls[0][0], (canvas, target, embedding), strict=True))
+    forwarded = calls[0][1]
+    assert forwarded == {
+        **options,
+        "parser": pipeline.parser,
+        "occluder": pipeline.occluder,
+        "region_parser": pipeline.region_parser,
+        "restorer": pipeline.restorer,
+    }
+
+
+def test_swapper_cache_still_loads_one_adapter_under_concurrent_pipeline_calls(monkeypatch):
+    pipeline = object.__new__(PersonaWeavePipeline)
+    pipeline._swapper_cache = {"initial": object()}
+    pipeline._swapper_lock = Lock()
+    pipeline.models_dir = "unused-fixture-directory"
+    pipeline.providers = ["CPUExecutionProvider"]
+    created = []
+    adapter = SimpleNamespace(session=SimpleNamespace(get_providers=lambda: ["CPUExecutionProvider"]))
+
+    def create(name, models_dir, *, providers):
+        created.append((name, models_dir, providers))
+        return adapter
+
+    monkeypatch.setattr("core.pipeline.create_face_swapper", create)
+    gate = Barrier(8)
+
+    def acquire(_):
+        gate.wait(timeout=5)
+        return pipeline.get_swapper("fixture-model")
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        adapters = list(executor.map(acquire, range(8)))
+    assert all(item is adapter for item in adapters)
+    assert created == [("fixture-model", pipeline.models_dir, pipeline.providers)]
+    assert pipeline.get_swapper("fixture-model") is adapter
+    assert len(created) == 1

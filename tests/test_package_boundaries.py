@@ -2,6 +2,7 @@
 
 import ast
 import importlib
+import importlib.util
 import subprocess
 import sys
 import tomllib
@@ -45,7 +46,10 @@ def test_domain_packages_have_no_runtime_side_effects(package):
     assert "litellm" not in loaded
 
 
-@pytest.mark.parametrize("module", ["core.ai.configuration", "core.ai.types", "api.media"])
+@pytest.mark.parametrize(
+    "module",
+    ["core.ai.configuration", "core.ai.types", "api.media", "api.tasks.provenance", "api.refinement.artifacts"],
+)
 def test_shared_boundaries_do_not_import_task_or_model_runtimes(module):
     loaded = _loaded_modules_after(module)
     assert "api.tasks.batch" not in loaded
@@ -56,8 +60,33 @@ def test_shared_boundaries_do_not_import_task_or_model_runtimes(module):
     assert "litellm" not in loaded
 
 
+def _imported_modules(path: Path, node: ast.AST) -> list[str]:
+    """Resolve relative imports and from-package aliases before enforcing layer boundaries."""
+    if isinstance(node, ast.Import):
+        return [item.name for item in node.names]
+    if not isinstance(node, ast.ImportFrom):
+        return []
+    package = ".".join(path.relative_to(ROOT).parent.parts)
+    module = importlib.util.resolve_name("." * node.level + (node.module or ""), package)
+    return [module, *(f"{module}.{item.name}" for item in node.names)]
+
+
+@pytest.mark.parametrize(
+    ("path", "statement", "expected"),
+    [
+        ("api/tasks/check.py", "from .. import app", "api.app"),
+        ("api/tasks/check.py", "from ..routes import faces", "api.routes.faces"),
+        ("api/tasks/check.py", "from api import lifecycle", "api.lifecycle"),
+        ("core/ai/check.py", "from .. import detector", "core.detector"),
+        ("core/ai/check.py", "import api.schemas", "api.schemas"),
+    ],
+)
+def test_boundary_import_resolution(path, statement, expected):
+    assert expected in _imported_modules(ROOT / path, ast.parse(statement).body[0])
+
+
 def test_backend_dependencies_follow_domain_boundaries():
-    """Block reverse imports that would merge the newly separated responsibilities."""
+    """Block absolute, relative and from-package reverse imports across domain boundaries."""
     violations = []
     for root in (ROOT / "api", ROOT / "core"):
         for path in root.rglob("*.py"):
@@ -66,13 +95,8 @@ def test_backend_dependencies_follow_domain_boundaries():
             if relative == "api/app.py" or relative == "api/lifecycle.py" or relative.startswith("api/routes/"):
                 continue
             for node in ast.walk(ast.parse(path.read_text())):
-                modules = (
-                    [node.module]
-                    if isinstance(node, ast.ImportFrom)
-                    else ([item.name for item in node.names] if isinstance(node, ast.Import) else [])
-                )
-                for module in modules:
-                    if module and any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden):
+                for module in _imported_modules(path, node):
+                    if any(module == prefix or module.startswith(prefix + ".") for prefix in forbidden):
                         violations.append(f"{relative}:{node.lineno} imports {module}")
     assert not violations, "\n".join(violations)
 
@@ -99,3 +123,19 @@ def test_production_image_io_does_not_pass_paths_to_opencv():
                 ):
                     violations.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not violations, "Use utils.image_io for Unicode-safe paths: " + ", ".join(violations)
+
+
+def test_distribution_roots_preserve_supported_source_entrypoints():
+    """Keep source, wheel and portable imports aligned while splitting domain internals."""
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    backend = config["tool"]["uv"]["build-backend"]
+    assert backend["module-root"] == ""
+    assert set(backend["module-name"]) == {"api", "core", "utils"}
+    for package in backend["module-name"]:
+        assert (ROOT / package / "__init__.py").is_file()
+    assert {"cli.py", "config/ai_gateway.yaml"} <= set(backend["source-include"])
+    assert (ROOT / "api" / "portable.py").is_file()
+    assert config["project"]["scripts"] == {
+        "personaweave": "api.cli:main",
+        "personaweave-import-portraits": "api.portraits.importer:main",
+    }

@@ -1,6 +1,6 @@
 # 验证与交接
 
-综合交接及待落实责任见 [项目交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md)。每次实测记录输入、版本、范围及未执行项，不把一次机器/样本的结果外推到其他环境。
+接任先看 [项目交接说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md)，按其中清单确认责任与数据范围。下表是带日期的证据，不是最新能力清单；读记录时同时核对版本、输入、机器、成功结果和未执行项。
 
 ## 证据入口
 
@@ -14,7 +14,7 @@
 | 登录后 Colima 转发恢复 | [宿主重启记录](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/validation/20261014-host-reboot.md) |
 | WiFi LAN 与尾网双入口 | [LAN 验收](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/validation/20261014-lan-access.md) |
 | 文档命令、事实源及交接范围 | [交接文档核对](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/validation/20261014-project-handover.md) |
-| 本次代码、文档与 Wiki 提交检查 | [提交核对记录](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/validation/20261014-repository-publication.md) |
+| 2026-10-14 代码、文档与 Wiki 发布范围 | [仓库发布核对](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/validation/20261014-repository-publication.md) |
 | Windows 安装与源码修复 | [Windows 指南及实测入口](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/windows-portable.md) |
 | 离线质量评测及有限样本 | [评测说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/swap-benchmarks.md) |
 

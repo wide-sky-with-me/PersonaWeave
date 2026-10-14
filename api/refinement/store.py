@@ -1,29 +1,23 @@
-"""SQLite session truth and content-addressed images; publication never regenerates pixels."""
+"""SQLite session truth and transaction orchestration over immutable artifact I/O."""
 
 import hashlib
-import io
 import json
-import os
 import re
-import shutil
 import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
-import cv2
-from PIL import Image
-
-from api.refinement.contracts import ArtifactUnavailable, SessionConflict, SessionNotFound, SessionTurn
+from api.refinement.artifacts import SessionArtifacts
+from api.refinement.contracts import SessionConflict, SessionNotFound, SessionTurn
 from api.refinement.deletion import staged_deletion
-from core.image_security import MAX_SNAPSHOT_BYTES, decode_snapshot_bytes, encode_snapshot_image
+from core.image_security import decode_snapshot_bytes
 from core.refinement.evidence import DeferredImage
 
 _ID = re.compile(r"^[a-f0-9]{32}$")
-_DIGEST = re.compile(r"^[a-f0-9]{64}$")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
  id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, request_hash TEXT NOT NULL,
@@ -69,7 +63,11 @@ def fingerprint(data):
 
 
 class RefinementSessionStore:
-    """Own short SQLite transactions and verified immutable artifact access. One server owns recovery."""
+    """Own SQLite ownership and continuous session transactions. One server owns recovery.
+
+    Service callers retain this entry point for snapshots, evidence and thumbnails;
+    database ownership checks stay here while SessionArtifacts owns filesystem I/O.
+    """
 
     def __init__(
         self,
@@ -78,11 +76,10 @@ class RefinementSessionStore:
         accepted_root="outputs/api_results/refinement/accepted/sessions",
     ):
         self.db_path = Path(db_path)
-        self.artifact_root = Path(artifact_root).resolve()
-        self.accepted_root = Path(accepted_root).resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.artifact_root.mkdir(parents=True, exist_ok=True)
-        self.accepted_root.mkdir(parents=True, exist_ok=True)
+        self._artifacts = SessionArtifacts(artifact_root, accepted_root)
+        self.artifact_root = self._artifacts.artifact_root
+        self.accepted_root = self._artifacts.accepted_root
         self._mutex = threading.RLock()
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
@@ -133,136 +130,43 @@ class RefinementSessionStore:
     def artifact_url(session_id, digest):
         return f"/api/v1/refinement/sessions/{session_id}/artifacts/{digest}"
 
-    def _path(self, session_id, digest):
-        if not _ID.fullmatch(session_id) or not _DIGEST.fullmatch(digest):
-            raise SessionNotFound("Artifact not found")
-        path = (self.artifact_root / session_id / f"{digest}.png").resolve()
-        if not path.is_relative_to(self.artifact_root):
-            raise ArtifactUnavailable("Artifact is outside the managed root")
-        return path
-
-    @staticmethod
-    def _verified_bytes(path, digest):
-        try:
-            if path.stat().st_size > MAX_SNAPSHOT_BYTES:
-                raise ArtifactUnavailable("Artifact exceeds image size limits")
-            data = path.read_bytes()
-        except OSError as exc:
-            raise ArtifactUnavailable("Artifact is unavailable") from exc
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ArtifactUnavailable("Artifact digest verification failed")
-        # Stored bytes were decoded/validated before their digest was committed. Reading
-        # or accepting the identical digest must not decode a full canvas again: several
-        # thumbnails can otherwise exhaust RAM and make intact history appear missing.
-        return data
-
     def snapshot(self, session_id, image):
-        """Encode once, validate and atomically retain content-addressed PNG bytes."""
-        data = encode_snapshot_image(image)
-        decode_snapshot_bytes(data)
-        digest = hashlib.sha256(data).hexdigest()
-        path = self._path(session_id, digest)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists():
-            self._verified_bytes(path, digest)
-            self._write_thumbnail(session_id, digest, image)
-            return digest
-        temporary = path.with_name(f".{uuid4().hex}.tmp")
-        try:
-            with temporary.open("xb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            # link is create-only: an immutable existing artifact is never overwritten.
-            try:
-                os.link(temporary, path)
-            except FileExistsError:
-                self._verified_bytes(path, digest)
-        finally:
-            temporary.unlink(missing_ok=True)
-        self._write_thumbnail(session_id, digest, image)
-        return digest
+        """Freeze evidence before registration; failed creation discards only its own attempt."""
+        return self._artifacts.snapshot(session_id, image)
 
-    def artifact_bytes(self, session_id, digest):
+    def _check_artifact(self, session_id, digest):
+        """Authorize the database reference independently of filesystem presence."""
         with self._connect() as conn:
             self._session(conn, session_id)
             if not conn.execute(
                 "SELECT 1 FROM artifacts WHERE session_id=? AND digest=?", (session_id, digest)
             ).fetchone():
                 raise SessionNotFound("Artifact not found")
-        return self._verified_bytes(self._path(session_id, digest), digest)
+
+    def artifact_bytes(self, session_id, digest):
+        """Read only registered session artifacts, verifying their exact committed bytes."""
+        self._check_artifact(session_id, digest)
+        return self._artifacts.read(session_id, digest)
 
     def image(self, session_id, digest):
         return decode_snapshot_bytes(self.artifact_bytes(session_id, digest))
 
-    def _thumbnail_path(self, session_id, digest):
-        path = self._path(session_id, digest).with_suffix(".preview")
-        if not path.resolve().is_relative_to(self.artifact_root):
-            raise ArtifactUnavailable("Preview is outside the managed root")
-        return path
-
-    def _write_thumbnail(self, session_id, digest, image):
-        """Cache a derived 384px JPEG; full-resolution evidence/acceptance stays untouched."""
-        scale = min(1.0, 384 / max(image.shape[:2]))
-        small = cv2.resize(
-            image,
-            (max(1, round(image.shape[1] * scale)), max(1, round(image.shape[0] * scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-        ok, encoded = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not ok:
-            raise ValueError("Could not encode refinement preview")
-        data = encoded.tobytes()
-        path = self._thumbnail_path(session_id, digest)
-        temporary = path.with_name(f".{uuid4().hex}.tmp")
-        try:
-            temporary.write_bytes(hashlib.sha256(data).hexdigest().encode("ascii") + data)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return data
-
     def cached_thumbnail(self, session_id, digest):
-        """Verify ownership and source integrity in bounded chunks, then read the small cache."""
-        with self._connect() as conn:
-            self._session(conn, session_id)
-            if not conn.execute(
-                "SELECT 1 FROM artifacts WHERE session_id=? AND digest=?", (session_id, digest)
-            ).fetchone():
-                raise SessionNotFound("Artifact not found")
-        path = self._path(session_id, digest)
-        checksum = hashlib.sha256()
-        try:
-            with path.open("rb") as source:
-                if os.fstat(source.fileno()).st_size > MAX_SNAPSHOT_BYTES:
-                    raise ArtifactUnavailable("Artifact exceeds image size limits")
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    checksum.update(chunk)
-        except OSError as exc:
-            raise ArtifactUnavailable("Artifact is unavailable") from exc
-        if checksum.hexdigest() != digest:
-            raise ArtifactUnavailable("Artifact digest verification failed")
-        try:
-            with self._thumbnail_path(session_id, digest).open("rb") as preview:
-                data = preview.read(1024 * 1024 + 1)
-            if len(data) > 1024 * 1024 or hashlib.sha256(data[64:]).hexdigest().encode("ascii") != data[:64]:
-                return None
-            return data[64:]
-        except FileNotFoundError:
-            return None
+        """Authorize the source before the low-memory cache read used by the service."""
+        self._check_artifact(session_id, digest)
+        return self._artifacts.cached_thumbnail(session_id, digest)
 
     def thumbnail_bytes(self, session_id, digest):
-        """Rebuild a missing old-session/cache preview inside the shared memory queue."""
+        """Rebuild a missing preview via the service's memory queue and authorized image loader."""
         cached = self.cached_thumbnail(session_id, digest)
         if cached is not None:
             return cached
-        return self._write_thumbnail(session_id, digest, self.image(session_id, digest))
+        return self._artifacts.write_thumbnail(session_id, digest, self.image(session_id, digest))
 
     def evidence(self, session_id, digest):
         """Read only a verified PNG header now; decode pixels when a stage needs them."""
-        with Image.open(io.BytesIO(self.artifact_bytes(session_id, digest))) as image:
-            width, height = image.size
-        return DeferredImage((height, width, 3), partial(self.image, session_id, digest))
+        shape = self._artifacts.image_shape(self.artifact_bytes(session_id, digest))
+        return DeferredImage(shape, partial(self.image, session_id, digest))
 
     def find_creation(self, request_id, request_hash):
         with self._connect() as conn:
@@ -590,58 +494,47 @@ class RefinementSessionStore:
     def accept(self, session_id, expected_revision, version_id, candidate_digest):
         """Validate ownership/revision/digest and atomically publish exactly the checked bytes."""
         created = False
-        destination = None
-        temporary = None
-        try:
-            with self._connect(write=True) as conn:
-                session = self._session(conn, session_id)
-                version = conn.execute(
-                    "SELECT * FROM versions WHERE session_id=? AND id=?", (session_id, version_id)
-                ).fetchone()
-                if version is None:
-                    raise SessionNotFound("Version not found in this session")
-                if version["digest"] != candidate_digest:
-                    raise SessionConflict("Candidate digest changed; refresh before accepting")
-                data = self._verified_bytes(self._path(session_id, candidate_digest), candidate_digest)
-                destination = (self.accepted_root / f"{session_id}-{version_id}.png").resolve()
-                if not destination.is_relative_to(self.accepted_root):
-                    raise ArtifactUnavailable("Publication is outside the managed root")
-                if session["accepted_version_id"] == version_id:
-                    self._verified_bytes(destination, candidate_digest)
-                    return self.get(session_id)
-                self._revision(session, expected_revision)
-                if session["active_turn_id"]:
-                    raise SessionConflict("Wait for or cancel the running turn before accepting")
-                if destination.exists():
-                    self._verified_bytes(destination, candidate_digest)
-                else:
-                    temporary = self._path(session_id, candidate_digest).with_name(f".publish-{uuid4().hex}.tmp")
-                    with temporary.open("xb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, destination)
-                    created = True
-                conn.execute(
-                    "INSERT OR IGNORE INTO publications VALUES (?,?,?)", (session_id, version_id, candidate_digest)
-                )
-                conn.execute("UPDATE sessions SET accepted_version_id=? WHERE id=?", (version_id, session_id))
-                self._touch(conn, session_id, "accepted")
-        except BaseException:
-            if created and destination is not None:
-                # A concurrent retry may have committed after our rollback. Serialize
-                # cleanup with writers and never unlink a now-owned publication.
-                with self._connect(write=True) as cleanup:
-                    owned = cleanup.execute(
-                        "SELECT 1 FROM publications WHERE session_id=? AND version_id=?",
-                        (session_id, version_id),
+        # Exit after rollback ownership checks, matching the lifetime of the former
+        # local temporary file. Publication I/O never commits session state itself.
+        with ExitStack() as files:
+            try:
+                with self._connect(write=True) as conn:
+                    session = self._session(conn, session_id)
+                    version = conn.execute(
+                        "SELECT * FROM versions WHERE session_id=? AND id=?", (session_id, version_id)
                     ).fetchone()
-                    if owned is None:
-                        destination.unlink(missing_ok=True)
-            raise
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+                    if version is None:
+                        raise SessionNotFound("Version not found in this session")
+                    if version["digest"] != candidate_digest:
+                        raise SessionConflict("Candidate digest changed; refresh before accepting")
+                    data = self._artifacts.read(session_id, candidate_digest)
+                    destination = self._artifacts.publication_path(session_id, version_id)
+                    if session["accepted_version_id"] == version_id:
+                        self._artifacts.verified_bytes(destination, candidate_digest)
+                        return self.get(session_id)
+                    self._revision(session, expected_revision)
+                    if session["active_turn_id"]:
+                        raise SessionConflict("Wait for or cancel the running turn before accepting")
+                    created = files.enter_context(
+                        self._artifacts.publish(session_id, version_id, candidate_digest, data)
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO publications VALUES (?,?,?)", (session_id, version_id, candidate_digest)
+                    )
+                    conn.execute("UPDATE sessions SET accepted_version_id=? WHERE id=?", (version_id, session_id))
+                    self._touch(conn, session_id, "accepted")
+            except BaseException:
+                if created:
+                    # A concurrent retry may have committed after our rollback. Serialize
+                    # cleanup with writers and never unlink a now-owned publication.
+                    with self._connect(write=True) as cleanup:
+                        owned = cleanup.execute(
+                            "SELECT 1 FROM publications WHERE session_id=? AND version_id=?",
+                            (session_id, version_id),
+                        ).fetchone()
+                        if owned is None:
+                            self._artifacts.remove_publication(session_id, version_id)
+                raise
         return self.get(session_id)
 
     def delete(self, session_id, expected_revision):
@@ -659,14 +552,7 @@ class RefinementSessionStore:
             self._revision(session, expected_revision)
             if session["status"] != "idle" or session["active_turn_id"]:
                 raise SessionConflict("Running sessions cannot be deleted; wait or cancel first")
-            paths = [(self.artifact_root, self.artifact_root / session_id)]
-            # Do not trust URLs in persisted records to choose deletion targets.
-            paths.extend(
-                (self.accepted_root, path)
-                for path in self.accepted_root.glob(f"{session_id}-*.png")
-                if re.fullmatch(r"[a-f0-9]{32}-[a-f0-9]{32}\.png", path.name)
-            )
-            stage(paths)
+            stage(self._artifacts.deletion_paths(session_id))
             for table in ("publications", "artifacts", "events", "turns", "versions"):
                 conn.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
@@ -689,11 +575,7 @@ class RefinementSessionStore:
         with self._connect(write=True) as conn:
             if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
                 return
-            directory = self.artifact_root / session_id
-            if directory.is_symlink():
-                directory.unlink()
-            elif directory.is_dir() and directory.resolve().is_relative_to(self.artifact_root):
-                shutil.rmtree(directory)
+            self._artifacts.discard_session(session_id)
 
     def recover(self):
         """Never retry an uncertain paid call; retain any already durable generated candidate."""
@@ -721,8 +603,4 @@ class RefinementSessionStore:
             publications = {
                 f"{row[0]}-{row[1]}.png" for row in conn.execute("SELECT session_id,version_id FROM publications")
             }
-        # A process can die between os.replace and SQLite commit. Only this subsystem
-        # owns these UUID filenames; remove uncommitted publications on startup.
-        for path in self.accepted_root.glob("*.png"):
-            if re.fullmatch(r"[a-f0-9]{32}-[a-f0-9]{32}\.png", path.name) and path.name not in publications:
-                path.unlink()
+        self._artifacts.recover_publications(publications)

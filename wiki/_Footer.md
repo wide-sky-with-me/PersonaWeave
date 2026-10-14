@@ -1,1 +1,1 @@
-事实以 [仓库专题文档](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/docs)、源码和对应验证记录为准。Wiki 只提供导航；更新先修改 [版本化源文件](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/wiki)，再按 [发布说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/wiki-publication.md)同步。
+当前行为查 [专题文档](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/docs)和源码；带日期的记录只证明当次验证范围。Wiki 负责导航，源稿在 [wiki/](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/wiki)，独立发布按 [维护说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/wiki-publication.md)执行。

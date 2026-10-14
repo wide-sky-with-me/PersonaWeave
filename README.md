@@ -1,78 +1,88 @@
 # PersonaWeave
 
-批量图片定点换脸工作台，支持多人物映射、跨图身份匹配和人工确认的整图 AI 精修。
+批量图片定点换脸工作台：准备人物参考、指定目标人物、本地换脸，再按需进行人工确认的整图 AI 精修。
 
 [![CI](https://github.com/wide-sky-with-me/PersonaWeave/actions/workflows/ci.yml/badge.svg)](https://github.com/wide-sky-with-me/PersonaWeave/actions/workflows/ci.yml)
 
-[公开说明与样例](docs/public-project.md) · [Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki) · [参与贡献](CONTRIBUTING.md) · [漏洞报告](SECURITY.md) · [发行附件](https://github.com/wide-sky-with-me/PersonaWeave/releases)
+[文档总览](docs/README.md) · [公开说明与样例](docs/public-project.md) · [Wiki](https://github.com/wide-sky-with-me/PersonaWeave/wiki) · [参与贡献](CONTRIBUTING.md) · [漏洞报告](SECURITY.md) · [发行附件](https://github.com/wide-sky-with-me/PersonaWeave/releases)
+
+**先选运行方式**：源码开发见下方「本地启动」，CPU/ARM64 容器见 [Docker 指南](docs/docker-deployment.md)，Windows 完整包与升级见 [便携版指南](docs/windows-portable.md)。发行文件以 Releases 实际附件为准；源码不包含完整权重、个人素材库或 AI 凭据。
 
 ## 当前功能
 
-- **磁盘保存与精修回看**：参考大图在特征提取后释放，授权精修证据无损落盘；保存后的工程照片按需读取。精修图片查看不重复解码大图，支持加载失败后重试；接受结果立即保存关联工程，历史支持翻看 50 条以外的旧会话。见 [内存与排队](docs/memory-scheduling.md)、[任务历史](docs/task-history.md)。
+| 你要做什么 | 工作台提供什么 | 详细说明 |
+| --- | --- | --- |
+| 准备参考与目标 | 按身份维护素材，默认最多选择 8 张非拼图参考；检测目标人脸，逐人指派或跨图匹配 | [素材库](docs/portrait-library.md) |
+| 本地换脸 | ONNX 推理、全局人物分配、遮挡/眼镜保护、手动保护画笔与边界校色；保留原始分辨率 | [本地换脸](docs/facefusion-local-swap.md) |
+| 按需精修 | 确认诊断、补充意见、生成整图候选、对比并继续编辑；每轮至多生成一版，由人显式接受 | [精修工作台](docs/refinement-workbench.md)、[精修契约](docs/ai-refinement.md) |
+| 保存、恢复与导出 | 自动保存工程，显式恢复继续编辑；接受后的结果用于预览和下载，ZIP 导出当前工程的最终图片 | [工程恢复](docs/studio-projects.md) |
+| 回看与清理记录 | 只读查看结果；批任务、精修及旧档案支持单条/批量删除，运行中记录受保护 | [任务历史](docs/task-history.md)、[旧档案质量评价](docs/delivery-quality.md) |
 
-- **换脸排队诊断**：显示模型实际加载的 CPU/CUDA 后端，以及等待内存、分析参考图和取消后收尾状态；`Check-Performance.cmd` 采集不含图片或密钥的运行报告。本地模型关闭闲置线程空转，测试依据见 [内存与排队](docs/memory-scheduling.md)。
-- **多图内存控制**：上传逐张解码，批任务排队逐张换脸；内存不足时等待并显示原因，超时保留已完成结果。自动精修也按图片串行，融合分块计算保持原分辨率和像素结果。见 [内存与排队](docs/memory-scheduling.md)。
+换脸成功或有像素变化不代表身份、自然度已验收。处理后仍需人工检查；AI 配置和生成尺寸也有各自边界。
 
-- **操作布局**：右侧常驻场景预设与融合滑块，高级调校按需展开；画布人脸框可直接指派人物，并与映射矩阵联动。精修工作台支持返回画布，底部展示进度与耗时。见 [工程架构](docs/engineering-architecture.md)。
-- **本地换脸**：ONNX 推理、全局人物匹配、遮挡/眼镜保护、手动保护画笔与边界色彩校正。输出仍需人工检查身份和自然度，算法细节见 [本地换脸](docs/facefusion-local-swap.md)。
-- **大图精修快照**：合法上传图片转换为无损 PNG 后，内部快照不套用 20 MiB 上传限制；仍检查像素与内存预算。大图精修结果可随工程保存和恢复，见 [精修契约](docs/ai-refinement.md)。
-
-- **对话式 AI 精修**：冻结人物与实际参考，确认指定版本的诊断后合并人工意见形成编辑计划；允许无问题或无法判断。生成只接收当前整图与文字，每轮至多一版，可选择旧版本继续编辑；复评只提供建议，最终由人明确接受。整图重绘、小脸判断及原生尺寸边界见 [精修契约](docs/ai-refinement.md) 与 [提示词依据](docs/refinement-prompts.md)。
-- **素材库**：按身份管理参考图，默认最多选择 8 张非拼图素材；SQLite 持久化，接口只暴露不透明 ID。素材独立准备，不随源码 clone 提供；支持归档人物而保留历史引用，见 [素材库维护](docs/portrait-library.md)。
-- **失败提示**：单图、批量、人物分析及精修错误以需手动关闭的弹窗展示具体原因；批量失败按图片汇总，避免轮询重复弹出。
-- **Windows 便携交付**：支持中文图片路径、源码修复包原子发布与未完成升级的启动拦截；安装自检不迁移素材库或写入工程数据。使用与兼容边界见 [Windows 使用说明](docs/windows-portable.md)。
-- **相机 JPG 兼容**：携带 MPO/MPF 信息的 JPEG 读取主图，工程保留原始字节；大小和内存限制保持生效。见 [Windows 使用说明](docs/windows-portable.md)。
-- **工程恢复**：编辑时自动保存素材、画布、人物映射、参数、保护画笔及撤销记录和精修草稿。历史页“恢复工程”可继续编辑，旧记录按实际保留的数据恢复并提示缺失项；查看历史仍不覆盖当前工程。见 [工程恢复契约](docs/studio-projects.md)。
-- 已保留明确参考素材和逐图人物匹配记录的旧批任务，可恢复精修创建输入，继续使用原本地结果；不会因同批其他图片的角色未出现在当前图而阻止创建，也不会猜测人物对应。
-- 工程列表、两类历史和刷新采用同一恢复流程；运行中批任务的精修参考随工程保存，刷新接回原任务后仍可衔接精修。未保存到服务器的修改及已丢失的旧数据不在恢复保证内。
-- 接受精修版本后，准备区预览、对比和下载同步使用已接受结果；批量 ZIP 导出当前工程的最终图片，未精修图片保留本地结果，恢复工程后同样可直接导出。
-- **任务回看**：持久化历史、只读结果对比和下载；批任务、精修会话与旧版记录支持单条/批量删除，运行中记录受保护。见 [任务历史](docs/task-history.md)。
-- **历史任务人工质量评价**：评价与发布独立，未评价时成片率为未知；不作为新精修会话的自动门禁。见 [质量闭环](docs/delivery-quality.md)。
+工作台会显示具体失败原因、实际加载的 CPU/CUDA 后端及排队状态。上传、批处理和大图证据按预算排队；无损快照、缩略图和参考图释放规则见 [内存与排队](docs/memory-scheduling.md)。中文图片路径、相机 JPG/MPO 主图及升级中断处理见 [Windows 指南](docs/windows-portable.md)。
 
 ## 本地启动
 
-Windows 用户可使用 [Windows x64 便携版](docs/windows-portable.md)：提供 CPU 和 NVIDIA GPU 完整包，解压后双击 `Start.cmd`，内置运行时、前端和本地模型；已有 CPU 版可使用较小的 GPU 升级包。AI 服务首次通过 `Configure-AI.cmd` 配置。
+### 源码开发
 
-以下源码开发启动需要 Python 3.11+、uv、Node.js 和 pnpm。当前项目锁定依赖面向 Linux/CUDA 环境；Windows 便携构建分别安装 CPU/CUDA runtime，不改变开发环境依赖，不承诺固定吞吐量。
+准备 Python 3.11+、uv、Node.js 和 pnpm。当前开发锁面向 Linux/CUDA；CPU 容器与 Windows 便携版使用各自的运行时安装流程，不直接照搬开发锁。
+
+在仓库根目录执行：
 
 ```bash
 uv sync --dev
 pnpm --dir web install
 uv run python scripts/download_models.py
-cp .env.example .env
+test -f .env || cp .env.example .env
 uv run python scripts/dev.py
 ```
 
-已有 `.env` 时直接编辑，不要覆盖。模型下载器校验 SHA-256；所需资产、来源和许可证见 [模型说明](models/README.md)。启动脚本只预检并运行服务，不自动安装依赖或下载权重。
+环境模板只在 `.env` 不存在时复制，已有配置保持原样。下载器校验 SHA-256；模型来源与许可见 [模型说明](models/README.md)。启动脚本只预检并运行服务，不自动安装依赖或下载权重。
 
-- Web Studio：<http://localhost:3000>
-- API 文档：<http://localhost:8000/docs>（请求/响应以运行中的 OpenAPI、[通用契约](api/schemas.py) 和 [精修会话契约](api/refinement/contracts.py) 为准）
-- 健康检查：`GET /health` 或 `GET /api/v1/health`
+| 启动后访问 | 地址 |
+| --- | --- |
+| Web Studio | <http://localhost:3000> |
+| API 文档 | <http://localhost:8000/docs> |
+| 健康检查 | `GET /health` 或 `GET /api/v1/health` |
 
-可选 AI 服务统一经 LiteLLM Router 接入，不绑定服务商。在本机 `.env` 分别填写视觉服务的 `AI_VISION_MODEL`、`AI_VISION_API_BASE`、`AI_VISION_API_KEY`，以及图像编辑服务的 `AI_IMAGE_MODEL`、`AI_IMAGE_API_BASE`、`AI_IMAGE_API_KEY`。`.env.example` 中 `openai/gpt-4o`、`openai/gpt-image-1` 仅是可替换模型示例，URL 与 Key 由用户自行设置；不要提交实际凭据。模型别名、角色、生成策略只在 [网关配置](config/ai_gateway.yaml) 声明，`PERSONAWEAVE_AI_CONFIG` 可覆盖 YAML 路径。缺少或无效配置只禁用可选 AI，模型目录及新精修轮次命令返回 503；本地换脸、已存会话查看和人工接受仍可用。独立仲裁接口的建议性失败响应见 [模型目录](docs/model-catalog.md)，不能将 HTTP 200 当作身份匹配成功。健康检查不代表上游鉴权成功；OpenAI 兼容服务的模型名应填写 `openai/实际模型名`，避免依赖在线模型目录推断协议；精修失败会区分本地路由配置错误、上游 HTTP 错误、超时和结构化输出格式问题，不展示凭据或原始错误内容。
+请求字段以运行中的 OpenAPI、[通用契约](api/schemas.py)及 [精修会话契约](api/refinement/contracts.py)为准。`Ctrl+C` 停止一键启动的两个服务；预检失败时先检查模型文件和端口占用。
 
-默认图像尺寸策略为 `size: auto`，交给 provider 原生处理，不承诺 4K。视觉与图像服务可分开配置；更换 URL 并不代表目标服务支持图像编辑，需核实 LiteLLM 对该 provider 的 image-edit endpoint 支持。配置示例、尺寸策略、多 deployment、重试成本与旧配置迁移步骤见 [模型目录](docs/model-catalog.md)。
-
-手动启动时，在两个终端分别执行：
+需要分开运行时，在两个终端分别执行：
 
 ```bash
 uv run uvicorn api.app:app --host 0.0.0.0 --port 8000
 pnpm --dir web dev --host 0.0.0.0 --port 3000 --strictPort
 ```
 
-预检失败先检查模型和端口；运行 `uv run python -c "import onnxruntime as o; print(o.get_available_providers())"` 查看执行后端。`Ctrl+C` 会停止一键启动的两个服务。
+可用 `uv run python -c "import onnxruntime as o; print(o.get_available_providers())"` 检查执行后端；实际模型加载情况仍以健康信息为准。
+
+### 可选 AI 配置
+
+在本机 `.env` 为视觉和图像编辑分别配置 `AI_VISION_*` 与 `AI_IMAGE_*` 的 `MODEL`、`API_BASE`、`API_KEY`。模板中的模型只是示例，地址与密钥由使用者填写；实际凭据不进入 Git。
+
+缺少或无效配置只禁用可选 AI：本地换脸、已存会话查看和人工接受仍可用。新 AI 轮次和模型目录会返回 `503`；健康就绪不代表上游鉴权成功。配置例子、协议前缀、错误分类及调用费用见 [模型目录](docs/model-catalog.md)。
+
+视觉和图像编辑可用不同服务。统一入口是 LiteLLM Router，角色/别名/生成能力以 [网关 YAML](config/ai_gateway.yaml)为准，`PERSONAWEAVE_AI_CONFIG` 可指定另一份配置。更换 URL 不等于获得图像编辑能力；默认 `size: auto` 不承诺 4K，具体 endpoint 支持和重试边界也在模型目录说明。
 
 ## Docker 部署
 
+首次配置参考 [Docker 指南](docs/docker-deployment.md)，从公开模板准备本机 `.env`，再在仓库根目录运行：
+
 ```bash
-# 首次部署先从 .env.example 创建 .env
 docker compose up --build -d
 docker compose logs -f
 ```
 
-容器同源提供工作台和 API：<http://localhost:8000>、<http://localhost:8000/docs>。缺少必需模型时入口脚本自动下载并校验；`models/`、`data/`、`outputs/` 由卷持久化。`docker compose down` 停止服务，代码更新后重新构建。
+容器同源提供工作台和 API：<http://localhost:8000> 与 <http://localhost:8000/docs>。入口会补齐并校验缺失模型；`models/`、`data/`、`outputs/` 使用持久卷。`docker compose down` 停止服务；代码更新须重新构建。
 
-纯 CPU 部署（包括 Linux ARM64）使用 `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build -d`，选择同一 Dockerfile 的 `cpu` 目标；依赖沿用锁文件并排除 CUDA 包。镜像选择、持久化、端口绑定与 Apple Silicon 边界见 [Docker 部署](docs/docker-deployment.md)。启用 NVIDIA GPU 需宿主机具备 NVIDIA Container Toolkit，并开启 [docker-compose.yml](docker-compose.yml) 中的 GPU 设备配置。部署实现见 [Dockerfile](Dockerfile) 和 [容器入口](docker-entrypoint.sh)。
+CPU/ARM64 使用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build -d
+```
+
+NVIDIA GPU 需要宿主机的 NVIDIA Container Toolkit 和 [Compose GPU 设备配置](docker-compose.yml)。CPU 依赖、端口绑定、持久目录及 Apple Silicon 约束以 Docker 指南为准；实现见 [Dockerfile](Dockerfile)和 [容器入口](docker-entrypoint.sh)。
 
 ## 素材导入与离线命令
 
@@ -81,9 +91,11 @@ uv run personaweave --help
 uv run personaweave-import-portraits --help
 ```
 
-素材导入读取来源目录中的 `manifest.csv`，按内容哈希去重，损坏图片进入 `quarantine/`。目录位于 `data/portrait_library/`，导入格式以 [importer.py](api/portraits/importer.py) 为准。根目录 `cli.py` 也保留为离线源码入口。
+素材导入读取来源目录的 `manifest.csv`，按内容哈希去重，损坏图片进入 `quarantine/`；托管库默认在 `data/portrait_library/`。格式见 [导入器](api/portraits/importer.py)，维护方法见 [素材库](docs/portrait-library.md)。根目录 `cli.py` 是受支持的离线源码入口。
 
 ## 开发与验证
+
+先读 [贡献说明](CONTRIBUTING.md)和 [Agent 规则](AGENTS.md)。后端集成回归在隔离副本准备模型并使用测试 AI 配置，避免读取真实 `.env` 或写入用户数据；检查命令在该副本执行。
 
 ```bash
 uv run ruff format .
@@ -95,21 +107,19 @@ pnpm --dir web test
 pnpm --dir web build
 ```
 
+纯文档改动执行 [文档治理检查](docs/documentation-governance.md#机械检查)，不把历史测试成绩当作本轮验证。维护者的交付、备份与接任步骤见 [交接说明](docs/project-handover.md)和 [运行维护手册](docs/operations-runbook.md)。
+
 ## 文档导航
 
-| 目的 | 文档 |
+[文档总览](docs/README.md)按「先运行 → 使用与恢复 → 部署排错 → 开发与核验」组织专题，第一次接触项目可从那里选择路径。
+
+| 你关心什么 | 入口 |
 | --- | --- |
-| 公开获取、样例、许可与协作 | [公开项目说明](docs/public-project.md)、[贡献说明](CONTRIBUTING.md)、[漏洞报告](SECURITY.md) |
-| 项目交接与接任验收 | [综合交接说明](docs/project-handover.md)、[运行维护手册](docs/operations-runbook.md) |
-| 按主题浏览与维护 Wiki | [Wiki 源码](wiki/Home.md)、[Wiki 发布说明](docs/wiki-publication.md) |
-| 理解系统与存储边界 | [架构概述](DESIGN.md) |
-| 修改代码、拆分模块或清理实现 | [工程架构](docs/engineering-architecture.md)、[Agent 规范](AGENTS.md) |
-| 核对文档与实现的事实源 | [文档治理](docs/documentation-governance.md) |
-| 查阅某个默认值/方案为什么这样定、否定过什么 | [决策笔记](.agents/notes/README.md) |
-| 运行离线评测、查阅有限样本实测 | [评测说明](docs/swap-benchmarks.md) |
-| 核对测试图片与模型资产 | [测试素材](tests/fixtures/README.md)、[模型说明](models/README.md) |
-| 查阅历史变化 | [Changelog](CHANGELOG.md)（历史记录，不作为当前能力清单） |
+| 系统如何组成 | [架构概述](DESIGN.md)、[工程边界](docs/engineering-architecture.md) |
+| 文档事实和代码是否一致 | [文档治理](docs/documentation-governance.md) |
+| 为什么选择这些方案 | [决策笔记规则](.agents/notes/README.md) |
+| 按 Wiki 专题浏览或维护发布 | [Wiki 源码首页](wiki/Home.md)、[Wiki 发布说明](docs/wiki-publication.md) |
+| 查评测、夹具与资产 | [离线评测](docs/swap-benchmarks.md)、[测试素材](tests/fixtures/README.md)、[模型说明](models/README.md) |
+| 查看变更时间线 | [Changelog](CHANGELOG.md)，仅作历史记录 |
 
-实测边界：[五人合影两轮精修记录](docs/refinement-live-test-20260911.md) 验证了真实生成和版本衔接，但候选出现相貌漂移及小遮挡细节错误，未定稿；不能据流程通过宣称画质达标。最低硬件容量尚未通过受限环境验收，见 [内存调度](docs/memory-scheduling.md)。
-
-Windows 便携版的使用、构建、升级与排查见 [Windows x64 便携版](docs/windows-portable.md)；AI 网关超时与降级见 [模型目录](docs/model-catalog.md#routing-retries-and-fallbacks)；批任务、工程和历史见 [历史与工程契约](docs/task-history.md)；单图人物映射边界见 [本地换脸](docs/facefusion-local-swap.md#single-image-mapping-identity-boundary)。
+实测有范围限制：[五人合影两轮精修记录](docs/refinement-live-test-20260911.md)包含真实生成和版本衔接，但候选存在相貌漂移与小遮挡错误、未定稿；流程通过不代表画质达标。最低硬件容量也没有受限环境验收承诺，参见 [内存调度](docs/memory-scheduling.md)。

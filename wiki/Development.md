@@ -1,6 +1,6 @@
 # 开发
 
-跨模块规则以 [AGENTS.md](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/AGENTS.md)为准；Python 经 uv，前端经 pnpm。检查命令的唯一用户入口在 [README：开发与验证](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/README.md#开发与验证)。
+先用工程架构找到改动落点，再读所属专题与 [AGENTS.md](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/AGENTS.md)。Python 使用 uv，前端使用 pnpm；检查命令统一在 [README](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/README.md#开发与验证)。
 
 | 内容 | 阅读入口 |
 | --- | --- |
@@ -12,6 +12,6 @@
 | 固定测试图片与模型来源 | [夹具说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/tests/fixtures/README.md)、[模型说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/models/README.md) |
 | Wiki 源文件、检查与同步 | [Wiki 发布](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/wiki-publication.md) |
 
-按 [开发与验证交接](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#8-开发与验证交接)选择真实存在的检查并区分静态、模拟、集成与目标平台实测。测试放在隔离副本，保留已有用户改动，不用运行中的实例数据做全量回归。
+按 [开发与验证交接](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/project-handover.md#8-开发与验证交接)选择真实存在的检查。静态、模拟、集成和目标平台实测分别报告；回归在隔离副本运行，不使用运行实例数据，不覆盖其他贡献者改动。
 
 [返回首页](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/wiki/Home.md)

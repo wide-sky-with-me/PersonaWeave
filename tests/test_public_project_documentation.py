@@ -1,12 +1,12 @@
 """Guard public collaboration metadata and clean-checkout CI prerequisites."""
 
-import re
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
 import pytest
 import yaml
 from PIL import Image
+
+from scripts.documentation_links import link_errors, local_link, markdown_links
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_MARKDOWN = [
@@ -30,33 +30,32 @@ def test_public_collaboration_documents_are_reachable():
 
 
 def test_public_markdown_relative_links_and_sections_exist():
+    broken = link_errors(ROOT, PUBLIC_MARKDOWN)
+    assert not broken, broken
     for document in PUBLIC_MARKDOWN:
-        for raw in re.findall(r"\[[^\]]+\]\(([^)]+)\)", document.read_text(encoding="utf-8")):
-            url = urlsplit(raw.strip().strip("<>"))
-            if url.scheme:
+        for raw in markdown_links(document.read_text(encoding="utf-8")):
+            if raw.strip().startswith(("https://", "http://", "mailto:")):
                 continue
-            resolved = (document.parent / unquote(url.path)).resolve() if url.path else document
-            assert resolved.is_file(), (document.name, raw)
-            if url.fragment:
-                headings = re.findall(r"^#{1,6}\s+(.+?)\s*#*\s*$", resolved.read_text(encoding="utf-8"), re.M)
-                anchors = {re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-") for heading in headings}
-                assert unquote(url.fragment) in anchors, (document.name, raw)
+            link = local_link(ROOT, document, raw)
+            assert link is not None and link[0].is_file(), (document.name, raw)
 
 
 def test_current_docs_do_not_depend_on_git_ignored_runtime_links():
     """Local runtime folders must not hide documentation gaps in a developer checkout."""
     documents = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md")), *PUBLIC_MARKDOWN]
     for document in documents:
-        for raw in re.findall(r"\[[^\]]+\]\(([^)]+)\)", document.read_text(encoding="utf-8")):
-            url = urlsplit(raw.strip().strip("<>"))
-            if url.scheme or not url.path:
+        for raw in markdown_links(document.read_text(encoding="utf-8")):
+            link = local_link(ROOT, document, raw)
+            if link is None:
                 continue
-            resolved = (document.parent / unquote(url.path)).resolve()
+            resolved, _ = link
             assert resolved.is_relative_to(ROOT), (document.name, raw)
-            assert resolved.relative_to(ROOT).parts[0] not in {"data", "outputs", "dist", ".venv"}, (
-                document.name,
-                raw,
-            )
+            assert not resolved.relative_to(ROOT).parts or resolved.relative_to(ROOT).parts[0] not in {
+                "data",
+                "outputs",
+                "dist",
+                ".venv",
+            }, (document.name, raw)
 
 
 @pytest.mark.parametrize("filename", ["bug_report.yml", "feature_request.yml"])
