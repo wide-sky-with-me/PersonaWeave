@@ -27,7 +27,7 @@ export const CanvasBrushToolbar: React.FC<CanvasBrushToolbarProps> = ({
   onClear,
 }) => {
   return (
-    <div className="absolute top-16 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 px-3 sm:px-4 py-2 rounded-2xl bg-zinc-900/90 backdrop-blur-xl border border-amber-500/40 shadow-2xl flex items-center gap-3.5 overflow-x-auto z-40 animate-in fade-in slide-in-from-top-2">
+    <div className="absolute top-32 left-2 right-2 sm:top-16 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 px-3 sm:px-4 py-2 rounded-2xl bg-zinc-900/90 backdrop-blur-xl border border-amber-500/40 shadow-2xl flex items-center gap-3.5 overflow-x-auto [&>*]:shrink-0 [&>button]:whitespace-nowrap z-40 animate-in fade-in slide-in-from-top-2">
       <div
         id="brush-canvas-help"
         className="flex items-center gap-1.5 text-xs text-amber-300 font-medium whitespace-nowrap"

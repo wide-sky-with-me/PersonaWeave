@@ -1,0 +1,6 @@
+# Optional second explicit listener; retain the first file's existing binding.
+# Decision: .agents/notes/platform/20261014-explicit-lan-and-tailnet-bindings.md
+services:
+  personaweave:
+    ports:
+      - "${PERSONAWEAVE_LAN_ADDRESS:?Set the current private LAN address}:${PERSONAWEAVE_PORT:-8000}:8000"

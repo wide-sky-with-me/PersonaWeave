@@ -9,8 +9,8 @@ vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn() } }));
 vi.mock('@/utils/imageFiles', () => ({ MAX_IMAGE_BYTES: 4 }));
 afterEach(() => vi.unstubAllGlobals());
 
-it('restores a verified large snapshot as a managed image and preserves it on the next save', async () => {
-  vi.stubGlobal('crypto', webcrypto);
+it('restores a verified large snapshot in an HTTP browser and preserves it on the next save', async () => {
+  vi.stubGlobal('crypto', { getRandomValues: webcrypto.getRandomValues.bind(webcrypto) });
   const bytes = new Uint8Array([1, 2, 3, 4, 5]).buffer;
   const digest = Buffer.from(await webcrypto.subtle.digest('SHA-256', bytes)).toString('hex');
   const id = 'a'.repeat(32);

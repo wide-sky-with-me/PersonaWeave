@@ -174,11 +174,13 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
     updateTargetImageById,
     isProcessing,
     batchProgress,
+    serverHealth,
   } = useStudioStore();
 
   const isSingleRunning =
     singlePending || (!isProcessing && targetImages.some((target) => target.status === 'PROCESSING'));
   const currentTarget = targetImages[activeTargetIndex] || null;
+  const aiReady = serverHealth?.ai_refinement_ready === true;
 
   const activePresetId = useMemo(() => {
     const matches = (p: Partial<SwapParameters>) =>
@@ -513,14 +515,16 @@ export const ParameterPanel: React.FC<{ batch: BatchPipeline }> = ({ batch }) =>
           <input
             type="checkbox"
             checked={batch.aiRefinement}
-            disabled={isProcessing || isSingleRunning}
+            disabled={isProcessing || isSingleRunning || !aiReady}
             onChange={(event) => batch.setAiRefinement(event.target.checked)}
             className="mt-0.5 accent-primary"
           />
           <span>
             <span className="font-semibold text-zinc-100">换脸后接续 AI 首轮精修</span>
             <span className="mt-0.5 block text-2xs leading-normal text-zinc-400">
-              由视觉模型自动诊断瑕疵并单次整图优化（按需调用，可能产生费用）
+              {aiReady
+                ? '由视觉模型自动诊断瑕疵并单次整图优化（按需调用，可能产生费用）'
+                : 'AI 服务未配置或未就绪；本地换脸仍可直接使用'}
             </span>
           </span>
         </label>

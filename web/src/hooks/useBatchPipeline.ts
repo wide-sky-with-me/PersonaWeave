@@ -37,6 +37,7 @@ export function useBatchPipeline() {
     setActiveTaskId,
     setIsMatrixOpen,
     setPersonMappings,
+    serverHealth,
   } = useStudioStore();
 
   const queryClient = useQueryClient();
@@ -46,6 +47,9 @@ export function useBatchPipeline() {
   const [taskDetail, setTaskDetail] = useState<TaskDetailData | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [aiRefinement, setAiRefinement] = useState(false);
+  useEffect(() => {
+    if (aiRefinement && serverHealth?.ai_refinement_ready !== true) setAiRefinement(false);
+  }, [aiRefinement, serverHealth?.ai_refinement_ready]);
   const refinementSnapshots = useRef<Record<string, SessionInput>>({});
   const startedAtRef = useRef<number | null>(null);
   const completedTaskRef = useRef<string | null>(null);

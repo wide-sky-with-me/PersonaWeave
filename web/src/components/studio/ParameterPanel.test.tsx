@@ -62,4 +62,25 @@ describe('ParameterPanel presets', () => {
     expect([parameters.identity_blend_strength, parameters.similarity_threshold]).toEqual([0.9, 0.35]);
     expect(screen.getByText('推荐默认')).toBeInTheDocument();
   });
+  it('disables AI continuation while service readiness is unknown or unavailable', () => {
+    render(<ParameterPanel batch={batch} />);
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).toBeDisabled();
+    expect(screen.getByText('AI 服务未配置或未就绪；本地换脸仍可直接使用')).toBeInTheDocument();
+  });
+
+  it('enables AI continuation only after the server confirms readiness', () => {
+    useStudioStore.setState({
+      serverHealth: {
+        status: 'ok',
+        app_name: 'PersonaWeave',
+        version: 'test',
+        pipeline_ready: true,
+        providers: ['CPUExecutionProvider'],
+        gpu_available: false,
+        ai_refinement_ready: true,
+      },
+    });
+    render(<ParameterPanel batch={batch} />);
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).toBeEnabled();
+  });
 });

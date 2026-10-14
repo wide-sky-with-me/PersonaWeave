@@ -3,7 +3,7 @@ services:
     build: .
     image: personaweave:latest
     ports:
-      - "8000:8000"
+      - "${PERSONAWEAVE_BIND_ADDRESS:-0.0.0.0}:${PERSONAWEAVE_PORT:-8000}:8000"
     env_file:
       - .env
     volumes:

@@ -51,6 +51,15 @@ beforeEach(() => {
     activeTaskId: null,
     isProcessing: false,
     batchProgress: 0,
+    serverHealth: {
+      status: 'ok',
+      app_name: 'PersonaWeave',
+      version: 'test',
+      pipeline_ready: true,
+      providers: ['CPUExecutionProvider'],
+      gpu_available: false,
+      ai_refinement_ready: true,
+    },
     targetImages: [
       { id: 'second', name: 'second', url: '/second', status: 'IDLE' },
       {
@@ -364,6 +373,19 @@ describe('explicit batch AI authorization', () => {
       expect(api.createBatchTask).toHaveBeenCalledWith(expect.objectContaining({ ai_refinement: true })),
     );
     expect(api.createBatchTask).toHaveBeenCalledTimes(1);
+  });
+  it('clears AI opt-in when readiness is lost and does not re-enable it on recovery', () => {
+    mount();
+    const health = useStudioStore.getState().serverHealth!;
+    fireEvent.click(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ }));
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).toBeChecked();
+    act(() => useStudioStore.setState({ serverHealth: { ...health, ai_refinement_ready: false } }));
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).not.toBeChecked();
+    act(() => useStudioStore.setState({ serverHealth: health }));
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).toBeEnabled();
+    expect(screen.getByRole('checkbox', { name: /换脸后接续 AI 首轮精修/ })).not.toBeChecked();
+    expect(api.createBatchTask).not.toHaveBeenCalled();
   });
 });
 

@@ -13,6 +13,7 @@ import { useWorkbenchStore } from '../workbenchStore';
 import type { SessionCreate, SessionDetail, TurnMode } from '../sessionTypes';
 import { syncAcceptedResult } from '../acceptedResults';
 import { apiErrorMessage, isResourceUnavailable } from '@/utils/apiError';
+import { requestUuid } from '@/utils/browserCrypto';
 
 export const sessionKey = (id: string | null) => ['refinement-session', id] as const;
 export const sessionsKey = ['refinement-sessions'] as const;
@@ -118,7 +119,7 @@ export function useSessionWorkbench(target?: TargetImageItem) {
       }
       const request = (creations.current[target.id] ??= {
         ...target.refinementInput,
-        request_id: crypto.randomUUID(),
+        request_id: requestUuid(),
         target_id: target.id,
         title: target.name,
       });
@@ -149,7 +150,7 @@ export function useSessionWorkbench(target?: TargetImageItem) {
         return;
       }
       const request = workspace.pendingTurns[session.id] ?? {
-        request_id: crypto.randomUUID(),
+        request_id: requestUuid(),
         expected_revision: session.revision,
         base_version_id: baseVersionId,
         mode,

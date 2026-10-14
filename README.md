@@ -68,7 +68,7 @@ docker compose logs -f
 
 容器同源提供工作台和 API：<http://localhost:8000>、<http://localhost:8000/docs>。缺少必需模型时入口脚本自动下载并校验；`models/`、`data/`、`outputs/` 由卷持久化。`docker compose down` 停止服务，代码更新后重新构建。
 
-默认使用 CPU；启用 GPU 需宿主机具备 NVIDIA Container Toolkit，并开启 [docker-compose.yml](docker-compose.yml) 中的 GPU 设备配置。部署实现见 [Dockerfile](Dockerfile) 和 [容器入口](docker-entrypoint.sh)。
+纯 CPU 部署（包括 Linux ARM64）使用 `docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build -d`，选择同一 Dockerfile 的 `cpu` 目标；依赖沿用锁文件并排除 CUDA 包。镜像选择、持久化、端口绑定与 Apple Silicon 边界见 [Docker 部署](docs/docker-deployment.md)。启用 NVIDIA GPU 需宿主机具备 NVIDIA Container Toolkit，并开启 [docker-compose.yml](docker-compose.yml) 中的 GPU 设备配置。部署实现见 [Dockerfile](Dockerfile) 和 [容器入口](docker-entrypoint.sh)。
 
 ## 素材导入与离线命令
 
@@ -95,6 +95,8 @@ pnpm --dir web build
 
 | 目的 | 文档 |
 | --- | --- |
+| 项目交接与接任验收 | [综合交接说明](docs/project-handover.md)、[运行维护手册](docs/operations-runbook.md) |
+| 按主题浏览与维护 Wiki | [Wiki 首页](wiki/Home.md)、[Wiki 发布说明](docs/wiki-publication.md) |
 | 理解系统与存储边界 | [架构概述](DESIGN.md) |
 | 修改代码、拆分模块或清理实现 | [工程架构](docs/engineering-architecture.md)、[Agent 规范](AGENTS.md) |
 | 核对文档与实现的事实源 | [文档治理](docs/documentation-governance.md) |

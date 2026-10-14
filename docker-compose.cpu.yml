@@ -1,0 +1,6 @@
+services:
+  personaweave:
+    build:
+      context: .
+      target: cpu
+    image: personaweave:cpu

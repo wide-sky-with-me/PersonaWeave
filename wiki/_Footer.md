@@ -1,0 +1,1 @@
+事实以 [仓库专题文档](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/docs)、源码和对应验证记录为准。Wiki 只提供导航；更新先修改 [版本化源文件](https://github.com/wide-sky-with-me/PersonaWeave/tree/main/wiki)，再按 [发布说明](https://github.com/wide-sky-with-me/PersonaWeave/blob/main/docs/wiki-publication.md)同步。

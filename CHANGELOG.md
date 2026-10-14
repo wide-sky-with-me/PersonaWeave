@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-14
+
+- Mac 实例追加指定 WiFi 局域网地址的端口发布，保留 Tailscale 入口、原 CPU 镜像与持久目录；提供可选 LAN Compose 覆盖及配置回归。关闭浏览器代理后实测上传、五脸检测、单人换脸、下载及工程刷新恢复。见 [局域网验收](docs/validation/20261014-lan-access.md)。
+- Mac 实例按用户选择配置 AI 连接，补齐模型协议前缀与容器出站；增加 Clash Verge 全局扩展，让 Tailscale 网段/进程/域名优先直连，尾网与所配 AI 域名返回真实 IP，保留订阅和其他代理规则。模型目录鉴权与国内点对点连接均实测通过，未进行付费生成。见 [AI 与网络验证](docs/validation/20261014-remote-ai-configuration.md)。
+- 修复 Mac 登录启动时 Tailscale 地址晚于 Colima、导致容器健康但宿主端口不转发的顺序问题：增加周期启动守卫，地址和专用空闲 VM 就绪后补齐转发，保留 Homebrew 原服务及既有数据；有其他运行容器或推理时延后，限制重启频率。见 [宿主重启故障记录](docs/validation/20261014-host-reboot.md)。
+- 修复 HTTP IP 部署中 `crypto.subtle` / `crypto.randomUUID` 缺失导致工程刷新恢复与精修请求 ID 创建失败：采用纯 JavaScript SHA-256，保持图片摘要强制校验；UUID 回退使用强随机字节及 v4 位。AI 接续只在服务端确认就绪时开放，失去就绪后清除选中，重新就绪不自动承担费用。
+- 修复手机保护笔工具栏遮住画布模式按钮、按钮挤压换行的问题：手机布局下移工具栏，子控件保持宽度并横向滚动，桌面位置不变。实际远程 CPU 换脸、默认素材、下载及重启恢复证据见 [生产流程验收](docs/validation/20261014-production-workflow.md)。
+- 新增 [项目综合交接说明](docs/project-handover.md) 与 [运行维护手册](docs/operations-runbook.md)，统一业务、代码、文档、验证和责任入口，补齐实例登记、同批数据备份恢复、升级回滚、故障排查及接任验收。按源码说明多图视觉仲裁费用与文件访问边界；本次仅修改文档，不改变运行行为。核对范围见 [交接记录](docs/validation/20261014-project-handover.md)。
+- 新增随代码版本化的 [Wiki 首页与专题导航](wiki/Home.md)、侧栏、页脚及 [发布说明](docs/wiki-publication.md)，事实仍链接到所属文档；增加导航、仓库文件和章节链接回归。独立 Wiki 的首次初始化及本次提交验证边界见 [提交核对记录](docs/validation/20261014-repository-publication.md)。
+- 补齐 [Mac 启动守卫安装与停用步骤](docs/macos-boot-guard.md)、脱敏 LaunchAgent 模板与生成回归；明确本地推理槽位空闲不能代表全部 HTTP/远端 VLM 操作结束，修复仅用于已确认空闲的恢复窗口。历史验收中的实例诊断脚本和原始报告须独立移交，不宣称 Git clone 含全部运行证据。
+
+## 2026-10-13
+
+- 增加独立 CPU 容器构建目标与 Compose 覆盖文件，支持 Linux ARM64；从现有 uv.lock 保留非 CUDA 依赖版本，使用独立固定的 CPU ONNX Runtime 1.23.2，仅安装 headless OpenCV，安装时隔离开发 uv 覆盖规则。默认 CUDA 构建目标和开发锁文件保持不变。
+- 容器发布端口支持指定绑定地址和端口，补充 Apple Silicon/Colima 部署、持久化及验收说明。
+- 前端容器构建显式启用 Node 环境代理，支持通过 Docker build args 使用部署机器现有代理下载 pnpm 与锁定依赖。
+
 ## 2026-10-10
 
 - 收尾 Windows 交付保护改动，补充提交前验证与适用边界说明。工程接口测试停滞定位为受限执行环境禁止 socketpair 发送，空 FastAPI 应用同样复现；同一测试在允许唤醒的环境通过，保留工程路由及原始断言。见 [收尾记录](docs/validation/windows-closeout-20261010.md)。

@@ -239,6 +239,7 @@ export interface ServerHealth {
   pipeline_ready: boolean;
   providers: string[];
   gpu_available: boolean;
+  ai_refinement_ready: boolean;
   model_providers?: Record<string, string[]>;
   local_inference?: {
     queued: number;

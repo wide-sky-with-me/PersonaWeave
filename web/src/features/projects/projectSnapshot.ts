@@ -1,4 +1,5 @@
 import { apiClient } from '@/services/api';
+import { sha256Hex } from '@/utils/browserCrypto';
 import { useStudioStore } from '@/stores/useStudioStore';
 import { useWorkbenchStore } from '@/features/refinement/workbenchStore';
 
@@ -129,9 +130,7 @@ export async function hydrateDocument(project: ProjectDetail): Promise<ProjectDo
             const response = await apiClient.get(`/api/v1/projects/${project.id}/assets/${digest}`, {
               responseType: 'arraybuffer',
             });
-            const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', response.data))]
-              .map((n) => n.toString(16).padStart(2, '0'))
-              .join('');
+            const hash = sha256Hex(response.data);
             if (hash !== digest) throw new Error('工程图片校验失败');
             // Keep photos on disk after verification. Masks retain their existing base64 API contract.
             if (!inlineMask) return `/api/v1/files/projects/${project.id}/${digest}`;

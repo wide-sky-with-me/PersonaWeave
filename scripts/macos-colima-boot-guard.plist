@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.personaweave.boot-guard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>__DEPLOYMENT_DIR__/colima-boot-guard.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PERSONAWEAVE_BIND_ADDRESS</key>
+        <string>__BIND_ADDRESS__</string>
+        <key>PERSONAWEAVE_DEPLOYMENT_DIR</key>
+        <string>__DEPLOYMENT_DIR__</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>30</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__DEPLOYMENT_DIR__/boot-guard.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DEPLOYMENT_DIR__/boot-guard.log</string>
+</dict>
+</plist>
